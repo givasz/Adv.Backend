@@ -1,0 +1,36 @@
+# Blueprint do Render — cria o web service (NestJS) + um Postgres gerenciado.
+# No painel do Render: New → Blueprint → aponte para este repositório.
+# Depois defina os secrets marcados com sync:false (ANTHROPIC_API_KEY, FRONTEND_ORIGIN, ADMIN_TOKEN).
+
+services:
+  - type: web
+    name: advocme-backend
+    runtime: node
+    plan: free
+    # Instala deps, gera o Prisma Client (schema.prisma = Postgres) e compila.
+    buildCommand: npm install && npx prisma generate && npm run build
+    # Sincroniza o schema no Postgres (cria tabelas/enums) e sobe a API.
+    # Em plano pago, prefira mover o "prisma db push" para um preDeployCommand.
+    startCommand: npx prisma db push --skip-generate && node dist/main.js
+    healthCheckPath: /api/directory
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: advocme-db
+          property: connectionString
+      - key: AI_PROVIDER
+        value: anthropic
+      - key: AI_MODEL
+        value: claude-sonnet-5
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false # ex.: https://seu-site.netlify.app (pode ter várias, separadas por vírgula)
+      - key: ADMIN_TOKEN
+        sync: false
+      - key: NODE_VERSION
+        value: "20"
+
+databases:
+  - name: advocme-db
+    plan: free
