@@ -49,7 +49,7 @@ export class AiService {
     (this.provider === 'ollama'
       ? 'llama3.2:3b'
       : this.provider === 'gemini'
-        ? 'gemini-2.0-flash'
+        ? 'gemini-2.5-flash'
         : 'claude-sonnet-5')
 
   async generate(dto: GenerateDto): Promise<GenerateResult> {
