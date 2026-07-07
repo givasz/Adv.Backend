@@ -18,11 +18,14 @@ services:
         fromDatabase:
           name: advocme-db
           property: connectionString
+      # IA: Gemini (tier grátis). Chave em https://aistudio.google.com/app/apikey
+      # Para usar Claude, troque AI_PROVIDER=anthropic, AI_MODEL=claude-sonnet-5
+      # e defina ANTHROPIC_API_KEY.
       - key: AI_PROVIDER
-        value: anthropic
+        value: gemini
       - key: AI_MODEL
-        value: claude-sonnet-5
-      - key: ANTHROPIC_API_KEY
+        value: gemini-2.0-flash
+      - key: GEMINI_API_KEY
         sync: false
       - key: FRONTEND_ORIGIN
         sync: false # ex.: https://seu-site.netlify.app (pode ter várias, separadas por vírgula)

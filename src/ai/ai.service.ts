@@ -28,18 +28,29 @@ NÃO use: promessas ou garantias de resultado; comparações ou superlativos ("o
 Cite apenas qualificações verdadeiras (áreas de atuação, experiência, formação, idiomas, localização).
 Não mencione casos concretos, decisões judiciais ou clientes. Máximo de 3 frases. Responda apenas com o texto final, sem aspas nem comentários.`
 
-// AI_PROVIDER=ollama roda um LLM local (sem custo/API key); qualquer outro valor usa Anthropic.
-type Provider = 'ollama' | 'anthropic'
+// AI_PROVIDER escolhe o motor de IA:
+//   'ollama'    → LLM local (dev, sem custo/API key)
+//   'gemini'    → Google Gemini (tier grátis; GEMINI_API_KEY em aistudio.google.com/app/apikey)
+//   'anthropic' → Claude (pago; ANTHROPIC_API_KEY) — padrão
+type Provider = 'ollama' | 'anthropic' | 'gemini'
 
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name)
   private readonly provider: Provider =
-    process.env.AI_PROVIDER === 'ollama' ? 'ollama' : 'anthropic'
+    process.env.AI_PROVIDER === 'ollama'
+      ? 'ollama'
+      : process.env.AI_PROVIDER === 'gemini'
+        ? 'gemini'
+        : 'anthropic'
   private readonly client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
   private readonly model =
     process.env.AI_MODEL ??
-    (this.provider === 'ollama' ? 'llama3.2:3b' : 'claude-sonnet-5')
+    (this.provider === 'ollama'
+      ? 'llama3.2:3b'
+      : this.provider === 'gemini'
+        ? 'gemini-2.0-flash'
+        : 'claude-sonnet-5')
 
   async generate(dto: GenerateDto): Promise<GenerateResult> {
     const prompt = this.buildPrompt(dto)
@@ -71,9 +82,9 @@ export class AiService {
 
   private async runModel(prompt: string): Promise<string> {
     try {
-      return this.provider === 'ollama'
-        ? await this.viaOllama(prompt)
-        : await this.viaAnthropic(prompt)
+      if (this.provider === 'ollama') return await this.viaOllama(prompt)
+      if (this.provider === 'gemini') return await this.viaGemini(prompt)
+      return await this.viaAnthropic(prompt)
     } catch (err) {
       this.logger.error(`Falha na geração via ${this.provider}`, err as Error)
       throw err
@@ -106,6 +117,30 @@ export class AiService {
       .map((b) => b.text)
       .join('')
       .trim()
+  }
+
+  // Google Gemini via REST (sem SDK). Chave grátis em aistudio.google.com/app/apikey.
+  private async viaGemini(prompt: string): Promise<string> {
+    const key = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY
+    if (!key) throw new Error('GEMINI_API_KEY não configurada')
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${key}`
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: OAB_SYSTEM }] },
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 400 },
+      }),
+    })
+    if (!res.ok) throw new Error(`Gemini respondeu ${res.status}`)
+    const data = (await res.json()) as {
+      candidates?: { content?: { parts?: { text?: string }[] } }[]
+    }
+    const text = (data.candidates?.[0]?.content?.parts ?? [])
+      .map((p) => p.text ?? '')
+      .join('')
+    return text.replace(/^["“']|["”']$/g, '').trim()
   }
 
   private async viaOllama(prompt: string): Promise<string> {
