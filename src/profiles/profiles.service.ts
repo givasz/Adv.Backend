@@ -55,15 +55,17 @@ export class ProfilesService {
     }
   }
 
-  // Resolve o slug definitivo: nome-limpo é EXCLUSIVO do plano Max (premium);
-  // Free/Pro sempre recebem sufixo numérico. Desempate por número sequencial.
+  // Escada de endereço: Free → sempre com número; Pro/Max → nome limpo (sem número),
+  // se disponível. (Max ainda tem o domínio próprio como diferencial exclusivo.)
+  // Desempate por número sequencial.
   private async resolveSlug(name: string, plan: string | undefined, selfUserId: string) {
     const base = slugify(name ?? '')
     const takenByOther = async (slug: string) => {
       const p = await this.prisma.profile.findUnique({ where: { slug }, select: { userId: true } })
       return p !== null && p.userId !== selfUserId
     }
-    if (plan === 'premium' && !(await takenByOther(base))) return base
+    const cleanEligible = plan === 'pro' || plan === 'premium'
+    if (cleanEligible && !(await takenByOther(base))) return base
     let n = 2
     // teto de segurança para não iterar infinitamente
     while (n < 10000 && (await takenByOther(`${base}-${n}`))) n++
