@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { complianceStatus, POLICY_VERSION } from '../oab/compliance'
+import { limitsFor, slugify, type LimitedField } from '../plans'
 
 const relations = {
   areas: { orderBy: { order: 'asc' as const } },
@@ -27,7 +28,45 @@ export class ProfilesService {
     return this.prisma.profile.findUnique({ where: { userId }, include: relations })
   }
 
+  // Valida os limites de caracteres do plano (fonte da verdade). Lança 400 se exceder.
+  private enforceCharLimits(data: any) {
+    const lim = limitsFor(data.plan)
+    const check = (value: string | undefined, field: LimitedField, label: string) => {
+      if (value && value.length > lim[field]) {
+        throw new BadRequestException(
+          `${label} excede o limite de ${lim[field]} caracteres do plano ${data.plan ?? 'free'}.`,
+        )
+      }
+    }
+    check(data.headline, 'headline', 'A frase de apresentação')
+    check(data.bio, 'bio', 'A bio')
+    for (const a of data.areas ?? []) check(a.description, 'areaDesc', `A descrição da área "${a.label}"`)
+    for (const h of data.highlights ?? []) {
+      check(h.title, 'highlightTitle', 'O título do destaque')
+      check(h.detail, 'highlightDetail', 'O detalhe do destaque')
+    }
+  }
+
+  // Resolve o slug definitivo: nome-limpo é EXCLUSIVO do plano Max (premium);
+  // Free/Pro sempre recebem sufixo numérico. Desempate por número sequencial.
+  private async resolveSlug(name: string, plan: string | undefined, selfUserId: string) {
+    const base = slugify(name ?? '')
+    const takenByOther = async (slug: string) => {
+      const p = await this.prisma.profile.findUnique({ where: { slug }, select: { userId: true } })
+      return p !== null && p.userId !== selfUserId
+    }
+    if (plan === 'premium' && !(await takenByOther(base))) return base
+    let n = 2
+    // teto de segurança para não iterar infinitamente
+    while (n < 10000 && (await takenByOther(`${base}-${n}`))) n++
+    return `${base}-${n}`
+  }
+
   async update(userId: string, data: any) {
+    // Fonte da verdade dos limites por plano.
+    this.enforceCharLimits(data)
+    const slug = await this.resolveSlug(data.name, data.plan, userId)
+
     // Fonte da verdade da conformidade: bloqueia publicação com texto irregular.
     const texts = [data.bio, ...(data.areas ?? []).map((a: any) => a.description)]
     const worstStatus = texts
@@ -63,7 +102,7 @@ export class ProfilesService {
       where: { userId },
       data: {
         name: data.name,
-        slug: data.slug,
+        slug, // slug resolvido pelo servidor (regra de nomes iguais + perk do Max)
         oabNumber: data.oabNumber,
         headline: data.headline,
         bio: data.bio,
