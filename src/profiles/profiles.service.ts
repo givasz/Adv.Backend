@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { complianceStatus, POLICY_VERSION } from '../oab/compliance'
-import { limitsFor, slugify, type LimitedField } from '../plans'
+import { limitsFor, NAME_MAX, OAB_MAX, slugify, type LimitedField } from '../plans'
 
 const relations = {
   areas: { orderBy: { order: 'asc' as const } },
@@ -30,6 +30,14 @@ export class ProfilesService {
 
   // Valida os limites de caracteres do plano (fonte da verdade). Lança 400 se exceder.
   private enforceCharLimits(data: any) {
+    // Tetos fixos (não dependem do plano) — sanidade/anti-abuso.
+    if (data.name && data.name.length > NAME_MAX) {
+      throw new BadRequestException(`O nome excede o limite de ${NAME_MAX} caracteres.`)
+    }
+    if (data.oabNumber && data.oabNumber.length > OAB_MAX) {
+      throw new BadRequestException(`O número da OAB excede o limite de ${OAB_MAX} caracteres.`)
+    }
+
     const lim = limitsFor(data.plan)
     const check = (value: string | undefined, field: LimitedField, label: string) => {
       if (value && value.length > lim[field]) {

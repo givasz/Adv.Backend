@@ -12,6 +12,10 @@ export function limitsFor(plan: string | undefined): Record<LimitedField, number
   return CHAR_LIMITS[(plan as Plan) in CHAR_LIMITS ? (plan as Plan) : 'free']
 }
 
+// Tetos FIXOS (iguais em todos os planos) — sanidade/anti-abuso.
+export const NAME_MAX = 70
+export const OAB_MAX = 20
+
 // Gera o slug base a partir do nome (mesma regra do frontend).
 export function slugify(s: string): string {
   return (
