@@ -1,0 +1,15 @@
+node_modules
+dist
+
+# variáveis de ambiente (mantém só o exemplo)
+.env
+.env.*
+!.env.example
+
+# Prisma — artefatos de dev local (SQLite). NÃO vão para produção (Postgres via db push).
+prisma/dev.db
+prisma/dev.db-journal
+prisma/migrations/
+
+*.log
+.DS_Store

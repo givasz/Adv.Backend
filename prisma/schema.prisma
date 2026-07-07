@@ -1,0 +1,152 @@
+// advoc.me — schema Prisma
+// Espelha os tipos em frontend/src/lib/types.ts
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Plan {
+  free
+  pro
+  premium
+}
+
+enum SocialKind {
+  instagram
+  linkedin
+  website
+  facebook
+  youtube
+  tiktok
+}
+
+// Estado da conferência de OAB (workflow) — a marca "OAB conferida" só quando `verified`.
+enum OabStatus {
+  none
+  pending
+  verified
+  rejected
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String // hash (argon2)
+  createdAt DateTime @default(now())
+  profile   Profile?
+}
+
+model Profile {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  oabNumber   String
+  oabVerified Boolean   @default(false) // espelha (oabStatus == verified) — usado na UI
+  oabStatus   OabStatus @default(none)
+  headline    String   @default("")
+  bio         String   @default("")
+  avatarUrl   String?
+  city        String   @default("")
+  state       String   @default("")
+  regionNote  String?
+  inPerson    Boolean  @default(true)
+  online      Boolean  @default(true)
+  whatsapp    String?
+  email       String?
+  scheduling  String?
+  plan        Plan     @default(free)
+  theme       String   @default("papel") // ThemeId — ver frontend/src/lib/themes.ts
+  views       Int      @default(0)
+  published   Boolean  @default(false)
+  // Versão da política de publicidade (Provimento) aplicada à última verificação.
+  policyVersion String @default("Prov. 205/2021")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  areas      PracticeArea[]
+  highlights Highlight[]
+  socials    SocialLink[]
+  events     LinkEvent[]
+  auditLogs  AuditLog[]
+
+  @@index([city, state])
+}
+
+model PracticeArea {
+  id          String  @id @default(cuid())
+  label       String
+  description String  @default("")
+  order       Int     @default(0)
+  profileId   String
+  profile     Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId])
+}
+
+model Highlight {
+  id        String  @id @default(cuid())
+  title     String
+  detail    String  @default("")
+  order     Int     @default(0)
+  profileId String
+  profile   Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId])
+}
+
+model SocialLink {
+  id        String     @id @default(cuid())
+  kind      SocialKind
+  url       String
+  profileId String
+  profile   Profile    @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, kind])
+}
+
+// Analytics de cliques/visitas
+model LinkEvent {
+  id        String   @id @default(cuid())
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  kind      String // "view" | "whatsapp" | "scheduling" | "social:instagram" ...
+  createdAt DateTime @default(now())
+
+  @@index([profileId, kind])
+}
+
+// Trilha de auditoria imutável das alterações de perfil e do resultado de conformidade.
+// Dados pessoais minimizados: guardamos apenas o snapshot da bio (conteúdo público),
+// status de compliance e a versão da política. Limpar registros antigos conforme LGPD.
+model AuditLog {
+  id               String   @id @default(cuid())
+  profileId        String
+  profile          Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  action           String // "update" | "publish" | "unpublish" | "blocked"
+  complianceStatus String // "ok" | "warn" | "block"
+  policyVersion    String
+  bioSnapshot      String   @default("") // conteúdo público da bio no momento
+  createdAt        DateTime @default(now())
+
+  @@index([profileId, createdAt])
+}
+
+// Camada de política versionada — permite atualizar as regras do Provimento sem
+// depender de deploy e manter histórico (ex.: revisão futura do Prov. 205/2021).
+model PolicyVersion {
+  id          String   @id @default(cuid())
+  version     String   @unique // ex.: "Prov. 205/2021"
+  rulesetRev  Int      @default(1) // revisão interna do conjunto de regras
+  description String   @default("")
+  effectiveAt DateTime @default(now())
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}

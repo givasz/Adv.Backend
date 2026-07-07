@@ -1,0 +1,128 @@
+// ⚠️ SCHEMA DE DESENVOLVIMENTO LOCAL (SQLite) — não usar em produção.
+// Espelha prisma/schema.prisma (Postgres), com duas diferenças exigidas pelo SQLite:
+//   1) provider = "sqlite" + url de arquivo local (dev.db);
+//   2) SQLite não suporta enums → os campos Plan/SocialKind viram String.
+// O schema de produção continua em prisma/schema.prisma (Postgres, com enums).
+//
+// Uso:  npx prisma migrate dev --schema prisma/schema.dev.prisma
+//       npx prisma studio      --schema prisma/schema.dev.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  createdAt DateTime @default(now())
+  profile   Profile?
+}
+
+model Profile {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  oabNumber   String
+  oabVerified Boolean  @default(false) // espelha (oabStatus == "verified") — usado na UI
+  oabStatus   String   @default("none") // enum OabStatus no Postgres: none|pending|verified|rejected
+  headline    String   @default("")
+  bio         String   @default("")
+  avatarUrl   String?
+  city        String   @default("")
+  state       String   @default("")
+  regionNote  String?
+  inPerson    Boolean  @default(true)
+  online      Boolean  @default(true)
+  whatsapp    String?
+  email       String?
+  scheduling  String?
+  plan        String   @default("free") // enum Plan no Postgres: free|pro|premium
+  theme       String   @default("papel")
+  views       Int      @default(0)
+  published   Boolean  @default(false)
+  policyVersion String @default("Prov. 205/2021")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  areas      PracticeArea[]
+  highlights Highlight[]
+  socials    SocialLink[]
+  events     LinkEvent[]
+  auditLogs  AuditLog[]
+
+  @@index([city, state])
+}
+
+model PracticeArea {
+  id          String  @id @default(cuid())
+  label       String
+  description String  @default("")
+  order       Int     @default(0)
+  profileId   String
+  profile     Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId])
+}
+
+model Highlight {
+  id        String  @id @default(cuid())
+  title     String
+  detail    String  @default("")
+  order     Int     @default(0)
+  profileId String
+  profile   Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId])
+}
+
+model SocialLink {
+  id        String  @id @default(cuid())
+  kind      String // enum SocialKind no Postgres: instagram|linkedin|website|...
+  url       String
+  profileId String
+  profile   Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, kind])
+}
+
+model LinkEvent {
+  id        String   @id @default(cuid())
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  kind      String
+  createdAt DateTime @default(now())
+
+  @@index([profileId, kind])
+}
+
+model AuditLog {
+  id               String   @id @default(cuid())
+  profileId        String
+  profile          Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  action           String
+  complianceStatus String
+  policyVersion    String
+  bioSnapshot      String   @default("")
+  createdAt        DateTime @default(now())
+
+  @@index([profileId, createdAt])
+}
+
+model PolicyVersion {
+  id          String   @id @default(cuid())
+  version     String   @unique
+  rulesetRev  Int      @default(1)
+  description String   @default("")
+  effectiveAt DateTime @default(now())
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}
