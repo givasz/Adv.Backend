@@ -52,12 +52,89 @@ enum ReportStatus {
   dismissed
 }
 
+// Papel de um advogado dentro do escritório (sociedade de advogados).
+//   owner  → dono/faturamento (1 por escritório)
+//   admin  → edita a página institucional e convida membros
+//   member → advogado listado; edita apenas o próprio perfil
+enum FirmRole {
+  owner
+  admin
+  member
+}
+
+// Estado do vínculo do advogado com o escritório.
+//   invited → convite enviado; NÃO consome assento nem aparece no grid público
+//   active  → consome assento e aparece no grid
+enum FirmMemberStatus {
+  invited
+  active
+}
+
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
   password  String // hash (argon2)
   createdAt DateTime @default(now())
   profile   Profile?
+  // Escritórios dos quais este usuário é dono/faturamento (normalmente 0 ou 1).
+  firmsOwned Firm[]
+}
+
+// Escritório (sociedade de advogados) — página institucional. Cada advogado listado
+// mantém seu Profile individual; o vínculo é feito por FirmMembership. Registro da
+// SOCIEDADE na OAB é conferido à parte da OAB individual de cada advogado.
+model Firm {
+  id          String    @id @default(cuid())
+  slug        String    @unique // advoc.me/escritorio/<slug>
+  name        String
+  oabRegistry String // registro da SOCIEDADE (≠ OAB individual dos advogados)
+  oabStatus   OabStatus @default(none) // reutiliza o workflow de conferência
+  oabVerified Boolean   @default(false)
+  monogram    String    @default("")
+  logoUrl     String?
+  tagline     String    @default("")
+  about       String    @default("")
+  city        String    @default("")
+  state       String    @default("")
+  // Contato INSTITUCIONAL (separado das redes pessoais de cada advogado)
+  phone     String?
+  email     String?
+  whatsapp  String?
+  instagram String?
+  linkedin  String?
+  // ---- White-label canônico do escritório (membros herdam a marca) ----
+  brandAccent  String? // cor de destaque (hex)
+  customDomain String? // domínio próprio (informativo no protótipo)
+  // ---- Plano / assentos (billing real entra depois; hoje é campo, como Profile.plan) ----
+  plan           Plan @default(premium) // escritório opera no tier alto
+  seatsPurchased Int  @default(5) // base do plano Escritório inclui 5 assentos
+
+  ownerUserId String
+  ownerUser   User             @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  members     FirmMembership[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([city, state])
+}
+
+// Vínculo advogado ↔ escritório. Um advogado pertence a no máximo um escritório
+// (profileId @unique). O `order` é apenas para ordenação interna — NUNCA para ranking
+// público (Prov. 205/2021 veda destaque/hierarquia): o grid é sempre alfabético.
+model FirmMembership {
+  id        String           @id @default(cuid())
+  role      FirmRole         @default(member)
+  status    FirmMemberStatus @default(invited)
+  order     Int              @default(0)
+  createdAt DateTime         @default(now())
+
+  firmId    String
+  firm      Firm    @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  profileId String  @unique
+  profile   Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([firmId, status])
 }
 
 model Profile {
@@ -113,6 +190,8 @@ model Profile {
   events     LinkEvent[]
   auditLogs  AuditLog[]
   reports    Report[]
+  // Vínculo com um escritório (opcional). Presente quando o advogado integra uma sociedade.
+  firmMembership FirmMembership?
 
   @@index([city, state])
 }
