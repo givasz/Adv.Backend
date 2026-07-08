@@ -51,6 +51,17 @@ export class ProfilesController {
     return this.profiles.getBySlug(slug)
   }
 
+  // GET /api/admin/profiles?q=  → busca de perfis pelo painel (qualquer status)
+  @Get('admin/profiles')
+  adminSearchProfiles(
+    @Query('q') q?: string,
+    @Headers('x-admin-token') token?: string,
+    @Headers('authorization') authorization?: string,
+  ) {
+    this.assertAdmin(token, authorization)
+    return this.profiles.adminSearch(q)
+  }
+
   // ---- Conferência de OAB ----
 
   // POST /api/profiles/me/oab/request  → advogado solicita (vira "pending")

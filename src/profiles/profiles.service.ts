@@ -381,6 +381,38 @@ export class ProfilesService {
     return updated
   }
 
+  // Busca do PAINEL ADMIN: ao contrário do diretório público, retorna perfis de
+  // qualquer status (não publicados, restritos etc.) para o moderador localizar e agir.
+  adminSearch(q?: string) {
+    const query = (q ?? '').trim()
+    return this.prisma.profile.findMany({
+      where: query
+        ? {
+            OR: [
+              { name: { contains: query } },
+              { slug: { contains: query } },
+              { oabNumber: { contains: query } },
+              { city: { contains: query } },
+            ],
+          }
+        : {},
+      orderBy: [{ name: 'asc' }],
+      take: 50,
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        oabNumber: true,
+        city: true,
+        state: true,
+        plan: true,
+        published: true,
+        moderationStatus: true,
+        oabStatus: true,
+      },
+    })
+  }
+
   async search(q?: string, area?: string) {
     const rows = await this.prisma.profile.findMany({
       where: {
