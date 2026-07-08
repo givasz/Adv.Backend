@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { complianceStatus, POLICY_VERSION } from '../oab/compliance'
 import { limitsFor, NAME_MAX, OAB_MAX, slugify, type LimitedField } from '../plans'
@@ -14,14 +19,56 @@ export class ProfilesService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getBySlug(slug: string) {
-    const profile = await this.prisma.profile.findUnique({
-      where: { slug, published: true },
+    // Perfil restrito pela moderação some do público (equiparado a não publicado).
+    const profile = await this.prisma.profile.findFirst({
+      where: { slug, published: true, moderationStatus: { not: 'restricted' } },
       include: relations,
     })
     if (!profile) throw new NotFoundException('Perfil não encontrado')
     // registra a visita de forma assíncrona (não bloqueia a resposta)
     void this.prisma.linkEvent.create({ data: { profileId: profile.id, kind: 'view' } })
-    return profile
+    return this.toPublic(profile)
+  }
+
+  // Aplica a censura parcial (moderationStatus == partial) e remove os campos
+  // internos de moderação antes de devolver o perfil ao público.
+  private toPublic<
+    T extends {
+      moderationStatus: string
+      hiddenSections: string
+      avatarUrl?: string | null
+      headline?: string
+      bio?: string
+      regionNote?: string | null
+      areas?: { id: string }[]
+      highlights?: unknown[]
+      socials?: unknown[]
+    },
+  >(profile: T) {
+    const { hiddenSections, moderationNote, moderationStatus, ...rest } = profile as T & {
+      moderationNote?: string
+    }
+    if (moderationStatus !== 'partial') return rest
+
+    let hidden: string[] = []
+    try {
+      const parsed = JSON.parse(hiddenSections || '[]')
+      if (Array.isArray(parsed)) hidden = parsed.filter((s): s is string => typeof s === 'string')
+    } catch {
+      /* JSON inválido → nada censurado */
+    }
+    const set = new Set(hidden)
+    // Sinaliza ao público que há censura (sem revelar o quê nem a nota do admin).
+    const out: any = { ...rest, contentModerated: true }
+    if (set.has('avatar')) out.avatarUrl = null
+    if (set.has('headline')) out.headline = ''
+    if (set.has('bio')) out.bio = ''
+    if (set.has('regionNote')) out.regionNote = null
+    if (set.has('highlights')) out.highlights = []
+    if (set.has('socials')) out.socials = []
+    if (set.has('areas')) out.areas = []
+    else if (out.areas) out.areas = out.areas.filter((a: { id: string }) => !set.has(`area:${a.id}`))
+    return out
   }
 
   getMine(userId: string) {
@@ -55,27 +102,61 @@ export class ProfilesService {
     }
   }
 
-  // Escada de endereço: Free → sempre com número; Pro/Max → nome limpo (sem número),
-  // se disponível. (Max ainda tem o domínio próprio como diferencial exclusivo.)
-  // Desempate por número sequencial.
-  private async resolveSlug(name: string, plan: string | undefined, selfUserId: string) {
-    const base = slugify(name ?? '')
+  private randomSuffix(): number {
+    return Math.floor(1000 + Math.random() * 9000) // 4 dígitos
+  }
+
+  // Escada de endereço:
+  //  • Free → sempre nome + número ALEATÓRIO (ex.: marina-sales-4827), não editável.
+  //  • Pro/Max → endereço EDITÁVEL: usa o slug desejado se estiver livre; senão nome + aleatório.
+  //  (Max ainda tem o domínio próprio como diferencial exclusivo.)
+  private async resolveSlug(
+    name: string,
+    plan: string | undefined,
+    desiredSlug: string | undefined,
+    selfUserId: string,
+  ) {
+    const nameBase = slugify(name ?? '')
     const takenByOther = async (slug: string) => {
       const p = await this.prisma.profile.findUnique({ where: { slug }, select: { userId: true } })
       return p !== null && p.userId !== selfUserId
     }
-    const cleanEligible = plan === 'pro' || plan === 'premium'
-    if (cleanEligible && !(await takenByOther(base))) return base
-    let n = 2
-    // teto de segurança para não iterar infinitamente
-    while (n < 10000 && (await takenByOther(`${base}-${n}`))) n++
-    return `${base}-${n}`
+    const withRandom = async (base: string) => {
+      let s = `${base}-${this.randomSuffix()}`
+      while (await takenByOther(s)) s = `${base}-${this.randomSuffix()}`
+      return s
+    }
+
+    if (plan === 'pro' || plan === 'premium') {
+      const base = slugify(desiredSlug || name || '')
+      if (!(await takenByOther(base))) return base // endereço desejado disponível
+      return withRandom(base) // ocupado → nome + aleatório
+    }
+
+    // Free: mantém o slug atual se já for "nome-<número>" do nome vigente; senão gera novo.
+    const current = (desiredSlug || '').trim()
+    if (current && new RegExp(`^${nameBase}-\\d+$`).test(current) && !(await takenByOther(current))) {
+      return current
+    }
+    return withRandom(nameBase)
   }
 
   async update(userId: string, data: any) {
+    // Perfil restrito pela moderação não pode ser republicado pelo dono.
+    if (data.published) {
+      const current = await this.prisma.profile.findUnique({
+        where: { userId },
+        select: { moderationStatus: true },
+      })
+      if (current?.moderationStatus === 'restricted') {
+        throw new ForbiddenException(
+          'Este perfil foi restringido pela moderação e não pode ser publicado. Fale com o suporte para revisão.',
+        )
+      }
+    }
     // Fonte da verdade dos limites por plano.
     this.enforceCharLimits(data)
-    const slug = await this.resolveSlug(data.name, data.plan, userId)
+    const slug = await this.resolveSlug(data.name, data.plan, data.slug, userId)
 
     // Fonte da verdade da conformidade: bloqueia publicação com texto irregular.
     const texts = [data.bio, ...(data.areas ?? []).map((a: any) => a.description)]
