@@ -16,6 +16,25 @@ export function limitsFor(plan: string | undefined): Record<LimitedField, number
 export const NAME_MAX = 70
 export const OAB_MAX = 20
 
+// ---- Plano Escritório (sociedade de advogados) — FONTE DA VERDADE ----
+// Preço: R$ 99/mês incluindo 5 advogados; cada assento adicional custa R$ 20/mês.
+// Valores em reais (inteiros). O billing real (Stripe) entra depois; hoje derivamos
+// o preço do nº de assentos ativos.
+export const FIRM_PRICING = {
+  basePrice: 99, // R$/mês (inclui os assentos-base)
+  includedSeats: 5,
+  extraSeatPrice: 20, // R$/mês por advogado além dos incluídos
+} as const
+
+// Preço mensal do escritório para um dado nº de assentos (advogados ativos).
+export function firmMonthlyPrice(seats: number): number {
+  const extra = Math.max(0, seats - FIRM_PRICING.includedSeats)
+  return FIRM_PRICING.basePrice + extra * FIRM_PRICING.extraSeatPrice
+}
+
+// Limites de conteúdo institucional do escritório (análogos aos de perfil).
+export const FIRM_LIMITS = { tagline: 120, about: 1200 } as const
+
 // Gera o slug base a partir do nome (mesma regra do frontend).
 export function slugify(s: string): string {
   return (
