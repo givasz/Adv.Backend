@@ -22,6 +22,56 @@ model User {
   password  String
   createdAt DateTime @default(now())
   profile   Profile?
+  firmsOwned Firm[]
+}
+
+// Escritório (sociedade). Enums OabStatus/Plan/FirmRole/FirmMemberStatus viram String no SQLite.
+model Firm {
+  id          String  @id @default(cuid())
+  slug        String  @unique
+  name        String
+  oabRegistry String
+  oabStatus   String  @default("none")
+  oabVerified Boolean @default(false)
+  monogram    String  @default("")
+  logoUrl     String?
+  tagline     String  @default("")
+  about       String  @default("")
+  city        String  @default("")
+  state       String  @default("")
+  phone     String?
+  email     String?
+  whatsapp  String?
+  instagram String?
+  linkedin  String?
+  brandAccent  String?
+  customDomain String?
+  plan           String @default("premium")
+  seatsPurchased Int    @default(5)
+
+  ownerUserId String
+  ownerUser   User             @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  members     FirmMembership[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([city, state])
+}
+
+model FirmMembership {
+  id        String   @id @default(cuid())
+  role      String   @default("member") // owner|admin|member
+  status    String   @default("invited") // invited|active
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+
+  firmId    String
+  firm      Firm    @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  profileId String  @unique
+  profile   Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([firmId, status])
 }
 
 model Profile {
@@ -70,6 +120,7 @@ model Profile {
   events     LinkEvent[]
   auditLogs  AuditLog[]
   reports    Report[]
+  firmMembership FirmMembership?
 
   @@index([city, state])
 }
