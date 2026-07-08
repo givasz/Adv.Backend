@@ -33,6 +33,25 @@ enum OabStatus {
   rejected
 }
 
+// Estado de moderação do perfil (resultado de denúncias avaliadas pelo admin).
+//   active   → sem restrição
+//   warned   → dono recebeu aviso, perfil segue no ar
+//   partial  → algumas seções foram censuradas (ver Profile.hiddenSections)
+//   restricted → perfil inteiro retirado do ar (não aparece no público/diretório)
+enum ModerationStatus {
+  active
+  warned
+  partial
+  restricted
+}
+
+// Situação de uma denúncia na fila do admin.
+enum ReportStatus {
+  open
+  resolved
+  dismissed
+}
+
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -65,6 +84,13 @@ model Profile {
   published   Boolean  @default(false)
   // Versão da política de publicidade (Provimento) aplicada à última verificação.
   policyVersion String @default("Prov. 205/2021")
+  // ---- Moderação (denúncias) ----
+  moderationStatus ModerationStatus @default(active)
+  // Aviso do admin visível ao dono do perfil (motivo do aviso/restrição).
+  moderationNote   String           @default("")
+  // Seções censuradas quando moderationStatus == partial. JSON de chaves,
+  // ex.: ["bio","socials","area:<id>"]. Aplicado no getBySlug (público).
+  hiddenSections   String           @default("[]")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -76,8 +102,31 @@ model Profile {
   socials    SocialLink[]
   events     LinkEvent[]
   auditLogs  AuditLog[]
+  reports    Report[]
 
   @@index([city, state])
+}
+
+// Denúncia feita por qualquer visitante sobre um perfil (conteúdo que viola as
+// normas da OAB / REGRAS.md). Anônima por padrão; e-mail opcional para retorno.
+model Report {
+  id            String       @id @default(cuid())
+  profileId     String
+  profile       Profile      @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  // Motivo pré-pronto (ver src/moderation/moderation.constants.ts) ou "other".
+  reason        String
+  // Descrição livre do denunciante (o que/onde viola).
+  details       String       @default("")
+  // Contato opcional do denunciante para retorno (pode ficar vazio).
+  reporterEmail String?
+  status        ReportStatus @default(open)
+  // Decisão aplicada ao resolver: "warn" | "partial" | "restrict" | "dismiss".
+  resolution    String?
+  createdAt     DateTime     @default(now())
+  handledAt     DateTime?
+
+  @@index([profileId, status])
+  @@index([status, createdAt])
 }
 
 model PracticeArea {

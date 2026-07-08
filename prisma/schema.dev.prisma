@@ -47,6 +47,10 @@ model Profile {
   views       Int      @default(0)
   published   Boolean  @default(false)
   policyVersion String @default("Prov. 205/2021")
+  // ---- Moderação (denúncias) ---- (enums ModerationStatus/ReportStatus no Postgres viram String)
+  moderationStatus String @default("active") // active|warned|partial|restricted
+  moderationNote   String @default("")
+  hiddenSections   String @default("[]") // JSON de chaves de seções censuradas
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -58,8 +62,25 @@ model Profile {
   socials    SocialLink[]
   events     LinkEvent[]
   auditLogs  AuditLog[]
+  reports    Report[]
 
   @@index([city, state])
+}
+
+model Report {
+  id            String    @id @default(cuid())
+  profileId     String
+  profile       Profile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  reason        String
+  details       String    @default("")
+  reporterEmail String?
+  status        String    @default("open") // enum ReportStatus no Postgres: open|resolved|dismissed
+  resolution    String?
+  createdAt     DateTime  @default(now())
+  handledAt     DateTime?
+
+  @@index([profileId, status])
+  @@index([status, createdAt])
 }
 
 model PracticeArea {
