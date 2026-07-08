@@ -115,6 +115,15 @@ export function hasBlockingIssue(text: string): boolean {
   return checkCompliance(text).some((i) => i.severity === 'block')
 }
 
+/**
+ * Monitor de mudanças normativas: true quando o perfil foi conferido sob uma
+ * revisão anterior do conjunto de regras (RULESET_REV atual é maior). Nesse caso o
+ * conteúdo deve ser reavaliado. Espelha frontend/src/lib/oab.ts (policyOutdated).
+ */
+export function policyOutdated(policyRevChecked?: number | null): boolean {
+  return (policyRevChecked ?? 0) < RULESET_REV
+}
+
 export type ComplianceStatus = 'ok' | 'warn' | 'block'
 
 /** Status agregado de um texto sob a política vigente. */

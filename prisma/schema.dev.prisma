@@ -47,6 +47,13 @@ model Profile {
   views       Int      @default(0)
   published   Boolean  @default(false)
   policyVersion String @default("Prov. 205/2021")
+  // Revisão do conjunto de regras conferida na última verificação (monitor normativo).
+  policyRevChecked Int @default(0)
+  // ---- Identidade própria (white-label) — Premium ----
+  brandName          String?
+  brandAccent        String?
+  brandHideWatermark Boolean @default(false)
+  customDomain       String?
   // ---- Moderação (denúncias) ---- (enums ModerationStatus/ReportStatus no Postgres viram String)
   moderationStatus String @default("active") // active|warned|partial|restricted
   moderationNote   String @default("")
