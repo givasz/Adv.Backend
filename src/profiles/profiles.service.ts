@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
-import { complianceStatus, POLICY_VERSION } from '../oab/compliance'
+import { complianceStatus, POLICY_VERSION, RULESET_REV } from '../oab/compliance'
 import { limitsFor, NAME_MAX, OAB_MAX, slugify, type LimitedField } from '../plans'
 
 const relations = {
@@ -27,7 +27,7 @@ export class ProfilesService {
     if (!profile) throw new NotFoundException('Perfil não encontrado')
     // registra a visita de forma assíncrona (não bloqueia a resposta)
     void this.prisma.linkEvent.create({ data: { profileId: profile.id, kind: 'view' } })
-    return this.toPublic(profile)
+    return this.toApi(this.toPublic(profile))
   }
 
   // Aplica a censura parcial (moderationStatus == partial) e remove os campos
@@ -71,8 +71,67 @@ export class ProfilesService {
     return out
   }
 
-  getMine(userId: string) {
-    return this.prisma.profile.findUnique({ where: { userId }, include: relations })
+  // Reconstrói o objeto `branding` (white-label) a partir das colunas planas.
+  private buildBranding(p: any) {
+    const b: Record<string, unknown> = {}
+    if (p.brandName) b.brandName = p.brandName
+    if (p.brandAccent) b.accent = p.brandAccent
+    if (p.brandHideWatermark) b.hideWatermark = true
+    if (p.customDomain) b.customDomain = p.customDomain
+    return Object.keys(b).length ? b : undefined
+  }
+
+  // Mapeia a linha (plana) do Prisma para o shape ANINHADO esperado pelo frontend
+  // (serviceMode/contact/branding + coleções filhas). Ver frontend/src/lib/types.ts.
+  // Usado nos retornos públicos (getBySlug/getMine/update); a moderação tem shape
+  // próprio (ModerationProfile) e NÃO passa por aqui.
+  private toApi(p: any) {
+    const out: any = {
+      slug: p.slug,
+      name: p.name,
+      oabNumber: p.oabNumber,
+      oabVerified: p.oabVerified,
+      oabStatus: p.oabStatus,
+      headline: p.headline ?? '',
+      bio: p.bio ?? '',
+      avatarUrl: p.avatarUrl ?? undefined,
+      city: p.city ?? '',
+      state: p.state ?? '',
+      regionNote: p.regionNote ?? undefined,
+      serviceMode: { inPerson: !!p.inPerson, online: !!p.online },
+      areas: (p.areas ?? []).map((a: any) => ({
+        id: a.id,
+        label: a.label,
+        description: a.description,
+      })),
+      highlights: (p.highlights ?? []).map((h: any) => ({
+        id: h.id,
+        title: h.title,
+        detail: h.detail,
+      })),
+      socials: (p.socials ?? []).map((s: any) => ({ kind: s.kind, url: s.url })),
+      contact: {
+        whatsapp: p.whatsapp ?? undefined,
+        email: p.email ?? undefined,
+        scheduling: p.scheduling ?? undefined,
+      },
+      plan: p.plan,
+      theme: p.theme,
+      views: p.views,
+      published: p.published,
+      policyRevChecked: p.policyRevChecked,
+      branding: this.buildBranding(p),
+    }
+    // Campos do dono (getMine) — ausentes no público (toPublic os remove).
+    if (p.moderationStatus !== undefined) out.moderationStatus = p.moderationStatus
+    if (p.moderationNote) out.moderationNote = p.moderationNote
+    if (p.contentModerated) out.contentModerated = true
+    return out
+  }
+
+  async getMine(userId: string) {
+    const p = await this.prisma.profile.findUnique({ where: { userId }, include: relations })
+    return p ? this.toApi(p) : null
   }
 
   // Valida os limites de caracteres do plano (fonte da verdade). Lança 400 se exceder.
@@ -209,6 +268,14 @@ export class ProfilesService {
         theme: data.theme,
         published: data.published,
         policyVersion: POLICY_VERSION,
+        // Carimba a revisão vigente das regras (monitor normativo): ao salvar, o
+        // perfil passa a estar "em dia" com o RULESET_REV atual.
+        policyRevChecked: RULESET_REV,
+        // Identidade própria (white-label) — persistida em colunas planas.
+        brandName: data.branding?.brandName ?? null,
+        brandAccent: data.branding?.accent ?? null,
+        brandHideWatermark: data.branding?.hideWatermark ?? false,
+        customDomain: data.branding?.customDomain ?? null,
         // substitui coleções filhas (padrão simples; otimizável com upserts)
         areas: {
           deleteMany: {},
@@ -246,7 +313,7 @@ export class ProfilesService {
       },
     })
 
-    return updated
+    return this.toApi(updated)
   }
 
   // ---- Conferência de OAB (workflow: none → pending → verified/rejected) ----
@@ -314,8 +381,8 @@ export class ProfilesService {
     return updated
   }
 
-  search(q?: string, area?: string) {
-    return this.prisma.profile.findMany({
+  async search(q?: string, area?: string) {
+    const rows = await this.prisma.profile.findMany({
       where: {
         published: true,
         ...(area ? { areas: { some: { label: area } } } : {}),
@@ -349,5 +416,7 @@ export class ProfilesService {
         areas: { select: { label: true }, orderBy: { order: 'asc' } },
       },
     })
+    // DirectoryResult espera `areas: string[]` (não objetos).
+    return rows.map((r) => ({ ...r, areas: r.areas.map((a) => a.label) }))
   }
 }

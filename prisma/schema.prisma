@@ -84,6 +84,16 @@ model Profile {
   published   Boolean  @default(false)
   // Versão da política de publicidade (Provimento) aplicada à última verificação.
   policyVersion String @default("Prov. 205/2021")
+  // Revisão do conjunto de regras (RULESET_REV) conferida na última verificação.
+  // Monitor de mudanças normativas: se a revisão vigente for maior, o perfil é
+  // reavaliado e o advogado é avisado. Ver src/oab/compliance.ts (policyOutdated).
+  policyRevChecked Int @default(0)
+  // ---- Identidade própria (white-label) — plano Premium/Escritório ----
+  // Não afeta conformidade: o conteúdo segue sujeito ao Prov. 205/2021.
+  brandName          String?
+  brandAccent        String? // cor de destaque personalizada (hex)
+  brandHideWatermark Boolean @default(false)
+  customDomain       String? // domínio próprio (informativo; DNS fora do escopo do protótipo)
   // ---- Moderação (denúncias) ----
   moderationStatus ModerationStatus @default(active)
   // Aviso do admin visível ao dono do perfil (motivo do aviso/restrição).
