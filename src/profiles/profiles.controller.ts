@@ -11,13 +11,20 @@ import {
 } from '@nestjs/common'
 import { ProfilesService } from './profiles.service'
 import { isAdminAuthenticated } from '../admin/admin-auth'
+import { userIdFromHeader } from '../auth/user-auth'
 
-// Autenticação (JWT) omitida neste sketch — `me()`/`update()` usariam @Req().user.id.
+// Usuário anônimo do protótipo (Free sem conta): compartilha o rascunho demo.
+// Quando há uma sessão válida (Authorization: Bearer), usamos o dono real.
 const DEMO_USER = 'demo-user-id'
 
 @Controller()
 export class ProfilesController {
   constructor(private readonly profiles: ProfilesService) {}
+
+  // Resolve o dono da requisição: sessão do usuário (Bearer) ou o anônimo demo.
+  private resolveUser(authorization?: string): string {
+    return userIdFromHeader(authorization) ?? DEMO_USER
+  }
 
   // Aceita a sessão de admin (Authorization: Bearer) ou o token estático legado
   // (x-admin-token = ADMIN_TOKEN), unificando o acesso com o painel de denúncias.
@@ -35,14 +42,14 @@ export class ProfilesController {
 
   // GET /api/profiles/me
   @Get('profiles/me')
-  me() {
-    return this.profiles.getMine(DEMO_USER)
+  me(@Headers('authorization') authorization?: string) {
+    return this.profiles.getMine(this.resolveUser(authorization))
   }
 
   // PUT /api/profiles/me
   @Put('profiles/me')
-  update(@Body() body: any) {
-    return this.profiles.update(DEMO_USER, body)
+  update(@Body() body: any, @Headers('authorization') authorization?: string) {
+    return this.profiles.update(this.resolveUser(authorization), body)
   }
 
   // GET /api/profiles/:slug  (público)
@@ -65,9 +72,10 @@ export class ProfilesController {
   // ---- Conferência de OAB ----
 
   // POST /api/profiles/me/oab/request  → advogado solicita (vira "pending")
+  // Só disponível nos planos pagos (o service reforça a regra).
   @Post('profiles/me/oab/request')
-  requestOab() {
-    return this.profiles.requestOab(DEMO_USER)
+  requestOab(@Headers('authorization') authorization?: string) {
+    return this.profiles.requestOab(this.resolveUser(authorization))
   }
 
   // GET /api/admin/oab/pending  → fila de conferências (admin)

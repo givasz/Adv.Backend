@@ -70,6 +70,18 @@ enum FirmMemberStatus {
   active
 }
 
+// Situação de uma solicitação de agendamento na agenda nativa do advogado.
+//   pending   → cliente marcou; aguarda a decisão do advogado (SEGURA o horário)
+//   confirmed → advogado aceitou; horário reservado
+//   declined  → advogado recusou; horário liberado
+//   cancelled → cancelado (pelo advogado após confirmar)
+enum BookingStatus {
+  pending
+  confirmed
+  declined
+  cancelled
+}
+
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -155,6 +167,17 @@ model Profile {
   whatsapp    String?
   email       String?
   scheduling  String?
+  // ---- Agendamento ----
+  // Modo do botão "Agendar": "off" (sem botão) | "external" (link Calendly/Google,
+  // usa `scheduling`) | "native" (agenda própria do advoc.me — model Booking abaixo).
+  schedulingMode     String @default("external")
+  // Config da agenda nativa (só relevante quando schedulingMode == "native").
+  bookingWeekdays    String @default("[1,2,3,4,5]") // JSON de dias (0=dom … 6=sáb)
+  bookingStartMin    Int    @default(540)  // início do expediente em minutos (09:00)
+  bookingEndMin      Int    @default(1080) // fim do expediente (18:00)
+  bookingSlotMin     Int    @default(30)   // duração de cada horário
+  bookingLeadHours   Int    @default(12)   // antecedência mínima para marcar
+  bookingHorizonDays Int    @default(30)   // até quantos dias à frente é possível marcar
   plan        Plan     @default(free)
   theme       String   @default("papel") // ThemeId — ver frontend/src/lib/themes.ts
   views       Int      @default(0)
@@ -190,6 +213,7 @@ model Profile {
   events     LinkEvent[]
   auditLogs  AuditLog[]
   reports    Report[]
+  bookings   Booking[]
   // Vínculo com um escritório (opcional). Presente quando o advogado integra uma sociedade.
   firmMembership FirmMembership?
 
@@ -216,6 +240,26 @@ model Report {
 
   @@index([profileId, status])
   @@index([status, createdAt])
+}
+
+// Solicitação de consulta feita por um visitante na agenda nativa do advogado.
+// LGPD: guarda o mínimo (nome + WhatsApp + nota) para o advogado retornar o contato.
+// Retenção limitada — limpar registros antigos conforme a política de dados.
+model Booking {
+  id          String        @id @default(cuid())
+  profileId   String
+  profile     Profile       @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  clientName  String
+  clientWhats String // só dígitos, formato internacional (ex.: 5511999999999)
+  note        String        @default("")
+  startAt     DateTime // início do horário escolhido
+  endAt       DateTime // startAt + duração do slot
+  status      BookingStatus @default(pending)
+  createdAt   DateTime      @default(now())
+  decidedAt   DateTime? // quando o advogado aceitou/recusou
+
+  @@index([profileId, status])
+  @@index([profileId, startAt])
 }
 
 model PracticeArea {
