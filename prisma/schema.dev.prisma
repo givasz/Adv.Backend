@@ -92,6 +92,14 @@ model Profile {
   whatsapp    String?
   email       String?
   scheduling  String?
+  // ---- Agendamento ---- (schedulingMode: "off"|"external"|"native")
+  schedulingMode     String @default("external")
+  bookingWeekdays    String @default("[1,2,3,4,5]") // JSON de dias (0=dom … 6=sáb)
+  bookingStartMin    Int    @default(540)  // 09:00
+  bookingEndMin      Int    @default(1080) // 18:00
+  bookingSlotMin     Int    @default(30)
+  bookingLeadHours   Int    @default(12)
+  bookingHorizonDays Int    @default(30)
   plan        String   @default("free") // enum Plan no Postgres: free|pro|premium
   theme       String   @default("papel")
   views       Int      @default(0)
@@ -120,9 +128,28 @@ model Profile {
   events     LinkEvent[]
   auditLogs  AuditLog[]
   reports    Report[]
+  bookings   Booking[]
   firmMembership FirmMembership?
 
   @@index([city, state])
+}
+
+// Solicitação de consulta (agenda nativa). status: pending|confirmed|declined|cancelled
+model Booking {
+  id          String    @id @default(cuid())
+  profileId   String
+  profile     Profile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  clientName  String
+  clientWhats String
+  note        String    @default("")
+  startAt     DateTime
+  endAt       DateTime
+  status      String    @default("pending")
+  createdAt   DateTime  @default(now())
+  decidedAt   DateTime?
+
+  @@index([profileId, status])
+  @@index([profileId, startAt])
 }
 
 model Report {

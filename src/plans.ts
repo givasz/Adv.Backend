@@ -16,6 +16,17 @@ export function limitsFor(plan: string | undefined): Record<LimitedField, number
 export const NAME_MAX = 70
 export const OAB_MAX = 20
 
+// Agendamento (link externo OU agenda nativa) — recurso dos planos pagos.
+// No Free não há botão "Agendar" no perfil.
+export function canUseScheduling(plan: string | undefined): boolean {
+  return plan === 'pro' || plan === 'premium'
+}
+
+// Agenda nativa (cliente marca dia/hora, advogado aceita/recusa) — também só nos pagos.
+export function canUseNativeAgenda(plan: string | undefined): boolean {
+  return plan === 'pro' || plan === 'premium'
+}
+
 // ---- Plano Escritório (sociedade de advogados) — FONTE DA VERDADE ----
 // Preço: R$ 99/mês incluindo 5 advogados; cada assento adicional custa R$ 20/mês.
 // Valores em reais (inteiros). O billing real (Stripe) entra depois; hoje derivamos

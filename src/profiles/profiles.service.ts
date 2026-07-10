@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { complianceStatus, POLICY_VERSION, RULESET_REV } from '../oab/compliance'
-import { limitsFor, NAME_MAX, OAB_MAX, slugify, type LimitedField } from '../plans'
+import { canUseScheduling, limitsFor, NAME_MAX, OAB_MAX, slugify, type LimitedField } from '../plans'
 
 const relations = {
   areas: { orderBy: { order: 'asc' as const } },
@@ -71,6 +71,51 @@ export class ProfilesService {
     return out
   }
 
+  // Dias da semana da agenda: coluna JSON → number[] (0=dom … 6=sáb). Tolerante a lixo.
+  private parseWeekdays(raw: unknown): number[] {
+    try {
+      const parsed = JSON.parse(typeof raw === 'string' ? raw : '[1,2,3,4,5]')
+      if (Array.isArray(parsed)) {
+        return parsed.filter((n): n is number => Number.isInteger(n) && n >= 0 && n <= 6)
+      }
+    } catch {
+      /* JSON inválido → padrão seg–sex */
+    }
+    return [1, 2, 3, 4, 5]
+  }
+
+  private sanitizeMode(mode: unknown, plan: string | undefined): string {
+    // Agendamento (link externo ou agenda nativa) é recurso pago: no Free, força 'off'.
+    if (!canUseScheduling(plan)) return 'off'
+    return mode === 'off' || mode === 'native' || mode === 'external' ? mode : 'external'
+  }
+
+  // Normaliza a config da agenda vinda do front em colunas planas, com limites de
+  // sanidade (evita expediente invertido, slots absurdos, horizonte gigante).
+  private bookingCols(b: any) {
+    const clampInt = (v: unknown, min: number, max: number, dflt: number) => {
+      const n = Math.round(Number(v))
+      return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : dflt
+    }
+    const weekdays = Array.isArray(b?.weekdays)
+      ? b.weekdays.filter((n: unknown): n is number => Number.isInteger(n) && (n as number) >= 0 && (n as number) <= 6)
+      : [1, 2, 3, 4, 5]
+    let startMin = clampInt(b?.startMin, 0, 1439, 540)
+    let endMin = clampInt(b?.endMin, 1, 1440, 1080)
+    if (endMin <= startMin) {
+      startMin = 540
+      endMin = 1080
+    }
+    return {
+      bookingWeekdays: JSON.stringify([...new Set<number>(weekdays)].sort((a, b) => a - b)),
+      bookingStartMin: startMin,
+      bookingEndMin: endMin,
+      bookingSlotMin: clampInt(b?.slotMin, 10, 240, 30),
+      bookingLeadHours: clampInt(b?.leadHours, 0, 720, 12),
+      bookingHorizonDays: clampInt(b?.horizonDays, 1, 180, 30),
+    }
+  }
+
   // Reconstrói o objeto `branding` (white-label) a partir das colunas planas.
   private buildBranding(p: any) {
     const b: Record<string, unknown> = {}
@@ -114,6 +159,15 @@ export class ProfilesService {
         whatsapp: p.whatsapp ?? undefined,
         email: p.email ?? undefined,
         scheduling: p.scheduling ?? undefined,
+      },
+      schedulingMode: p.schedulingMode ?? 'external',
+      booking: {
+        weekdays: this.parseWeekdays(p.bookingWeekdays),
+        startMin: p.bookingStartMin ?? 540,
+        endMin: p.bookingEndMin ?? 1080,
+        slotMin: p.bookingSlotMin ?? 30,
+        leadHours: p.bookingLeadHours ?? 12,
+        horizonDays: p.bookingHorizonDays ?? 30,
       },
       plan: p.plan,
       theme: p.theme,
@@ -265,6 +319,9 @@ export class ProfilesService {
         whatsapp: data.contact?.whatsapp,
         email: data.contact?.email,
         scheduling: data.contact?.scheduling,
+        // Agendamento — modo + config da agenda nativa (colunas planas).
+        schedulingMode: this.sanitizeMode(data.schedulingMode, data.plan),
+        ...this.bookingCols(data.booking),
         theme: data.theme,
         published: data.published,
         policyVersion: POLICY_VERSION,
@@ -319,13 +376,17 @@ export class ProfilesService {
   // ---- Conferência de OAB (workflow: none → pending → verified/rejected) ----
   // Ver docs/oab-verificacao-escalonamento.md. Fase 1: revisão manual por admin.
 
-  /** Advogado solicita a conferência do próprio número (não concede a marca). */
+  /** Advogado solicita a conferência do próprio número (não concede a marca).
+   *  Recurso EXCLUSIVO dos planos pagos — no Free não há conferência de OAB. */
   async requestOab(userId: string) {
     const profile = await this.prisma.profile.findUnique({
       where: { userId },
-      select: { id: true, oabStatus: true },
+      select: { id: true, oabStatus: true, plan: true },
     })
     if (!profile) throw new NotFoundException('Perfil não encontrado')
+    if (profile.plan === 'free') {
+      throw new ForbiddenException('A conferência de OAB está disponível apenas nos planos pagos.')
+    }
     if (profile.oabStatus === 'verified') return { oabStatus: 'verified' as const }
 
     const updated = await this.prisma.profile.update({
