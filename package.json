@@ -6,6 +6,8 @@
     "start": "node dist/main.js",
     "start:dev": "nest start --watch",
     "build": "nest build",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma db push",
@@ -29,6 +31,7 @@
   "devDependencies": {
     "@nestjs/cli": "^10.4.4",
     "prisma": "^5.19.0",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^4.1.10"
   }
 }

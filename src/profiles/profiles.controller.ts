@@ -10,7 +10,8 @@ import {
   Query,
 } from '@nestjs/common'
 import { ProfilesService } from './profiles.service'
-import { isAdminAuthenticated } from '../admin/admin-auth'
+import { OabVerificationService } from '../oab/verification/oab-verification.service'
+import { adminLabel, isAdminAuthenticated } from '../admin/admin-auth'
 import { userIdFromHeader } from '../auth/user-auth'
 
 // Usuário anônimo do protótipo (Free sem conta): compartilha o rascunho demo.
@@ -19,7 +20,10 @@ const DEMO_USER = 'demo-user-id'
 
 @Controller()
 export class ProfilesController {
-  constructor(private readonly profiles: ProfilesService) {}
+  constructor(
+    private readonly profiles: ProfilesService,
+    private readonly oab: OabVerificationService,
+  ) {}
 
   // Resolve o dono da requisição: sessão do usuário (Bearer) ou o anônimo demo.
   private resolveUser(authorization?: string): string {
@@ -75,7 +79,7 @@ export class ProfilesController {
   // Só disponível nos planos pagos (o service reforça a regra).
   @Post('profiles/me/oab/request')
   requestOab(@Headers('authorization') authorization?: string) {
-    return this.profiles.requestOab(this.resolveUser(authorization))
+    return this.oab.request(this.resolveUser(authorization))
   }
 
   // GET /api/admin/oab/pending  → fila de conferências (admin)
@@ -85,7 +89,18 @@ export class ProfilesController {
     @Headers('authorization') authorization?: string,
   ) {
     this.assertAdmin(token, authorization)
-    return this.profiles.listPendingOab()
+    return this.oab.listPending()
+  }
+
+  // GET /api/admin/profiles/:id/oab/history  → histórico de conferência (admin)
+  @Get('admin/profiles/:id/oab/history')
+  oabHistory(
+    @Param('id') id: string,
+    @Headers('x-admin-token') token?: string,
+    @Headers('authorization') authorization?: string,
+  ) {
+    this.assertAdmin(token, authorization)
+    return this.oab.history(id)
   }
 
   // POST /api/admin/profiles/:id/oab/decision  → { decision: 'verify'|'reject', reason? }
@@ -97,6 +112,6 @@ export class ProfilesController {
     @Headers('authorization') authorization?: string,
   ) {
     this.assertAdmin(token, authorization)
-    return this.profiles.decideOab(id, body.decision, body.reason)
+    return this.oab.decide(id, body.decision, adminLabel(), body.reason)
   }
 }

@@ -373,74 +373,8 @@ export class ProfilesService {
     return this.toApi(updated)
   }
 
-  // ---- Conferência de OAB (workflow: none → pending → verified/rejected) ----
-  // Ver docs/oab-verificacao-escalonamento.md. Fase 1: revisão manual por admin.
-
-  /** Advogado solicita a conferência do próprio número (não concede a marca).
-   *  Recurso EXCLUSIVO dos planos pagos — no Free não há conferência de OAB. */
-  async requestOab(userId: string) {
-    const profile = await this.prisma.profile.findUnique({
-      where: { userId },
-      select: { id: true, oabStatus: true, plan: true },
-    })
-    if (!profile) throw new NotFoundException('Perfil não encontrado')
-    if (profile.plan === 'free') {
-      throw new ForbiddenException('A conferência de OAB está disponível apenas nos planos pagos.')
-    }
-    if (profile.oabStatus === 'verified') return { oabStatus: 'verified' as const }
-
-    const updated = await this.prisma.profile.update({
-      where: { userId },
-      data: { oabStatus: 'pending' },
-      select: { oabStatus: true },
-    })
-    await this.prisma.auditLog.create({
-      data: {
-        profileId: profile.id,
-        action: 'oab:request',
-        complianceStatus: 'ok',
-        policyVersion: POLICY_VERSION,
-      },
-    })
-    return { oabStatus: updated.oabStatus }
-  }
-
-  /** Fila de conferências pendentes (uso do admin). */
-  listPendingOab() {
-    return this.prisma.profile.findMany({
-      where: { oabStatus: 'pending' },
-      orderBy: { updatedAt: 'asc' },
-      select: {
-        id: true,
-        name: true,
-        oabNumber: true,
-        city: true,
-        state: true,
-        slug: true,
-        updatedAt: true,
-      },
-    })
-  }
-
-  /** Decisão do admin: aprova (marca "OAB conferida") ou rejeita, com auditoria. */
-  async decideOab(profileId: string, decision: 'verify' | 'reject', reason?: string) {
-    const verified = decision === 'verify'
-    const updated = await this.prisma.profile.update({
-      where: { id: profileId },
-      data: { oabStatus: verified ? 'verified' : 'rejected', oabVerified: verified },
-      select: { oabStatus: true, oabVerified: true },
-    })
-    await this.prisma.auditLog.create({
-      data: {
-        profileId,
-        action: verified ? 'oab:verified' : 'oab:rejected',
-        complianceStatus: 'ok',
-        policyVersion: POLICY_VERSION,
-        bioSnapshot: reason ?? '', // reaproveita a coluna de nota p/ o motivo da decisão
-      },
-    })
-    return updated
-  }
+  // A conferência de OAB (workflow none → pending → verified/rejected) foi movida para
+  // um módulo desacoplado: ver src/oab/verification/oab-verification.service.ts.
 
   // Busca do PAINEL ADMIN: ao contrário do diretório público, retorna perfis de
   // qualquer status (não publicados, restritos etc.) para o moderador localizar e agir.
