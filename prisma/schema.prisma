@@ -156,6 +156,11 @@ model Profile {
   oabNumber   String
   oabVerified Boolean   @default(false) // espelha (oabStatus == verified) — usado na UI
   oabStatus   OabStatus @default(none)
+  // Snapshot da última conferência de OAB (histórico completo em OabVerificationEvent).
+  // Desacoplado: hoje preenchido pela conferência manual; pronto para CNA/ConfirmADV.
+  oabVerifiedAt     DateTime? // data/hora da conferência (quando verified)
+  oabVerifiedMethod String? // método: "manual" | "cna_ws" | "confirmadv"
+  oabVerifiedBy     String? // responsável pela conferência (identificação do admin)
   headline    String   @default("")
   bio         String   @default("")
   avatarUrl   String?
@@ -214,10 +219,29 @@ model Profile {
   auditLogs  AuditLog[]
   reports    Report[]
   bookings   Booking[]
+  oabEvents  OabVerificationEvent[]
   // Vínculo com um escritório (opcional). Presente quando o advogado integra uma sociedade.
   firmMembership FirmMembership?
 
   @@index([city, state])
+}
+
+// Histórico IMUTÁVEL da conferência de OAB de um perfil (append-only). Cada
+// transição de estado (none → pending → verified/rejected) gera um evento com data,
+// método, responsável e motivo — trilha auditável para fiscalização. O snapshot atual
+// vive em Profile.oab*; aqui fica o histórico completo. Ver docs/oab-verificacao-escalonamento.md.
+model OabVerificationEvent {
+  id         String    @id @default(cuid())
+  profileId  String
+  profile    Profile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  fromStatus OabStatus // estado anterior
+  toStatus   OabStatus // novo estado
+  method     String // "manual" | "cna_ws" | "confirmadv"
+  reviewer   String    @default("") // responsável (admin) — vazio quando é solicitação do próprio advogado
+  reason     String    @default("") // motivo/observação (ex.: justificativa de rejeição)
+  createdAt  DateTime  @default(now())
+
+  @@index([profileId, createdAt])
 }
 
 // Denúncia feita por qualquer visitante sobre um perfil (conteúdo que viola as

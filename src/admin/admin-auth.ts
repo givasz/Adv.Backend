@@ -18,6 +18,11 @@ const SESSION_TTL_MS = 1000 * 60 * 60 * 8 // 8 horas
 function adminUsername(): string {
   return process.env.ADMIN_USERNAME || 'admin'
 }
+
+/** Identificação do admin para registrar o "responsável" pela conferência de OAB. */
+export function adminLabel(): string {
+  return adminUsername()
+}
 function adminPassword(): string {
   return process.env.ADMIN_PASSWORD || process.env.ADMIN_TOKEN || 'dev-admin-123'
 }
