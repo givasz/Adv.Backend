@@ -63,7 +63,7 @@ export class AiService {
     (this.provider === 'ollama'
       ? 'llama3.2:3b'
       : this.provider === 'gemini'
-        ? 'gemini-2.5-flash'
+        ? 'gemini-flash-lite-latest' // alias sempre atual; tem cota grátis e é rápido
         : 'claude-sonnet-5')
 
   async generate(dto: GenerateDto): Promise<GenerateResult> {
@@ -95,11 +95,12 @@ export class AiService {
     }
   }
 
-  // Artigos e textos premium pedem mais espaço; o restante fica enxuto.
+  // Orçamento de tokens de saída. Folgado de propósito: os modelos flash novos
+  // gastam parte "pensando", então um teto baixo (headline) devolveria texto vazio.
   private maxTokens(dto: GenerateDto): number {
-    if (dto.kind === 'article') return 700
-    if (dto.kind === 'headline') return 60
-    return dto.plan === 'premium' ? 500 : 320
+    if (dto.kind === 'article') return 900
+    if (dto.kind === 'headline') return 220
+    return dto.plan === 'premium' ? 700 : 450
   }
 
   private async runModel(prompt: string, maxTokens: number): Promise<string> {
@@ -223,7 +224,11 @@ export class AiService {
     const text = (data.candidates?.[0]?.content?.parts ?? [])
       .map((p) => p.text ?? '')
       .join('')
-    return text.replace(/^["“']|["”']$/g, '').trim()
+      .replace(/^["“']|["”']$/g, '')
+      .trim()
+    // Vazio (ex.: modelo gastou tudo "pensando") → erro, para cair no fallback.
+    if (!text) throw new Error('Gemini retornou resposta vazia')
+    return text
   }
 
   private async viaOllama(prompt: string, maxTokens: number): Promise<string> {

@@ -23,8 +23,10 @@ services:
       # e defina ANTHROPIC_API_KEY.
       - key: AI_PROVIDER
         value: gemini
+      # gemini-flash-lite-latest: alias sempre atual, com cota grátis e rápido.
+      # (gemini-2.5-flash saiu do tier grátis para contas novas.)
       - key: AI_MODEL
-        value: gemini-2.5-flash
+        value: gemini-flash-lite-latest
       - key: GEMINI_API_KEY
         sync: false
       - key: FRONTEND_ORIGIN
