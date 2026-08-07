@@ -13,7 +13,7 @@ services:
     # "|| true" garante que, se o banco estiver fora, a API sobe mesmo assim para
     # servir /ai/generate (que não usa banco). Ver PrismaService (boot resiliente).
     startCommand: (npx prisma db push --skip-generate || true) && node dist/main.js
-    healthCheckPath: /api/directory
+    healthCheckPath: /api/health
     envVars:
       - key: DATABASE_URL
         fromDatabase:
