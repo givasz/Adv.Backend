@@ -9,9 +9,10 @@ services:
     plan: free
     # Instala deps, gera o Prisma Client (schema.prisma = Postgres) e compila.
     buildCommand: npm install && npx prisma generate && npm run build
-    # Sincroniza o schema no Postgres (cria tabelas/enums) e sobe a API.
-    # Em plano pago, prefira mover o "prisma db push" para um preDeployCommand.
-    startCommand: npx prisma db push --skip-generate && node dist/main.js
+    # Sincroniza o schema no Postgres (cria tabelas/enums) e sobe a API. O
+    # "|| true" garante que, se o banco estiver fora, a API sobe mesmo assim para
+    # servir /ai/generate (que não usa banco). Ver PrismaService (boot resiliente).
+    startCommand: (npx prisma db push --skip-generate || true) && node dist/main.js
     healthCheckPath: /api/directory
     envVars:
       - key: DATABASE_URL
