@@ -123,6 +123,24 @@ export class AiService {
     return kw[0] ?? (dto.areas?.filter(Boolean).join(', ') || 'sua área de atuação')
   }
 
+  // Palavras-chave SANITIZADAS para o template de segurança (fallback). O prompt
+  // do Gemini já limpa; isto garante que o fallback nunca despeje comparações ou
+  // "especialista" crus do usuário (ex.: "... como saul goodman").
+  private cleanList(dto: GenerateDto): string {
+    const kw = dto.keywords
+      .map((k) =>
+        k
+          .replace(/\b(como|igual a|tipo|feito)\b.*/i, '') // corta comparações a terceiros
+          .replace(/\bespecialist\w*\b/gi, '')
+          .replace(/\bexpert\w*\b/gi, '')
+          .replace(/\s{2,}/g, ' ')
+          .trim(),
+      )
+      .filter(Boolean)
+    if (kw.length > 1) return `${kw.slice(0, -1).join(', ')} e ${kw[kw.length - 1]}`
+    return kw[0] ?? (dto.areas?.filter(Boolean).join(', ') || 'sua área de atuação')
+  }
+
   private buildPrompt(dto: GenerateDto): string {
     const kws = dto.keywords.map((k) => k.trim()).filter(Boolean).join(', ')
     const premium = dto.plan === 'premium'
@@ -166,7 +184,7 @@ export class AiService {
 
   // Template garantidamente compliant, usado quando a IA não produz texto aprovado.
   private safeTemplate(dto: GenerateDto): string {
-    const list = this.list(dto)
+    const list = this.cleanList(dto)
     switch (dto.kind) {
       case 'area': {
         const area = dto.areaLabel ?? 'esta área'
