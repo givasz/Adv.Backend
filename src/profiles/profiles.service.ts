@@ -16,6 +16,7 @@ import {
   HIGHLIGHT_LIMIT,
   limitsFor,
   NAME_MAX,
+  resolveTheme,
   OAB_MAX,
   slugify,
   type LimitedField,
@@ -455,7 +456,9 @@ export class ProfilesService {
         schedulingMode: this.sanitizeMode(data.schedulingMode, plan),
         ...this.bookingCols(data.booking),
         ...this.assistantCols(data.assistant),
-        theme: data.theme,
+        // Tema é gated por plano: o editor deixa PROVAR um tema travado na
+        // prévia, e é aqui que a prova para de ser prova.
+        theme: resolveTheme(data.theme, plan),
         // Só grava o vídeo no Max e só se o link for de um provedor aceito. Um
         // link recusado limpa o campo em vez de persistir lixo.
         videoUrl: canUseVideo(plan) ? normalizeVideoUrl(data.videoUrl) : null,
@@ -537,7 +540,7 @@ export class ProfilesService {
     const next = plan as Plan
     const current = await this.prisma.profile.findUnique({
       where: { userId },
-      select: { plan: true, name: true, slug: true, schedulingMode: true },
+      select: { plan: true, name: true, slug: true, schedulingMode: true, theme: true },
     })
     if (!current) throw new NotFoundException('Perfil não encontrado')
     if (current.plan === next) {
@@ -556,6 +559,8 @@ export class ProfilesService {
         slug,
         // Agendamento é recurso pago: cair para o Free desliga o botão do perfil.
         schedulingMode: this.sanitizeMode(current.schedulingMode, next),
+        // Tema de plano superior não sobrevive ao downgrade — volta ao neutro.
+        theme: resolveTheme(current.theme, next),
       },
       include: relations,
     })

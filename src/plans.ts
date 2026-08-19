@@ -40,6 +40,37 @@ export function canUseArticles(plan: string | undefined): boolean {
   return plan === 'premium'
 }
 
+// ---- Temas visuais ----
+// Tema → plano mínimo. ESPELHA o campo `tier` de frontend/src/lib/themes.ts.
+// O editor deixa PROVAR um tema travado (ele entra só na prévia), então o servidor
+// precisa ser quem decide o que fica salvo — a prova não pode virar persistência
+// por um PUT forjado.
+export const THEME_TIER: Record<string, Plan> = {
+  papel: 'free',
+  nevoa: 'free',
+  esmeralda: 'pro',
+  toga: 'pro',
+  ardosia: 'pro',
+  'meia-noite': 'premium',
+  obsidian: 'premium',
+  marmore: 'premium',
+}
+export const DEFAULT_THEME = 'papel'
+
+const PLAN_RANK: Record<Plan, number> = { free: 0, pro: 1, premium: 2 }
+
+/**
+ * Tema que pode de fato ser salvo neste plano. Tema desconhecido ou acima do
+ * plano cai para o neutro — é também o que reconcilia um downgrade.
+ */
+export function resolveTheme(theme: unknown, plan: string | undefined): string {
+  const id = typeof theme === 'string' ? theme : DEFAULT_THEME
+  const tier = THEME_TIER[id]
+  if (!tier) return DEFAULT_THEME
+  const rank = PLAN_RANK[(plan as Plan) in PLAN_RANK ? (plan as Plan) : 'free']
+  return rank >= PLAN_RANK[tier] ? id : DEFAULT_THEME
+}
+
 // Agendamento (link externo OU agenda nativa) — recurso dos planos pagos.
 // No Free não há botão "Agendar" no perfil.
 export function canUseScheduling(plan: string | undefined): boolean {
