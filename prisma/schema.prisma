@@ -183,6 +183,14 @@ model Profile {
   bookingSlotMin     Int    @default(30)   // duração de cada horário
   bookingLeadHours   Int    @default(12)   // antecedência mínima para marcar
   bookingHorizonDays Int    @default(30)   // até quantos dias à frente é possível marcar
+  // ---- Assistente virtual (schedulingMode == "assistant") ----
+  // Conversa guiada no perfil: oferece só esta grade, coleta assunto/nome e monta a
+  // mensagem para o WhatsApp do advogado. Ver frontend/src/lib/assistant.ts.
+  assistantDays        String @default("[]") // JSON: [{ "weekday": 1, "times": ["09:00"] }]
+  assistantDurationMin Int    @default(45)   // duração indicativa da conversa
+  assistantLeadHours   Int    @default(12)   // antecedência mínima para oferecer um horário
+  assistantHorizonDays Int    @default(14)   // até quantos dias à frente sugerir datas
+  assistantGreeting    String @default("")   // frase de abertura (passa pela checagem OAB)
   plan        Plan     @default(free)
   theme       String   @default("papel") // ThemeId — ver frontend/src/lib/themes.ts
   views       Int      @default(0)

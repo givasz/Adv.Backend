@@ -85,9 +85,63 @@ export class ProfilesService {
   }
 
   private sanitizeMode(mode: unknown, plan: string | undefined): string {
-    // Agendamento (link externo ou agenda nativa) é recurso pago: no Free, força 'off'.
+    // Agendamento (assistente, formulário ou link externo) é recurso pago: no Free, força 'off'.
     if (!canUseScheduling(plan)) return 'off'
-    return mode === 'off' || mode === 'native' || mode === 'external' ? mode : 'external'
+    // Compat: a agenda-calendário ('native') virou o formulário rápido ('whatsapp').
+    if (mode === 'native') return 'whatsapp'
+    return mode === 'off' || mode === 'whatsapp' || mode === 'assistant' || mode === 'external'
+      ? mode
+      : 'external'
+  }
+
+  // Grade do assistente virtual → colunas planas, com limites de sanidade. Dias sem
+  // horário válido são descartados: o assistente nunca oferece um dia vazio.
+  private assistantCols(a: any) {
+    const clampInt = (v: unknown, min: number, max: number, dflt: number) => {
+      const n = Math.round(Number(v))
+      return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : dflt
+    }
+    const isTime = (t: unknown): t is string =>
+      typeof t === 'string' && /^([01]\d|2[0-3]):([0-5]\d)$/.test(t.trim())
+
+    const byWeekday = new Map<number, string[]>()
+    for (const day of Array.isArray(a?.days) ? a.days : []) {
+      const wd = Number(day?.weekday)
+      if (!Number.isInteger(wd) || wd < 0 || wd > 6) continue
+      const raw: unknown[] = Array.isArray(day?.times) ? day.times : []
+      const times = [...new Set(raw.filter(isTime))].sort()
+      if (!times.length) continue
+      byWeekday.set(wd, times)
+    }
+    const days = [...byWeekday.entries()]
+      .sort((x, y) => x[0] - y[0])
+      .map(([weekday, times]) => ({ weekday, times }))
+
+    return {
+      assistantDays: JSON.stringify(days),
+      assistantDurationMin: clampInt(a?.durationMin, 15, 180, 45),
+      assistantLeadHours: clampInt(a?.leadHours, 0, 168, 12),
+      assistantHorizonDays: clampInt(a?.horizonDays, 1, 90, 14),
+      assistantGreeting: String(a?.greeting ?? '').slice(0, 180),
+    }
+  }
+
+  // Colunas planas → objeto `assistant` do frontend.
+  private buildAssistant(p: any) {
+    let days: { weekday: number; times: string[] }[] = []
+    try {
+      const parsed = JSON.parse(typeof p.assistantDays === 'string' ? p.assistantDays : '[]')
+      if (Array.isArray(parsed)) days = parsed
+    } catch {
+      /* JSON inválido → grade vazia (o front cai no padrão) */
+    }
+    return {
+      days,
+      durationMin: p.assistantDurationMin ?? 45,
+      leadHours: p.assistantLeadHours ?? 12,
+      horizonDays: p.assistantHorizonDays ?? 14,
+      greeting: p.assistantGreeting ?? '',
+    }
   }
 
   // Normaliza a config da agenda vinda do front em colunas planas, com limites de
@@ -169,6 +223,7 @@ export class ProfilesService {
         leadHours: p.bookingLeadHours ?? 12,
         horizonDays: p.bookingHorizonDays ?? 30,
       },
+      assistant: this.buildAssistant(p),
       plan: p.plan,
       theme: p.theme,
       views: p.views,
@@ -322,6 +377,7 @@ export class ProfilesService {
         // Agendamento — modo + config da agenda nativa (colunas planas).
         schedulingMode: this.sanitizeMode(data.schedulingMode, data.plan),
         ...this.bookingCols(data.booking),
+        ...this.assistantCols(data.assistant),
         theme: data.theme,
         published: data.published,
         policyVersion: POLICY_VERSION,
