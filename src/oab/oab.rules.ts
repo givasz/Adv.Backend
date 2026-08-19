@@ -89,7 +89,10 @@ export const RULES: Rule[] = [
     category: 'promise',
     severity: 'block',
     version: POLICY_VERSION,
-    test: /\b(garant\w+|assegur\w+|100%|resultado garantido|(êxito|exito|vitória|vitoria|ganho|sucesso) garantid\w+|certeza de (ganho|êxito|exito|vitória|vitoria))\b/i,
+    // "garantir/assegurar" só é promessa quando ligado a um RESULTADO do caso
+    // (êxito, vitória, ganho, resultado…). Usos legítimos — "assegurar direitos",
+    // "garantia da dignidade", "direitos garantidos por lei" — NÃO podem disparar.
+    test: /100\s?%|\bcertez[ao] de (êxito|exito|vitória|vitoria|ganho|sucesso|resultad\w+)\b|\b(êxito|exito|vitória|vitoria|ganho|sucesso|resultad\w+|desfecho|absolvi\w+)\b[\s\S]{0,15}\bgarantid\w+|\b(garant|assegur)\w+\s+(o|a|os|as|um|uma|seu|sua|total|pleno|plena|integral)?\s*(êxito|exito|vitória|vitoria|ganho|sucesso|resultad\w+|desfecho|absolvi\w+)\b/i,
     reason: 'Promessa/garantia de resultado é vedada (Prov. 205/2021 Art. 6º).',
     explanation:
       'O Provimento 205/2021 (Art. 6º) proíbe prometer ou garantir resultados. A advocacia é atividade-meio: nenhum profissional pode assegurar o desfecho de um caso, e fazê-lo configura captação e publicidade enganosa.',
@@ -103,6 +106,8 @@ export const RULES: Rule[] = [
     examplesAllowed: [
       'Atuação em ações trabalhistas e previdenciárias',
       'Acompanho cada etapa do processo com transparência',
+      'Trabalho para assegurar direitos e garantir o acesso à justiça',
+      'Defendo direitos garantidos pela Constituição',
     ],
   },
   {
@@ -111,7 +116,9 @@ export const RULES: Rule[] = [
     severity: 'block',
     version: POLICY_VERSION,
     // Fronteiras unicode (\p{L}) — necessárias para "único" (ú acentuado no início).
-    test: /(?<![\p{L}])((o|a) melhor|n[ºo°]\.? ?1|número um|numero um|imbatív\w+|imbativ\w+|líder de mercado|lider de mercado|referência (nacional|no mercado)|o mais (premiado|renomado|reconhecido)|único (advogad\w*|escritóri\w*))(?![\p{L}])/iu,
+    // "o/a melhor" NÃO dispara em termos jurídicos consagrados ("o melhor interesse
+    // da criança/família") nem em frases genéricas ("a melhor forma de…").
+    test: /(?<![\p{L}])((o|a) melhor(?!\s+(interesse|forma|maneira|caminho|opç\w+|opc\w+|alternativa|solu\w+|momento|proveito|sentido))|n[ºo°]\.? ?1|número um|numero um|imbatív\w+|imbativ\w+|líder de mercado|lider de mercado|referência (nacional|no mercado)|o mais (premiado|renomado|reconhecido)|único (advogad\w*|escritóri\w*))(?![\p{L}])/iu,
     reason: 'Autoengrandecimento / comparação é vedado (Prov. 205/2021 Art. 3º, IV).',
     explanation:
       'O Art. 3º, IV veda expressões de autoengrandecimento e comparação ("o melhor", "nº 1", "líder de mercado"). A comunicação deve ser sóbria e informativa, sem se colocar acima de outros profissionais.',
@@ -125,6 +132,8 @@ export const RULES: Rule[] = [
     examplesAllowed: [
       'Advogado dedicado ao direito criminal',
       'Atuação consolidada em direito tributário',
+      'Atuo sempre priorizando o melhor interesse da criança',
+      'Busco a melhor forma de resolver cada caso',
     ],
   },
   {
