@@ -32,6 +32,7 @@ export const SECTION_KEYS = [
   'bio',
   'areas',
   'highlights',
+  'articles',
   'socials',
   'regionNote',
 ] as const

@@ -222,6 +222,7 @@ model Profile {
 
   areas      PracticeArea[]
   highlights Highlight[]
+  articles   Article[]
   socials    SocialLink[]
   events     LinkEvent[]
   auditLogs  AuditLog[]
@@ -316,6 +317,23 @@ model Highlight {
   @@index([profileId])
 }
 
+// Artigo educativo publicado no perfil (seção "Conteúdo"). Recurso do plano Max.
+// Caráter INFORMATIVO (Prov. 205/2021 admite conteúdo jurídico educativo): título
+// neutro, resumo curto e tempo de leitura — nunca captação, promessa de resultado
+// ou "case" de cliente. O texto passa pelo checkCompliance como qualquer outro.
+model Article {
+  id             String  @id @default(cuid())
+  title          String
+  summary        String  @default("")
+  readingMinutes Int     @default(3)
+  url            String? // link externo opcional (blog, Jusbrasil, LinkedIn Artigos)
+  order          Int     @default(0)
+  profileId      String
+  profile        Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId])
+}
+
 model SocialLink {
   id        String     @id @default(cuid())
   kind      SocialKind
@@ -344,7 +362,7 @@ model AuditLog {
   id               String   @id @default(cuid())
   profileId        String
   profile          Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
-  action           String // "update" | "publish" | "unpublish" | "blocked"
+  action           String // "update" | "publish" | "unpublish" | "blocked" | "plan"
   complianceStatus String // "ok" | "warn" | "block"
   policyVersion    String
   bioSnapshot      String   @default("") // conteúdo público da bio no momento

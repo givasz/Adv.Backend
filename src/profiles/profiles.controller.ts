@@ -56,6 +56,16 @@ export class ProfilesController {
     return this.profiles.update(this.resolveUser(authorization), body)
   }
 
+  // POST /api/profiles/me/plan  → { plan: 'free' | 'pro' | 'premium' }
+  // Ativação de assinatura. Hoje SIMULADA (plataforma em teste, sem cobrança): o
+  // checkout do front confirma e chama aqui. É a única porta que grava o plano —
+  // o PUT /profiles/me ignora `plan` no corpo. Quando entrar o billing real, o
+  // webhook do provedor passa a ser quem chama.
+  @Post('profiles/me/plan')
+  setPlan(@Body() body: { plan?: string }, @Headers('authorization') authorization?: string) {
+    return this.profiles.setPlan(this.resolveUser(authorization), body?.plan)
+  }
+
   // GET /api/profiles/:slug  (público)
   @Get('profiles/:slug')
   getBySlug(@Param('slug') slug: string) {
