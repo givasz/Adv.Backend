@@ -1,6 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { Injectable, Logger } from '@nestjs/common'
-import { checkCompliance, hasBlockingIssue, POLICY_VERSION } from '../oab/compliance'
+import {
+  checkCompliance,
+  hasBlockingIssue,
+  POLICY_VERSION,
+  type ComplianceIssue,
+} from '../oab/compliance'
 
 // Recursos de IA. Disponibilidade por plano é decidida no FRONTEND (aiFeatures.ts):
 //   free    → bio, area
@@ -73,19 +78,34 @@ export class AiService {
     const prompt = this.buildPrompt(dto)
     const maxTokens = this.maxTokens(dto)
 
-    // 1ª tentativa. Se produzir termo bloqueante, tenta regenerar uma vez.
+    // 1ª geração.
     let text = await this.runModel(prompt, maxTokens)
     let usedFallback = false
 
-    if (hasBlockingIssue(text)) {
-      this.logger.warn(`Rascunho reprovado no compliance — regenerando: "${text}"`)
-      text = await this.runModel(prompt, maxTokens)
+    // Loop de REPARO DIRIGIDO: em vez de regenerar às cegas, mostramos à IA os
+    // trechos EXATOS que foram reprovados (e por quê) e pedimos para corrigir só
+    // aquilo, preservando o texto rico. Repetimos até MAX_REPAIRS. O template
+    // genérico é o ÚLTIMO recurso — só entra se nem o reparo resolver.
+    const MAX_REPAIRS = 3
+    for (let attempt = 1; attempt <= MAX_REPAIRS && hasBlockingIssue(text); attempt++) {
+      const blocking = checkCompliance(text).filter((i) => i.severity === 'block')
+      this.logger.warn(
+        `Rascunho reprovado (reparo ${attempt}/${MAX_REPAIRS}) — trechos: ${blocking
+          .map((i) => `"${i.matchedText}"`)
+          .join(', ')}`,
+      )
+      try {
+        text = await this.runModel(this.buildRepairPrompt(dto, text, blocking), maxTokens)
+      } catch (err) {
+        this.logger.error('Falha durante o reparo — interrompendo o loop.', err as Error)
+        break
+      }
     }
 
-    // Guarda-corpo pós-geração (fonte da verdade): se ainda escorregar, NÃO devolvemos
-    // texto irregular — caímos no template seguro OAB-compliant. Ver REGRAS.md.
+    // Guarda-corpo pós-geração (fonte da verdade): se NEM o reparo aprovou, aí sim
+    // caímos no template seguro OAB-compliant. Ver REGRAS.md.
     if (hasBlockingIssue(text)) {
-      this.logger.warn('IA reprovada após retry — usando template seguro.')
+      this.logger.warn('IA reprovada após os reparos — usando template seguro (último recurso).')
       text = this.safeTemplate(dto)
       usedFallback = true
     }
@@ -180,6 +200,28 @@ export class AiService {
         return `Escreva, em primeira pessoa, a bio de apresentação ${who}. Atua em: ${this.list(dto)}.${ctx} ${sentences}, sem emojis.`
       }
     }
+  }
+
+  // Prompt de reparo: devolve à IA os trechos exatos reprovados (e a orientação de
+  // cada regra) e pede reescrita PONTUAL, preservando assunto/tom/fatos legítimos.
+  // É o que evita cair no template genérico ao primeiro tropeço.
+  private buildRepairPrompt(dto: GenerateDto, text: string, issues: ComplianceIssue[]): string {
+    // Deduplica por trecho para não repetir a mesma orientação várias vezes.
+    const seen = new Set<string>()
+    const problems = issues
+      .filter((i) => (seen.has(i.matchedText.toLowerCase()) ? false : seen.add(i.matchedText.toLowerCase())))
+      .map((i) => `- Trecho "${i.matchedText}": ${i.reason} ${i.suggestion}`)
+      .join('\n')
+
+    return `O texto abaixo é para o perfil de um(a) advogado(a) e contém trechos que violam as normas de publicidade da OAB (Prov. 205/2021). Reescreva-o CORRIGINDO apenas os problemas listados e MANTENDO o mesmo assunto, o tom sóbrio e todas as informações legítimas (áreas, formação, experiência). Não encurte para um texto genérico.
+
+Texto atual:
+"""${text}"""
+
+Problemas a eliminar:
+${problems}
+
+Devolva o texto completo já corrigido — sem promessas ou garantias de resultado, sem preços, sem comparações, superlativos ou menção a terceiros. Responda apenas com o texto final.`
   }
 
   // Template garantidamente compliant, usado quando a IA não produz texto aprovado.
