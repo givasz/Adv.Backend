@@ -66,6 +66,17 @@ export class ProfilesController {
     return this.profiles.setPlan(this.resolveUser(authorization), body?.plan)
   }
 
+  // GET /api/profiles/slug-available?slug=&name=
+  // ANTES da rota /profiles/:slug — senão o Nest casaria "slug-available" como slug.
+  @Get('profiles/slug-available')
+  slugAvailable(
+    @Query('slug') slug?: string,
+    @Query('name') name?: string,
+    @Headers('authorization') authorization?: string,
+  ) {
+    return this.profiles.slugAvailability(this.resolveUser(authorization), slug ?? '', name)
+  }
+
   // GET /api/profiles/:slug  (público)
   @Get('profiles/:slug')
   getBySlug(@Param('slug') slug: string) {

@@ -383,6 +383,39 @@ export class ProfilesService {
     return withRandom(nameBase)
   }
 
+  /**
+   * O endereço desejado está livre? Usado pelo editor enquanto o advogado digita
+   * e pelo painel, que antes AFIRMAVA "disponível" sem ter perguntado a ninguém —
+   * com dois "joão-silva" no país, a promessa quebrava no primeiro save.
+   *
+   * `suggested` devolve o que o servidor realmente gravaria (mesma escada do
+   * resolveSlug), para a interface poder mostrar a alternativa em vez de só negar.
+   * Não vaza nada: perfis publicados já são acessíveis por slug.
+   */
+  async slugAvailability(userId: string, rawSlug: string, rawName?: string) {
+    // slugify() nunca devolve vazio (cai em "perfil"), então a checagem de campo
+    // em branco tem de ser feita ANTES — senão um input vazio respondia
+    // "disponível" para um endereço que o usuário não pediu.
+    if (!(rawSlug ?? '').trim()) {
+      return { slug: '', available: false, suggested: '', reason: 'empty' }
+    }
+    const desired = slugify(rawSlug!)
+
+    const owner = await this.prisma.profile.findUnique({
+      where: { slug: desired },
+      select: { userId: true },
+    })
+    const available = owner === null || owner.userId === userId
+    // O nome vem junto porque a sugestão é derivada dele (nome + número), como no save.
+    // A sugestão parte do NOME, com o sufixo automático descartado: sem isso,
+    // pedir "carla-duarte-4986" devolvia "carla-duarte-4986-1930" — número em
+    // cima de número, que não é endereço que ninguém queira.
+    const suggested = available
+      ? desired
+      : await this.resolveSlug(rawName || desired, 'pro', desired, userId, true)
+    return { slug: desired, available, suggested, reason: available ? 'free' : 'taken' }
+  }
+
   async update(userId: string, data: any) {
     // O PLANO É DO SERVIDOR: vem da assinatura gravada no banco, nunca do corpo da
     // requisição. Antes, um `plan: "premium"` no JSON liberava limites e recursos —
