@@ -21,6 +21,7 @@ import {
   type LimitedField,
   type Plan,
 } from '../plans'
+import { canUseVideo, normalizeVideoUrl, VIDEO_CAPTION_MAX } from '../video'
 
 const relations = {
   areas: { orderBy: { order: 'asc' as const } },
@@ -84,6 +85,10 @@ export class ProfilesService {
     if (set.has('regionNote')) out.regionNote = null
     if (set.has('highlights')) out.highlights = []
     if (set.has('articles')) out.articles = []
+    if (set.has('video')) {
+      out.videoUrl = null
+      out.videoCaption = ''
+    }
     if (set.has('socials')) out.socials = []
     if (set.has('areas')) out.areas = []
     else if (out.areas) out.areas = out.areas.filter((a: { id: string }) => !set.has(`area:${a.id}`))
@@ -230,6 +235,10 @@ export class ProfilesService {
         title: h.title,
         detail: h.detail,
       })),
+      // Vídeo é perk do Max: fora dele some da resposta, mas a coluna continua no
+      // banco — quem rebaixa e volta reencontra o link (mesma regra do branding).
+      videoUrl: canUseVideo(p.plan) ? (p.videoUrl ?? undefined) : undefined,
+      videoCaption: canUseVideo(p.plan) ? p.videoCaption || undefined : undefined,
       articles: (p.articles ?? []).map((a: any) => ({
         id: a.id,
         title: a.title,
@@ -447,6 +456,12 @@ export class ProfilesService {
         ...this.bookingCols(data.booking),
         ...this.assistantCols(data.assistant),
         theme: data.theme,
+        // Só grava o vídeo no Max e só se o link for de um provedor aceito. Um
+        // link recusado limpa o campo em vez de persistir lixo.
+        videoUrl: canUseVideo(plan) ? normalizeVideoUrl(data.videoUrl) : null,
+        videoCaption: canUseVideo(plan)
+          ? String(data.videoCaption ?? '').slice(0, VIDEO_CAPTION_MAX)
+          : '',
         published: data.published,
         policyVersion: POLICY_VERSION,
         // Carimba a revisão vigente das regras (monitor normativo): ao salvar, o

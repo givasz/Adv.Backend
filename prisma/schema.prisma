@@ -191,6 +191,11 @@ model Profile {
   assistantLeadHours   Int    @default(12)   // antecedência mínima para oferecer um horário
   assistantHorizonDays Int    @default(14)   // até quantos dias à frente sugerir datas
   assistantGreeting    String @default("")   // frase de abertura (passa pela checagem OAB)
+  // ---- Vídeo de apresentação (plano Max) ----
+  // Guardamos só o LINK (YouTube/Vimeo) já normalizado — nunca o arquivo. A
+  // validação do provedor é do servidor: ver src/video.ts.
+  videoUrl     String?
+  videoCaption String  @default("")
   plan        Plan     @default(free)
   theme       String   @default("papel") // ThemeId — ver frontend/src/lib/themes.ts
   views       Int      @default(0)
