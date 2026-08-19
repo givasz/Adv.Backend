@@ -100,6 +100,12 @@ model Profile {
   bookingSlotMin     Int    @default(30)
   bookingLeadHours   Int    @default(12)
   bookingHorizonDays Int    @default(30)
+  // ---- Assistente virtual (schedulingMode == "assistant") ----
+  assistantDays        String @default("[]")
+  assistantDurationMin Int    @default(45)
+  assistantLeadHours   Int    @default(12)
+  assistantHorizonDays Int    @default(14)
+  assistantGreeting    String @default("")
   plan        String   @default("free") // enum Plan no Postgres: free|pro|premium
   theme       String   @default("papel")
   views       Int      @default(0)
