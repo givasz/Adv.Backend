@@ -16,6 +16,30 @@ export function limitsFor(plan: string | undefined): Record<LimitedField, number
 export const NAME_MAX = 70
 export const OAB_MAX = 20
 
+// ---- Limites de QUANTIDADE por plano (o front espelha em lib/plans.ts) ----
+// Áreas de atuação, destaques de experiência e artigos educativos. O servidor é a
+// fonte da verdade: o excedente é CORTADO no save (não derruba a requisição, para
+// não travar quem acabou de fazer downgrade).
+export const AREA_LIMIT: Record<Plan, number> = { free: 2, pro: 6, premium: 20 }
+export const HIGHLIGHT_LIMIT: Record<Plan, number> = { free: 1, pro: 4, premium: 10 }
+export const ARTICLE_LIMIT: Record<Plan, number> = { free: 0, pro: 0, premium: 12 }
+
+// Tetos de texto dos artigos (iguais em todos os planos — quem tem, tem por inteiro).
+export const ARTICLE_TITLE_MAX = 90
+export const ARTICLE_SUMMARY_MAX = 240
+
+export function countLimit(
+  table: Record<Plan, number>,
+  plan: string | undefined,
+): number {
+  return table[(plan as Plan) in table ? (plan as Plan) : 'free']
+}
+
+// Artigos educativos no perfil — recurso exclusivo do plano Max (premium).
+export function canUseArticles(plan: string | undefined): boolean {
+  return plan === 'premium'
+}
+
 // Agendamento (link externo OU agenda nativa) — recurso dos planos pagos.
 // No Free não há botão "Agendar" no perfil.
 export function canUseScheduling(plan: string | undefined): boolean {

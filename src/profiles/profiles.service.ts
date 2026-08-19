@@ -6,13 +6,31 @@ import {
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { complianceStatus, POLICY_VERSION, RULESET_REV } from '../oab/compliance'
-import { canUseScheduling, limitsFor, NAME_MAX, OAB_MAX, slugify, type LimitedField } from '../plans'
+import {
+  AREA_LIMIT,
+  ARTICLE_LIMIT,
+  ARTICLE_SUMMARY_MAX,
+  ARTICLE_TITLE_MAX,
+  canUseScheduling,
+  countLimit,
+  HIGHLIGHT_LIMIT,
+  limitsFor,
+  NAME_MAX,
+  OAB_MAX,
+  slugify,
+  type LimitedField,
+  type Plan,
+} from '../plans'
 
 const relations = {
   areas: { orderBy: { order: 'asc' as const } },
   highlights: { orderBy: { order: 'asc' as const } },
+  articles: { orderBy: { order: 'asc' as const } },
   socials: true,
 }
+
+// Planos aceitos na troca de assinatura (POST /profiles/me/plan).
+const PLANS: Plan[] = ['free', 'pro', 'premium']
 
 @Injectable()
 export class ProfilesService {
@@ -65,6 +83,7 @@ export class ProfilesService {
     if (set.has('bio')) out.bio = ''
     if (set.has('regionNote')) out.regionNote = null
     if (set.has('highlights')) out.highlights = []
+    if (set.has('articles')) out.articles = []
     if (set.has('socials')) out.socials = []
     if (set.has('areas')) out.areas = []
     else if (out.areas) out.areas = out.areas.filter((a: { id: string }) => !set.has(`area:${a.id}`))
@@ -171,7 +190,10 @@ export class ProfilesService {
   }
 
   // Reconstrói o objeto `branding` (white-label) a partir das colunas planas.
+  // Perk exclusivo do Max: fora dele o objeto some da resposta, mas as colunas
+  // continuam no banco — quem faz downgrade e volta reencontra sua marca intacta.
   private buildBranding(p: any) {
+    if (p.plan !== 'premium') return undefined
     const b: Record<string, unknown> = {}
     if (p.brandName) b.brandName = p.brandName
     if (p.brandAccent) b.accent = p.brandAccent
@@ -207,6 +229,13 @@ export class ProfilesService {
         id: h.id,
         title: h.title,
         detail: h.detail,
+      })),
+      articles: (p.articles ?? []).map((a: any) => ({
+        id: a.id,
+        title: a.title,
+        summary: a.summary,
+        readingMinutes: a.readingMinutes,
+        url: a.url ?? undefined,
       })),
       socials: (p.socials ?? []).map((s: any) => ({ kind: s.kind, url: s.url })),
       contact: {
@@ -244,7 +273,8 @@ export class ProfilesService {
   }
 
   // Valida os limites de caracteres do plano (fonte da verdade). Lança 400 se exceder.
-  private enforceCharLimits(data: any) {
+  // O `plan` vem SEMPRE do banco (assinatura vigente) — nunca do corpo da requisição.
+  private enforceCharLimits(data: any, plan: Plan) {
     // Tetos fixos (não dependem do plano) — sanidade/anti-abuso.
     if (data.name && data.name.length > NAME_MAX) {
       throw new BadRequestException(`O nome excede o limite de ${NAME_MAX} caracteres.`)
@@ -253,11 +283,11 @@ export class ProfilesService {
       throw new BadRequestException(`O número da OAB excede o limite de ${OAB_MAX} caracteres.`)
     }
 
-    const lim = limitsFor(data.plan)
+    const lim = limitsFor(plan)
     const check = (value: string | undefined, field: LimitedField, label: string) => {
       if (value && value.length > lim[field]) {
         throw new BadRequestException(
-          `${label} excede o limite de ${lim[field]} caracteres do plano ${data.plan ?? 'free'}.`,
+          `${label} excede o limite de ${lim[field]} caracteres do plano ${plan}.`,
         )
       }
     }
@@ -268,6 +298,25 @@ export class ProfilesService {
       check(h.title, 'highlightTitle', 'O título do destaque')
       check(h.detail, 'highlightDetail', 'O detalhe do destaque')
     }
+  }
+
+  // Artigos educativos → linhas prontas para o Prisma, cortadas no limite do plano.
+  // Fora do Max a lista vem vazia: o recurso é exclusivo do plano alto e o downgrade
+  // apenas ESCONDE (não apaga textos do usuário sem aviso — ele reenvia ao voltar).
+  private articleRows(raw: unknown, plan: Plan) {
+    const max = countLimit(ARTICLE_LIMIT, plan)
+    if (max === 0) return []
+    const list = Array.isArray(raw) ? raw : []
+    return list
+      .filter((a: any) => typeof a?.title === 'string' && a.title.trim())
+      .slice(0, max)
+      .map((a: any, order: number) => ({
+        title: String(a.title).slice(0, ARTICLE_TITLE_MAX),
+        summary: String(a.summary ?? '').slice(0, ARTICLE_SUMMARY_MAX),
+        readingMinutes: Math.min(90, Math.max(1, Math.round(Number(a.readingMinutes) || 3))),
+        url: typeof a.url === 'string' && /^https?:\/\//i.test(a.url.trim()) ? a.url.trim() : null,
+        order,
+      }))
   }
 
   private randomSuffix(): number {
@@ -283,6 +332,14 @@ export class ProfilesService {
     plan: string | undefined,
     desiredSlug: string | undefined,
     selfUserId: string,
+    /**
+     * Só no upgrade de plano: descarta o sufixo numérico que o Free impõe. É a
+     * plataforma que o coloca, não o advogado — mantê-lo depois de assinar deixaria
+     * o perk "seu nome no endereço, sem número" sem efeito nenhum. Num save comum
+     * fica desligado, senão um endereço legitimamente terminado em número (ex.:
+     * joao-silva-2020, escolhido à mão) seria alterado sem o usuário pedir.
+     */
+    stripAutoNumber = false,
   ) {
     const nameBase = slugify(name ?? '')
     const takenByOther = async (slug: string) => {
@@ -296,7 +353,14 @@ export class ProfilesService {
     }
 
     if (plan === 'pro' || plan === 'premium') {
-      const base = slugify(desiredSlug || name || '')
+      // O sufixo numérico do Free (nome-1234) é imposto pela plataforma, não é uma
+      // escolha do advogado: ao subir de plano ele cai fora e o endereço volta a ser
+      // o nome limpo — que é exatamente o que o Pro promete. Sem isto, quem assinava
+      // continuava com o número e o perk não aparecia em lugar nenhum.
+      const desired = (desiredSlug || '').trim()
+      const autoNumbered =
+        stripAutoNumber && !!nameBase && new RegExp(`^${nameBase}-\\d+$`).test(desired)
+      const base = slugify(!desired || autoNumbered ? name || '' : desired)
       if (!(await takenByOther(base))) return base // endereço desejado disponível
       return withRandom(base) // ocupado → nome + aleatório
     }
@@ -310,21 +374,25 @@ export class ProfilesService {
   }
 
   async update(userId: string, data: any) {
+    // O PLANO É DO SERVIDOR: vem da assinatura gravada no banco, nunca do corpo da
+    // requisição. Antes, um `plan: "premium"` no JSON liberava limites e recursos —
+    // e, do outro lado, a assinatura simulada não sobrevivia ao recarregar a página
+    // (o update não gravava o plano). A troca de plano agora tem porta própria:
+    // POST /api/profiles/me/plan → setPlan().
+    const current = await this.prisma.profile.findUnique({
+      where: { userId },
+      select: { moderationStatus: true, plan: true },
+    })
     // Perfil restrito pela moderação não pode ser republicado pelo dono.
-    if (data.published) {
-      const current = await this.prisma.profile.findUnique({
-        where: { userId },
-        select: { moderationStatus: true },
-      })
-      if (current?.moderationStatus === 'restricted') {
-        throw new ForbiddenException(
-          'Este perfil foi restringido pela moderação e não pode ser publicado. Fale com o suporte para revisão.',
-        )
-      }
+    if (data.published && current?.moderationStatus === 'restricted') {
+      throw new ForbiddenException(
+        'Este perfil foi restringido pela moderação e não pode ser publicado. Fale com o suporte para revisão.',
+      )
     }
+    const plan: Plan = (current?.plan as Plan) ?? 'free'
     // Fonte da verdade dos limites por plano.
-    this.enforceCharLimits(data)
-    const slug = await this.resolveSlug(data.name, data.plan, data.slug, userId)
+    this.enforceCharLimits(data, plan)
+    const slug = await this.resolveSlug(data.name, plan, data.slug, userId)
 
     // Fonte da verdade da conformidade: bloqueia publicação com texto irregular.
     const texts = [data.bio, ...(data.areas ?? []).map((a: any) => a.description)]
@@ -375,7 +443,7 @@ export class ProfilesService {
         email: data.contact?.email,
         scheduling: data.contact?.scheduling,
         // Agendamento — modo + config da agenda nativa (colunas planas).
-        schedulingMode: this.sanitizeMode(data.schedulingMode, data.plan),
+        schedulingMode: this.sanitizeMode(data.schedulingMode, plan),
         ...this.bookingCols(data.booking),
         ...this.assistantCols(data.assistant),
         theme: data.theme,
@@ -392,19 +460,27 @@ export class ProfilesService {
         // substitui coleções filhas (padrão simples; otimizável com upserts)
         areas: {
           deleteMany: {},
-          create: (data.areas ?? []).map((a: any, order: number) => ({
-            label: a.label,
-            description: a.description,
-            order,
-          })),
+          create: (data.areas ?? [])
+            .slice(0, countLimit(AREA_LIMIT, plan))
+            .map((a: any, order: number) => ({
+              label: a.label,
+              description: a.description,
+              order,
+            })),
         },
         highlights: {
           deleteMany: {},
-          create: (data.highlights ?? []).map((h: any, order: number) => ({
-            title: h.title,
-            detail: h.detail,
-            order,
-          })),
+          create: (data.highlights ?? [])
+            .slice(0, countLimit(HIGHLIGHT_LIMIT, plan))
+            .map((h: any, order: number) => ({
+              title: h.title,
+              detail: h.detail,
+              order,
+            })),
+        },
+        articles: {
+          deleteMany: {},
+          create: this.articleRows(data.articles, plan),
         },
         socials: {
           deleteMany: {},
@@ -423,6 +499,60 @@ export class ProfilesService {
         complianceStatus: worstStatus,
         policyVersion: POLICY_VERSION,
         bioSnapshot: data.bio ?? '',
+      },
+    })
+
+    return this.toApi(updated)
+  }
+
+  /**
+   * Troca o plano da assinatura. Hoje é uma ATIVAÇÃO SIMULADA (plataforma em teste,
+   * sem cobrança): o checkout do front confirma e chama aqui. Quando entrar o billing
+   * real, este é o único ponto que muda — o webhook do provedor chama este método.
+   *
+   * É a ÚNICA porta que grava `Profile.plan`: o PUT /profiles/me ignora o plano do
+   * corpo. Ao rebaixar, o estado incompatível é reconciliado na hora (agendamento
+   * desligado no Free, endereço renumerado) para o perfil público nunca prometer o
+   * que o plano não entrega. Conteúdo (marca, artigos) é só ESCONDIDO na leitura.
+   */
+  async setPlan(userId: string, plan: unknown) {
+    if (typeof plan !== 'string' || !PLANS.includes(plan as Plan)) {
+      throw new BadRequestException('Plano inválido.')
+    }
+    const next = plan as Plan
+    const current = await this.prisma.profile.findUnique({
+      where: { userId },
+      select: { plan: true, name: true, slug: true, schedulingMode: true },
+    })
+    if (!current) throw new NotFoundException('Perfil não encontrado')
+    if (current.plan === next) {
+      const same = await this.prisma.profile.findUnique({ where: { userId }, include: relations })
+      return this.toApi(same)
+    }
+
+    // Endereço: o Free é sempre numerado; ao subir de plano o advogado ganha o nome
+    // limpo (se estiver livre). Reaproveita a mesma escada do save.
+    const slug = await this.resolveSlug(current.name, next, current.slug, userId, true)
+
+    const updated = await this.prisma.profile.update({
+      where: { userId },
+      data: {
+        plan: next,
+        slug,
+        // Agendamento é recurso pago: cair para o Free desliga o botão do perfil.
+        schedulingMode: this.sanitizeMode(current.schedulingMode, next),
+      },
+      include: relations,
+    })
+
+    // Trilha de auditoria: a mudança de plano altera o que o perfil pode exibir.
+    await this.prisma.auditLog.create({
+      data: {
+        profileId: updated.id,
+        action: 'plan',
+        complianceStatus: 'ok',
+        policyVersion: POLICY_VERSION,
+        bioSnapshot: `${current.plan} → ${next}`,
       },
     })
 
