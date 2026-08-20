@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service'
 import { POLICY_VERSION } from '../oab/compliance'
 import { slugify } from '../plans'
 import { hashPassword, issueUserSession, verifyPassword } from './user-auth'
+import { passwordProblem } from '../password'
 
 // Formato de e-mail simples (o mesmo do front). A validação forte fica a cargo
 // da confirmação de e-mail (fora do escopo do protótipo).
@@ -50,9 +51,11 @@ export class AuthService {
   async signup(email?: string, password?: string, name?: string): Promise<AuthSession> {
     const mail = this.normalizeEmail(email)
     if (!EMAIL_RE.test(mail)) throw new BadRequestException('E-mail inválido.')
-    if (!password || password.length < 6) {
-      throw new BadRequestException('A senha deve ter ao menos 6 caracteres.')
-    }
+    // Regras de senha: ver src/password.ts. Valem só no CADASTRO — o login não
+    // pode trancar quem criou a conta sob a regra antiga.
+    const senha = password ?? ''
+    const problema = passwordProblem(senha, mail)
+    if (problema) throw new BadRequestException(problema)
     const exists = await this.prisma.user.findUnique({ where: { email: mail }, select: { id: true } })
     if (exists) throw new ConflictException('Já existe uma conta com este e-mail.')
 
@@ -60,7 +63,7 @@ export class AuthService {
     const user = await this.prisma.user.create({
       data: {
         email: mail,
-        password: hashPassword(password),
+        password: hashPassword(senha),
         profile: { create: this.starterProfile(cleanName) },
       },
       select: { id: true, email: true, profile: { select: { name: true, plan: true } } },
