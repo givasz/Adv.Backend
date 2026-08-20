@@ -1,0 +1,131 @@
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
+import type { SupportKind, SupportStatus } from '@prisma/client'
+import { PrismaService } from '../prisma/prisma.service'
+
+// Suporte ao cliente — canal EXCLUSIVO de quem tem conta.
+//
+// Não confundir com Report (denúncia): aquele é público e trata do conteúdo de
+// um terceiro; este é o próprio advogado falando com a plataforma sobre um
+// problema dela — bug, dúvida, conta, sugestão.
+//
+// O corte do texto é generoso mas existe: um relato de bug bom é longo, e um
+// campo sem limite é convite a abuso de armazenamento.
+
+const KINDS: SupportKind[] = ['bug', 'duvida', 'conta', 'sugestao', 'outro']
+const STATUSES: SupportStatus[] = ['open', 'in_progress', 'resolved']
+
+const SUBJECT_MAX = 120
+const MESSAGE_MAX = 4000
+const URL_MAX = 300
+const UA_MAX = 300
+const NOTE_MAX = 2000
+
+@Injectable()
+export class SupportService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  /** Advogado abre um chamado. */
+  async create(
+    userId: string,
+    input: { kind?: string; subject?: string; message?: string; pageUrl?: string; userAgent?: string },
+  ) {
+    const subject = (input.subject ?? '').trim()
+    const message = (input.message ?? '').trim()
+    if (subject.length < 3) throw new BadRequestException('Escreva um assunto.')
+    if (message.length < 10) {
+      throw new BadRequestException('Descreva o que aconteceu com um pouco mais de detalhe.')
+    }
+    const kind = (KINDS as string[]).includes(input.kind ?? '')
+      ? (input.kind as SupportKind)
+      : 'outro'
+
+    const ticket = await this.prisma.supportTicket.create({
+      data: {
+        userId,
+        kind,
+        subject: subject.slice(0, SUBJECT_MAX),
+        message: message.slice(0, MESSAGE_MAX),
+        pageUrl: (input.pageUrl ?? '').slice(0, URL_MAX),
+        userAgent: (input.userAgent ?? '').slice(0, UA_MAX),
+      },
+      select: { id: true, kind: true, subject: true, status: true, createdAt: true },
+    })
+    return ticket
+  }
+
+  /** Histórico do próprio advogado — inclui a resposta do admin. */
+  listMine(userId: string) {
+    return this.prisma.supportTicket.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+      select: {
+        id: true,
+        kind: true,
+        subject: true,
+        message: true,
+        status: true,
+        adminNote: true,
+        createdAt: true,
+        handledAt: true,
+      },
+    })
+  }
+
+  /**
+   * Fila do admin. Traz o e-mail e o perfil do autor: sem saber DE QUEM é o
+   * chamado, o admin não consegue reproduzir nem responder.
+   */
+  listAll(status?: string) {
+    const filtro = (STATUSES as string[]).includes(status ?? '')
+      ? { status: status as SupportStatus }
+      : {}
+    return this.prisma.supportTicket.findMany({
+      where: filtro,
+      // Abertos primeiro, e dentro de cada grupo os mais antigos na frente —
+      // fila de atendimento, não mural de novidades.
+      orderBy: [{ status: 'asc' }, { createdAt: 'asc' }],
+      take: 200,
+      include: {
+        user: {
+          select: {
+            email: true,
+            profile: { select: { name: true, slug: true, plan: true, oabNumber: true } },
+          },
+        },
+      },
+    })
+  }
+
+  /** Admin muda o estado e/ou deixa uma resposta ao autor. */
+  async setStatus(id: string, status?: string, note?: string) {
+    if (!(STATUSES as string[]).includes(status ?? '')) {
+      throw new BadRequestException('Situação inválida.')
+    }
+    const exists = await this.prisma.supportTicket.findUnique({ where: { id }, select: { id: true } })
+    if (!exists) throw new NotFoundException('Chamado não encontrado.')
+
+    const novo = status as SupportStatus
+    return this.prisma.supportTicket.update({
+      where: { id },
+      data: {
+        status: novo,
+        ...(note === undefined ? {} : { adminNote: note.slice(0, NOTE_MAX) }),
+        // handledAt marca a conclusão; reabrir limpa, senão a data mente.
+        handledAt: novo === 'resolved' ? new Date() : null,
+      },
+      select: { id: true, status: true, adminNote: true, handledAt: true },
+    })
+  }
+
+  /** Contadores para o badge da aba do painel. */
+  async counts() {
+    const rows = await this.prisma.supportTicket.groupBy({
+      by: ['status'],
+      _count: { _all: true },
+    })
+    const out: Record<string, number> = { open: 0, in_progress: 0, resolved: 0 }
+    for (const r of rows) out[r.status] = r._count._all
+    return out
+  }
+}
