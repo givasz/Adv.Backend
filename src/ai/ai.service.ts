@@ -9,9 +9,9 @@ import {
 
 // Recursos de IA. Disponibilidade por plano é decidida no FRONTEND (aiFeatures.ts):
 //   free    → bio, area
-//   pro     → + headline, improve
-//   premium → + article  e  "enriquecimento" (usa cidade/áreas, textos mais longos)
-export type GenerateKind = 'bio' | 'area' | 'headline' | 'improve' | 'article'
+//   pro     → + headline, improve, faq (resposta de pergunta frequente)
+//   premium → "enriquecimento" (usa cidade/áreas, textos mais longos)
+export type GenerateKind = 'bio' | 'area' | 'headline' | 'improve' | 'faq'
 
 export type Plan = 'free' | 'pro' | 'premium'
 
@@ -121,7 +121,7 @@ export class AiService {
   // Orçamento de tokens de saída. Folgado de propósito: os modelos flash novos
   // gastam parte "pensando", então um teto baixo (headline) devolveria texto vazio.
   private maxTokens(dto: GenerateDto): number {
-    if (dto.kind === 'article') return 900
+    if (dto.kind === 'faq') return 700
     if (dto.kind === 'headline') return 220
     return dto.plan === 'premium' ? 700 : 450
   }
@@ -189,10 +189,36 @@ export class AiService {
       case 'improve':
         return `Revise e reescreva o texto abaixo para ficar mais claro, sóbrio e dentro das normas da OAB, preservando o sentido e os fatos. Não invente qualificações nem dados.${ctx} ${sentences}, sem emojis.\n\nTexto:\n"""${dto.currentText ?? ''}"""`
 
-      case 'article':
-        return `Sugira um rascunho de artigo informativo e educativo para o perfil de um(a) advogado(a)${
-          dto.areaLabel ? ` na área de ${dto.areaLabel}` : dto.areas?.length ? ` sobre ${dto.areas.filter(Boolean).join(', ')}` : ''
-        }${kws ? `, abordando: ${kws}` : ''}. Formato: um título curto na PRIMEIRA linha; em seguida 2 a 3 parágrafos curtos explicando o tema e os direitos envolvidos, em tom educativo. Sem promessas, sem captação, sem citar casos ou clientes.`
+      case 'faq': {
+        // A pergunta chega em `areaLabel` (é o assunto da resposta); a resposta que o
+        // advogado já escreveu, quando existe, chega em `currentText`. Com ela presente
+        // o trabalho é APOIAR o texto dele — reforçar o fundamento, organizar — nunca
+        // trocar por outro: a resposta continua sendo dele, que assina por ela.
+        const pergunta = dto.areaLabel?.trim()
+        const contexto = pergunta
+          ? `Pergunta do cliente: "${pergunta}"`
+          : `Tema: ${dto.areas?.filter(Boolean).join(', ') || 'orientação jurídica geral'}`
+        const base = dto.currentText?.trim()
+          ? `Aprimore a resposta abaixo mantendo o sentido, os fatos e a posição de quem a escreveu. Deixe-a mais clara e melhor fundamentada (pode citar a lei ou o instituto jurídico aplicável), sem inventar dados.
+
+Resposta atual:
+"${dto.currentText}"`
+          : 'Escreva a resposta que um(a) advogado(a) daria a essa pergunta no FAQ do próprio perfil.'
+        return `${base}
+
+${contexto}${kws ? `
+Pontos a abordar: ${kws}` : ''}${ctx}
+
+Regras obrigatórias (normas de publicidade da advocacia, Provimento 205/2021 da OAB):
+- Resposta EDUCATIVA e GERAL, CURTA: no máximo 300 caracteres (2 a 3 frases).
+- Pode explicar como a lei trata o tema e citar o dispositivo ou instituto aplicável.
+- NÃO prometa resultado, prazo ou êxito; não diga que "resolve" ou "garante" nada.
+- NÃO cite casos, clientes, processos, valores de honorários nem preços.
+- Sem superlativos ("o melhor", "especialista renomado") e sem comparar advogados.
+- Sem captação: não convide a contratar, não use "fale comigo" nem "me chame".
+- Termine lembrando, em poucas palavras, que cada caso exige análise própria.
+- Responda apenas o texto da resposta, sem título e sem aspas.`
+      }
 
       case 'bio':
       default: {
@@ -240,9 +266,9 @@ Devolva o texto completo já corrigido — sem promessas ou garantias de resulta
         return dto.currentText?.trim()
           ? dto.currentText.trim()
           : `Advogado(a) inscrito(a) na OAB, com atuação em ${list}. O trabalho é conduzido de forma técnica e informativa, orientando cada pessoa sobre seus direitos e caminhos possíveis.`
-      case 'article': {
-        const area = dto.areaLabel || dto.areas?.filter(Boolean)[0] || 'o tema'
-        return `Entenda melhor: ${area}\n\nEste texto explica, de forma geral e informativa, conceitos e direitos relacionados a ${area}. O objetivo é orientar o leitor sobre como o tema funciona e quais caminhos existem, sem substituir a análise de um caso concreto.`
+      case 'faq': {
+        const tema = dto.areaLabel || dto.areas?.filter(Boolean)[0] || 'o tema'
+        return `De forma geral, ${tema} segue requisitos e prazos previstos em lei, que mudam conforme a situação de cada pessoa. O caminho começa por reunir os documentos e verificar qual regra se aplica. Cada caso exige análise própria.`
       }
       case 'bio':
       default: {

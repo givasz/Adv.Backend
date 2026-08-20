@@ -119,7 +119,7 @@ export class ModerationService {
       include: {
         areas: { orderBy: { order: 'asc' } },
         highlights: { orderBy: { order: 'asc' } },
-        articles: { orderBy: { order: 'asc' } },
+        faqs: { orderBy: { order: 'asc' } },
         socials: true,
         reports: { orderBy: { createdAt: 'desc' } },
       },

@@ -120,6 +120,10 @@ Redirect SPA:        /*  →  /index.html  200   (React Router)
   sozinhos**.
 - **Schema do banco** (campo/tabela novos): edite `backend/prisma/schema.prisma`, push →
   o `prisma db push` no boot do Render aplica no Postgres. **Não precisa migration.**
+  ⚠️ **Remover** tabela/coluna com dados é a exceção: o `db push` do boot recusa a
+  perda e o deploy falha. Nesse caso rode uma vez, à mão,
+  `npx prisma db push --accept-data-loss` (foi o caso da tabela `Article`, que saiu
+  quando os artigos viraram FAQ em 2026-08-20).
 - **Trocar de IA**: no Render, `AI_PROVIDER=anthropic` + `AI_MODEL=claude-sonnet-5` +
   `ANTHROPIC_API_KEY` (ou volte para `gemini`). Sem chave nenhuma, a geração cai num
   **template seguro** (não quebra).

@@ -275,7 +275,7 @@ model Profile {
 
   areas      PracticeArea[]
   highlights Highlight[]
-  articles   Article[]
+  faqs       Faq[]
   socials    SocialLink[]
   events     LinkEvent[]
   auditLogs  AuditLog[]
@@ -370,19 +370,20 @@ model Highlight {
   @@index([profileId])
 }
 
-// Artigo educativo publicado no perfil (seção "Conteúdo"). Recurso do plano Max.
-// Caráter INFORMATIVO (Prov. 205/2021 admite conteúdo jurídico educativo): título
-// neutro, resumo curto e tempo de leitura — nunca captação, promessa de resultado
-// ou "case" de cliente. O texto passa pelo checkCompliance como qualquer outro.
-model Article {
-  id             String  @id @default(cuid())
-  title          String
-  summary        String  @default("")
-  readingMinutes Int     @default(3)
-  url            String? // link externo opcional (blog, Jusbrasil, LinkedIn Artigos)
-  order          Int     @default(0)
-  profileId      String
-  profile        Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+// Pergunta frequente respondida pelo advogado no perfil (seção "Perguntas
+// frequentes"). Recurso dos planos pagos: 2 no Pro, 5 no Max.
+//
+// Prov. 205/2021: responder dúvidas de forma EDUCATIVA e geral é publicidade
+// informativa permitida — a resposta não pode virar captação, promessa de
+// resultado, oferta de honorários nem consulta sobre um caso concreto. O texto
+// passa pelo checkCompliance como qualquer outro campo do perfil.
+model Faq {
+  id        String  @id @default(cuid())
+  question  String
+  answer    String  @default("")
+  order     Int     @default(0)
+  profileId String
+  profile   Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
 
   @@index([profileId])
 }
