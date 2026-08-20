@@ -7,6 +7,7 @@ import { ProfilesModule } from './profiles/profiles.module'
 import { ModerationModule } from './moderation/moderation.module'
 import { FirmsModule } from './firms/firms.module'
 import { BookingsModule } from './bookings/bookings.module'
+import { SupportModule } from './support/support.module'
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { BookingsModule } from './bookings/bookings.module'
     ModerationModule,
     FirmsModule,
     BookingsModule,
+    SupportModule,
   ],
   controllers: [HealthController],
 })

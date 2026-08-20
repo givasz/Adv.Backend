@@ -90,6 +90,48 @@ model User {
   profile   Profile?
   // Escritórios dos quais este usuário é dono/faturamento (normalmente 0 ou 1).
   firmsOwned Firm[]
+  // Chamados de suporte abertos por este advogado (bug, dúvida, conta).
+  tickets    SupportTicket[]
+}
+
+enum SupportKind {
+  bug
+  duvida
+  conta
+  sugestao
+  outro
+}
+
+enum SupportStatus {
+  open
+  in_progress
+  resolved
+}
+
+// Canal de suporte EXCLUSIVO de quem tem conta. Diferente da denúncia (Report),
+// que é pública e trata de conteúdo de terceiros: aqui é o próprio advogado
+// falando com a plataforma sobre um problema dela.
+//
+// Guardamos o contexto técnico (URL e navegador) porque é justamente o que o
+// usuário não sabe informar e o que resolve metade dos bugs — e porque pedir
+// isso num formulário faria o chamado nunca ser aberto.
+model SupportTicket {
+  id         String        @id @default(cuid())
+  userId     String
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind       SupportKind   @default(bug)
+  subject    String
+  message    String
+  pageUrl    String        @default("")
+  userAgent  String        @default("")
+  status     SupportStatus @default(open)
+  // Resposta/observação do admin, visível para o autor do chamado.
+  adminNote  String        @default("")
+  createdAt  DateTime      @default(now())
+  handledAt  DateTime?
+
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
 }
 
 // Escritório (sociedade de advogados) — página institucional. Cada advogado listado
