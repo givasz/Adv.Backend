@@ -39,18 +39,46 @@ Por quê primeiro: zero risco de integração, 100% confiável, volume baixo no 
 **Modelo de dados**
 
 ```
-Profile.oabStatus : none | pending | verified | rejected   (default: none)
-Profile.oabVerified : boolean  // espelha (oabStatus === 'verified') — usado na UI
-AuditLog.action : "oab:request" | "oab:verified" | "oab:rejected"
+Profile.oabStatus         : none | pending | verified | rejected   (default: none)
+Profile.oabVerified       : boolean   // espelha (oabStatus === 'verified') — usado na UI
+Profile.oabVerifiedAt     : DateTime? // data/hora da conferência (snapshot atual)
+Profile.oabVerifiedMethod : String?   // "manual" | "cna_ws" | "confirmadv"
+Profile.oabVerifiedBy     : String?   // responsável pela conferência (admin)
+Profile.oabRequestedAt    : DateTime? // entrada na fila (o pedido do advogado)
+Profile.oabDecidedAt      : DateTime? // quando a plataforma decidiu
+Profile.oabReason         : String    // DEVOLUTIVA ao advogado (motivo da rejeição)
+
+OabVerificationEvent      : histórico IMUTÁVEL (append-only) de cada transição —
+                            { fromStatus, toStatus, method, reviewer, reason, createdAt }
+AuditLog.action           : "oab:request" | "oab:verified" | "oab:rejected"
 ```
+
+**Arquitetura (desacoplada)** — o workflow vive em `src/oab/verification/`, isolado do
+CRUD de perfil: `OabVerificationService` orquestra as transições e o histórico;
+`OabVerifier` (interface) é a estratégia plugável — hoje `ManualOabVerifier`, amanhã CNA
+web service / ConfirmADV atrás de flag, sem tocar no serviço. Data, método, responsável e
+motivo são registrados a cada decisão (`OabVerificationEvent`).
 
 **Endpoints**
 
 ```
 POST /api/profiles/me/oab/request              # advogado solicita → pending
+GET  /api/profiles/me/oab                       # estado do próprio pedido (status/datas/motivo)
 GET  /api/admin/oab/pending                     # fila (header x-admin-token)
-POST /api/admin/profiles/:id/oab/decision       # { decision: verify|reject, reason? }
+POST /api/admin/profiles/:id/oab/decision       # { decision: verify|reject, reason }
 ```
+
+**Regras do ciclo** (backend é a fonte da verdade; o mock do frontend as espelha)
+
+- Pedir exige **plano pago** e **número preenchido**; um pedido só (repetir clique não
+  abre outro nem empilha evento).
+- O pedido fica em `pending` **até a decisão do admin** — nada promove sozinho.
+- **Rejeitar exige motivo** (400 sem ele): é esse texto que volta ao advogado, no painel
+  e na seção da OAB do editor. Um novo pedido limpa o motivo anterior.
+- **Trocar o número de inscrição derruba a conferência** (`→ none`, com evento no
+  histórico): o que foi conferido foi *aquele* número.
+- O `PUT /profiles/me` **ignora** os campos de conferência — o advogado nunca se marca.
+  O motivo e as datas do pedido só vão para o **dono** do perfil, nunca ao público.
 
 > A rota admin é protegida por um **token simples** (`x-admin-token` vs `ADMIN_TOKEN`)
 > apenas no protótipo. Em produção: autenticação real + papel de admin.

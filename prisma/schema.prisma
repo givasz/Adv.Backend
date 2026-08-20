@@ -203,6 +203,12 @@ model Profile {
   oabVerifiedAt     DateTime? // data/hora da conferência (quando verified)
   oabVerifiedMethod String? // método: "manual" | "cna_ws" | "confirmadv"
   oabVerifiedBy     String? // responsável pela conferência (identificação do admin)
+  // Estado do PEDIDO em si — é o que o advogado vê enquanto espera e depois da
+  // decisão. Sem isso a rejeição morria no histórico e o dono do perfil ficava
+  // sem saber por que não foi conferido.
+  oabRequestedAt    DateTime? // quando o advogado pediu a conferência (entrou na fila)
+  oabDecidedAt      DateTime? // quando a plataforma decidiu (conferida ou rejeitada)
+  oabReason         String    @default("") // devolutiva do admin ao advogado (motivo da rejeição)
   headline    String   @default("")
   bio         String   @default("")
   avatarUrl   String?

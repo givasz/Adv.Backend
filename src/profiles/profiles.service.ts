@@ -65,8 +65,22 @@ export class ProfilesService {
       socials?: unknown[]
     },
   >(profile: T) {
-    const { hiddenSections, moderationNote, moderationStatus, ...rest } = profile as T & {
+    // Campos do DONO saem aqui: a devolutiva da conferência (motivo da rejeição,
+    // datas do pedido) é conversa entre a plataforma e o advogado — nunca vai ao
+    // visitante, que só vê a marca "OAB conferida" quando ela existe.
+    const {
+      hiddenSections,
+      moderationNote,
+      moderationStatus,
+      oabReason,
+      oabRequestedAt,
+      oabDecidedAt,
+      ...rest
+    } = profile as T & {
       moderationNote?: string
+      oabReason?: string
+      oabRequestedAt?: Date | null
+      oabDecidedAt?: Date | null
     }
     if (moderationStatus !== 'partial') return rest
 
@@ -274,6 +288,11 @@ export class ProfilesService {
     if (p.moderationStatus !== undefined) out.moderationStatus = p.moderationStatus
     if (p.moderationNote) out.moderationNote = p.moderationNote
     if (p.contentModerated) out.contentModerated = true
+    // Estado do pedido de conferência: é o que o editor mostra enquanto espera a
+    // fila e o que devolve o motivo quando a plataforma rejeita.
+    if (p.oabRequestedAt !== undefined) out.oabRequestedAt = p.oabRequestedAt ?? undefined
+    if (p.oabDecidedAt !== undefined) out.oabDecidedAt = p.oabDecidedAt ?? undefined
+    if (p.oabReason) out.oabReason = p.oabReason
     return out
   }
 
@@ -424,7 +443,7 @@ export class ProfilesService {
     // POST /api/profiles/me/plan → setPlan().
     const current = await this.prisma.profile.findUnique({
       where: { userId },
-      select: { moderationStatus: true, plan: true },
+      select: { id: true, moderationStatus: true, plan: true, oabNumber: true, oabStatus: true },
     })
     // Perfil restrito pela moderação não pode ser republicado pelo dono.
     if (data.published && current?.moderationStatus === 'restricted') {
@@ -468,12 +487,45 @@ export class ProfilesService {
       )
     }
 
+    // Trocar o número de inscrição derruba a conferência: o que foi conferido foi
+    // AQUELE número. Sem isto bastava ser conferido uma vez e depois trocar o
+    // número para carregar a marca em cima de uma inscrição que ninguém conferiu.
+    const oabChanged =
+      typeof data.oabNumber === 'string' &&
+      !!current &&
+      data.oabNumber.trim() !== current.oabNumber.trim()
+    const resetOab = oabChanged && current!.oabStatus !== 'none'
+    if (resetOab) {
+      await this.prisma.oabVerificationEvent.create({
+        data: {
+          profileId: current!.id,
+          fromStatus: current!.oabStatus,
+          toStatus: 'none',
+          method: 'manual',
+          reviewer: '',
+          reason: 'Número de inscrição alterado pelo advogado — conferência reiniciada.',
+        },
+      })
+    }
+
     const updated = await this.prisma.profile.update({
       where: { userId },
       data: {
         name: data.name,
         slug, // slug resolvido pelo servidor (regra de nomes iguais + perk do Max)
         oabNumber: data.oabNumber,
+        ...(resetOab
+          ? {
+              oabStatus: 'none' as const,
+              oabVerified: false,
+              oabVerifiedAt: null,
+              oabVerifiedMethod: null,
+              oabVerifiedBy: null,
+              oabRequestedAt: null,
+              oabDecidedAt: null,
+              oabReason: '',
+            }
+          : {}),
         headline: data.headline,
         bio: data.bio,
         avatarUrl: data.avatarUrl,
