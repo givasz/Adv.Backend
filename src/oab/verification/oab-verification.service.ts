@@ -4,6 +4,7 @@
 // no Profile. A estratégia de conferência é plugável (ver oab-verifier.ts).
 
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -26,13 +27,32 @@ export class OabVerificationService {
   async request(userId: string) {
     const profile = await this.prisma.profile.findUnique({
       where: { userId },
-      select: { id: true, oabStatus: true, plan: true, oabNumber: true, name: true, state: true },
+      select: {
+        id: true,
+        oabStatus: true,
+        plan: true,
+        oabNumber: true,
+        name: true,
+        state: true,
+        oabRequestedAt: true,
+        oabDecidedAt: true,
+        oabReason: true,
+        oabVerified: true,
+        oabVerifiedAt: true,
+      },
     })
     if (!profile) throw new NotFoundException('Perfil não encontrado')
     if (profile.plan === 'free') {
       throw new ForbiddenException('A conferência de OAB está disponível apenas nos planos pagos.')
     }
-    if (profile.oabStatus === 'verified') return { oabStatus: 'verified' as const }
+    if (!profile.oabNumber.trim()) {
+      throw new BadRequestException('Informe seu número de inscrição na OAB antes de pedir a conferência.')
+    }
+    // Já conferido ou já na fila: devolve o estado atual em vez de abrir um segundo
+    // pedido. Sem isso, cada clique empilhava um evento pending→pending no histórico.
+    if (profile.oabStatus === 'verified' || profile.oabStatus === 'pending') {
+      return this.snapshot(profile)
+    }
 
     // Consulta a estratégia ativa. No fluxo manual, apenas coloca em análise.
     const check = await this.verifier.check({
@@ -59,11 +79,30 @@ export class OabVerificationService {
     })
   }
 
-  /** Fila de conferências pendentes (uso do admin). */
+  /** Estado atual da conferência do próprio perfil (o editor consulta enquanto espera). */
+  async status(userId: string) {
+    const p = await this.prisma.profile.findUnique({
+      where: { userId },
+      select: {
+        oabStatus: true,
+        oabVerified: true,
+        oabVerifiedAt: true,
+        oabRequestedAt: true,
+        oabDecidedAt: true,
+        oabReason: true,
+      },
+    })
+    if (!p) throw new NotFoundException('Perfil não encontrado')
+    return this.snapshot(p)
+  }
+
+  /** Fila de conferências pendentes (uso do admin), do pedido mais antigo ao mais novo. */
   listPending() {
     return this.prisma.profile.findMany({
       where: { oabStatus: 'pending' },
-      orderBy: { updatedAt: 'asc' },
+      // Ordena pela DATA DO PEDIDO, não por updatedAt: qualquer edição do perfil
+      // mexia no updatedAt e jogava quem esperava há mais tempo para o fim da fila.
+      orderBy: [{ oabRequestedAt: 'asc' }, { updatedAt: 'asc' }],
       select: {
         id: true,
         name: true,
@@ -71,21 +110,27 @@ export class OabVerificationService {
         city: true,
         state: true,
         slug: true,
+        plan: true,
         updatedAt: true,
+        oabRequestedAt: true,
       },
     })
   }
 
-  /** Decisão do admin: aprova (marca "OAB conferida") ou rejeita, com auditoria. */
+  /** Decisão do admin: aprova (marca "OAB conferida") ou rejeita, com auditoria.
+   *  Rejeitar EXIGE motivo — é ele que volta para o advogado explicar o "por quê". */
   async decide(profileId: string, decision: OabDecision, reviewer: string, reason?: string) {
     const profile = await this.prisma.profile.findUnique({
       where: { id: profileId },
       select: { oabStatus: true },
     })
     if (!profile) throw new NotFoundException('Perfil não encontrado')
+    if (decision === 'reject' && !reason?.trim()) {
+      throw new BadRequestException('Informe o motivo da rejeição — ele é devolvido ao advogado.')
+    }
     return this.applyDecision(profileId, profile.oabStatus, decision, {
       reviewer,
-      reason,
+      reason: reason?.trim(),
       method: 'manual',
     })
   }
@@ -113,8 +158,26 @@ export class OabVerificationService {
       reviewer: meta.reviewer,
       reason: meta.reason ?? '',
       action: verified ? 'oab:verified' : 'oab:rejected',
-      snapshot: verified,
     })
+  }
+
+  /** Recorte do estado da conferência devolvido ao dono do perfil. */
+  private snapshot(p: {
+    oabStatus: OabStatus
+    oabVerified: boolean
+    oabVerifiedAt: Date | null
+    oabRequestedAt: Date | null
+    oabDecidedAt: Date | null
+    oabReason: string
+  }) {
+    return {
+      oabStatus: p.oabStatus,
+      oabVerified: p.oabVerified,
+      oabVerifiedAt: p.oabVerifiedAt,
+      oabRequestedAt: p.oabRequestedAt,
+      oabDecidedAt: p.oabDecidedAt,
+      oabReason: p.oabReason,
+    }
   }
 
   /**
@@ -125,9 +188,10 @@ export class OabVerificationService {
     profileId: string,
     fromStatus: OabStatus,
     toStatus: OabStatus,
-    meta: { method: string; reviewer: string; reason: string; action: string; snapshot?: boolean },
+    meta: { method: string; reviewer: string; reason: string; action: string },
   ) {
     const verified = toStatus === 'verified'
+    const pending = toStatus === 'pending'
     const now = new Date()
 
     const [updated] = await this.prisma.$transaction([
@@ -137,11 +201,23 @@ export class OabVerificationService {
           oabStatus: toStatus,
           oabVerified: verified,
           // Snapshot da conferência só quando aprovado; limpo em rejeição/pending.
-          oabVerifiedAt: meta.snapshot && verified ? now : verified ? now : null,
+          oabVerifiedAt: verified ? now : null,
           oabVerifiedMethod: verified ? meta.method : null,
           oabVerifiedBy: verified ? meta.reviewer : null,
+          // Estado do pedido: entra na fila em `pending`, recebe a decisão depois.
+          // O motivo só existe enquanto vale a decisão — um novo pedido zera tudo.
+          oabRequestedAt: pending ? now : undefined,
+          oabDecidedAt: pending ? null : now,
+          oabReason: pending ? '' : meta.reason,
         },
-        select: { oabStatus: true, oabVerified: true, oabVerifiedAt: true },
+        select: {
+          oabStatus: true,
+          oabVerified: true,
+          oabVerifiedAt: true,
+          oabRequestedAt: true,
+          oabDecidedAt: true,
+          oabReason: true,
+        },
       }),
       this.prisma.oabVerificationEvent.create({
         data: {

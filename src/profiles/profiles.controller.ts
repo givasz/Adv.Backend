@@ -103,6 +103,14 @@ export class ProfilesController {
     return this.oab.request(this.resolveUser(authorization))
   }
 
+  // GET /api/profiles/me/oab  → estado do próprio pedido (status, datas e motivo)
+  // O editor consulta este recorte enquanto o pedido está na fila, sem baixar o
+  // perfil inteiro (que sobrescreveria o que o advogado está digitando).
+  @Get('profiles/me/oab')
+  myOabStatus(@Headers('authorization') authorization?: string) {
+    return this.oab.status(this.resolveUser(authorization))
+  }
+
   // GET /api/admin/oab/pending  → fila de conferências (admin)
   @Get('admin/oab/pending')
   pendingOab(
