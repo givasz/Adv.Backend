@@ -1,11 +1,11 @@
 // Limites por plano — FONTE DA VERDADE (o front espelha em frontend/src/lib/plans.ts).
 export type Plan = 'free' | 'pro' | 'premium'
-export type LimitedField = 'headline' | 'bio' | 'areaDesc' | 'highlightTitle' | 'highlightDetail'
+export type LimitedField = 'headline' | 'bio' | 'areaDesc'
 
 export const CHAR_LIMITS: Record<Plan, Record<LimitedField, number>> = {
-  free: { headline: 60, bio: 300, areaDesc: 160, highlightTitle: 40, highlightDetail: 80 },
-  pro: { headline: 90, bio: 600, areaDesc: 280, highlightTitle: 60, highlightDetail: 140 },
-  premium: { headline: 120, bio: 1000, areaDesc: 400, highlightTitle: 80, highlightDetail: 200 },
+  free: { headline: 60, bio: 300, areaDesc: 160 },
+  pro: { headline: 90, bio: 600, areaDesc: 280 },
+  premium: { headline: 120, bio: 1000, areaDesc: 400 },
 }
 
 export function limitsFor(plan: string | undefined): Record<LimitedField, number> {
@@ -17,11 +17,10 @@ export const NAME_MAX = 70
 export const OAB_MAX = 20
 
 // ---- Limites de QUANTIDADE por plano (o front espelha em lib/plans.ts) ----
-// Áreas de atuação, destaques de experiência e perguntas frequentes. O servidor é a
+// Áreas de atuação e perguntas frequentes. O servidor é a
 // fonte da verdade: o excedente é CORTADO no save (não derruba a requisição, para
 // não travar quem acabou de fazer downgrade).
 export const AREA_LIMIT: Record<Plan, number> = { free: 2, pro: 6, premium: 20 }
-export const HIGHLIGHT_LIMIT: Record<Plan, number> = { free: 1, pro: 4, premium: 10 }
 // Perguntas frequentes respondidas no perfil: nenhuma no Free, 2 no Pro, 5 no Max.
 export const FAQ_LIMIT: Record<Plan, number> = { free: 0, pro: 2, premium: 5 }
 

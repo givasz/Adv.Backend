@@ -14,7 +14,6 @@ import {
   FAQ_QUESTION_MAX,
   canUseScheduling,
   countLimit,
-  HIGHLIGHT_LIMIT,
   limitsFor,
   NAME_MAX,
   resolveTheme,
@@ -27,7 +26,6 @@ import { canUseVideo, normalizeVideoUrl, VIDEO_CAPTION_MAX } from '../video'
 
 const relations = {
   areas: { orderBy: { order: 'asc' as const } },
-  highlights: { orderBy: { order: 'asc' as const } },
   faqs: { orderBy: { order: 'asc' as const } },
   socials: true,
 }
@@ -62,7 +60,6 @@ export class ProfilesService {
       bio?: string
       regionNote?: string | null
       areas?: { id: string }[]
-      highlights?: unknown[]
       socials?: unknown[]
     },
   >(profile: T) {
@@ -99,7 +96,6 @@ export class ProfilesService {
     if (set.has('headline')) out.headline = ''
     if (set.has('bio')) out.bio = ''
     if (set.has('regionNote')) out.regionNote = null
-    if (set.has('highlights')) out.highlights = []
     if (set.has('faqs')) out.faqs = []
     if (set.has('video')) {
       out.videoUrl = null
@@ -246,11 +242,6 @@ export class ProfilesService {
         label: a.label,
         description: a.description,
       })),
-      highlights: (p.highlights ?? []).map((h: any) => ({
-        id: h.id,
-        title: h.title,
-        detail: h.detail,
-      })),
       // Vídeo é perk do Max: fora dele some da resposta, mas a coluna continua no
       // banco — quem rebaixa e volta reencontra o link (mesma regra do branding).
       videoUrl: canUseVideo(p.plan) ? (p.videoUrl ?? undefined) : undefined,
@@ -323,10 +314,6 @@ export class ProfilesService {
     check(data.headline, 'headline', 'A frase de apresentação')
     check(data.bio, 'bio', 'A bio')
     for (const a of data.areas ?? []) check(a.description, 'areaDesc', `A descrição da área "${a.label}"`)
-    for (const h of data.highlights ?? []) {
-      check(h.title, 'highlightTitle', 'O título do destaque')
-      check(h.detail, 'highlightDetail', 'O detalhe do destaque')
-    }
   }
 
   // Perguntas frequentes → linhas prontas para o Prisma, cortadas no limite do plano
@@ -582,16 +569,6 @@ export class ProfilesService {
             .map((a: any, order: number) => ({
               label: a.label,
               description: a.description,
-              order,
-            })),
-        },
-        highlights: {
-          deleteMany: {},
-          create: (data.highlights ?? [])
-            .slice(0, countLimit(HIGHLIGHT_LIMIT, plan))
-            .map((h: any, order: number) => ({
-              title: h.title,
-              detail: h.detail,
               order,
             })),
         },
