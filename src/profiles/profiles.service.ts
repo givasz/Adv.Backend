@@ -8,9 +8,10 @@ import { PrismaService } from '../prisma/prisma.service'
 import { complianceStatus, POLICY_VERSION, RULESET_REV } from '../oab/compliance'
 import {
   AREA_LIMIT,
-  ARTICLE_LIMIT,
-  ARTICLE_SUMMARY_MAX,
-  ARTICLE_TITLE_MAX,
+  canUseFaq,
+  FAQ_ANSWER_MAX,
+  FAQ_LIMIT,
+  FAQ_QUESTION_MAX,
   canUseScheduling,
   countLimit,
   HIGHLIGHT_LIMIT,
@@ -27,7 +28,7 @@ import { canUseVideo, normalizeVideoUrl, VIDEO_CAPTION_MAX } from '../video'
 const relations = {
   areas: { orderBy: { order: 'asc' as const } },
   highlights: { orderBy: { order: 'asc' as const } },
-  articles: { orderBy: { order: 'asc' as const } },
+  faqs: { orderBy: { order: 'asc' as const } },
   socials: true,
 }
 
@@ -99,7 +100,7 @@ export class ProfilesService {
     if (set.has('bio')) out.bio = ''
     if (set.has('regionNote')) out.regionNote = null
     if (set.has('highlights')) out.highlights = []
-    if (set.has('articles')) out.articles = []
+    if (set.has('faqs')) out.faqs = []
     if (set.has('video')) {
       out.videoUrl = null
       out.videoCaption = ''
@@ -254,13 +255,12 @@ export class ProfilesService {
       // banco — quem rebaixa e volta reencontra o link (mesma regra do branding).
       videoUrl: canUseVideo(p.plan) ? (p.videoUrl ?? undefined) : undefined,
       videoCaption: canUseVideo(p.plan) ? p.videoCaption || undefined : undefined,
-      articles: (p.articles ?? []).map((a: any) => ({
-        id: a.id,
-        title: a.title,
-        summary: a.summary,
-        readingMinutes: a.readingMinutes,
-        url: a.url ?? undefined,
-      })),
+      // Perguntas frequentes: recurso pago. Fora dos planos pagos some da resposta,
+      // mas as linhas continuam no banco — quem rebaixa e volta reencontra o texto
+      // (mesma regra do vídeo e do branding).
+      faqs: canUseFaq(p.plan)
+        ? (p.faqs ?? []).map((f: any) => ({ id: f.id, question: f.question, answer: f.answer }))
+        : [],
       socials: (p.socials ?? []).map((s: any) => ({ kind: s.kind, url: s.url })),
       contact: {
         whatsapp: p.whatsapp ?? undefined,
@@ -329,21 +329,28 @@ export class ProfilesService {
     }
   }
 
-  // Artigos educativos → linhas prontas para o Prisma, cortadas no limite do plano.
-  // Fora do Max a lista vem vazia: o recurso é exclusivo do plano alto e o downgrade
-  // apenas ESCONDE (não apaga textos do usuário sem aviso — ele reenvia ao voltar).
-  private articleRows(raw: unknown, plan: Plan) {
-    const max = countLimit(ARTICLE_LIMIT, plan)
+  // Perguntas frequentes → linhas prontas para o Prisma, cortadas no limite do plano
+  // (2 no Pro, 5 no Max). No Free a lista vem vazia: o downgrade apenas ESCONDE, não
+  // apaga o texto de ninguém sem aviso — ele volta a aparecer quando o plano volta.
+  //
+  // Uma pergunta SEM resposta não vai para o perfil: caixa vazia com uma dúvida
+  // pendurada é pior do que não ter FAQ nenhum.
+  private faqRows(raw: unknown, plan: Plan) {
+    const max = countLimit(FAQ_LIMIT, plan)
     if (max === 0) return []
     const list = Array.isArray(raw) ? raw : []
     return list
-      .filter((a: any) => typeof a?.title === 'string' && a.title.trim())
+      .filter(
+        (f: any) =>
+          typeof f?.question === 'string' &&
+          f.question.trim() &&
+          typeof f?.answer === 'string' &&
+          f.answer.trim(),
+      )
       .slice(0, max)
-      .map((a: any, order: number) => ({
-        title: String(a.title).slice(0, ARTICLE_TITLE_MAX),
-        summary: String(a.summary ?? '').slice(0, ARTICLE_SUMMARY_MAX),
-        readingMinutes: Math.min(90, Math.max(1, Math.round(Number(a.readingMinutes) || 3))),
-        url: typeof a.url === 'string' && /^https?:\/\//i.test(a.url.trim()) ? a.url.trim() : null,
+      .map((f: any, order: number) => ({
+        question: String(f.question).trim().slice(0, FAQ_QUESTION_MAX),
+        answer: String(f.answer).trim().slice(0, FAQ_ANSWER_MAX),
         order,
       }))
   }
@@ -457,7 +464,14 @@ export class ProfilesService {
     const slug = await this.resolveSlug(data.name, plan, data.slug, userId)
 
     // Fonte da verdade da conformidade: bloqueia publicação com texto irregular.
-    const texts = [data.bio, ...(data.areas ?? []).map((a: any) => a.description)]
+    // Tudo que o VISITANTE lê passa pela conformidade — inclusive as respostas do
+    // FAQ. Um texto irregular escondido atrás de uma pergunta é publicidade
+    // irregular do mesmo jeito.
+    const texts = [
+      data.bio,
+      ...(data.areas ?? []).map((a: any) => a.description),
+      ...(data.faqs ?? []).flatMap((f: any) => [f?.question, f?.answer]),
+    ]
     const worstStatus = texts
       .filter((t: string) => t)
       .reduce<'ok' | 'warn' | 'block'>((acc, t: string) => {
@@ -581,9 +595,9 @@ export class ProfilesService {
               order,
             })),
         },
-        articles: {
+        faqs: {
           deleteMany: {},
-          create: this.articleRows(data.articles, plan),
+          create: this.faqRows(data.faqs, plan),
         },
         socials: {
           deleteMany: {},

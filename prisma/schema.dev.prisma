@@ -138,6 +138,7 @@ model Profile {
   areas      PracticeArea[]
   highlights Highlight[]
   socials    SocialLink[]
+  faqs       Faq[]
   events     LinkEvent[]
   auditLogs  AuditLog[]
   reports    Report[]
@@ -196,6 +197,18 @@ model Highlight {
   id        String  @id @default(cuid())
   title     String
   detail    String  @default("")
+  order     Int     @default(0)
+  profileId String
+  profile   Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId])
+}
+
+// Pergunta frequente respondida pelo advogado (espelha schema.prisma).
+model Faq {
+  id        String  @id @default(cuid())
+  question  String
+  answer    String  @default("")
   order     Int     @default(0)
   profileId String
   profile   Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)

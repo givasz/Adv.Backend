@@ -17,16 +17,20 @@ export const NAME_MAX = 70
 export const OAB_MAX = 20
 
 // ---- Limites de QUANTIDADE por plano (o front espelha em lib/plans.ts) ----
-// Áreas de atuação, destaques de experiência e artigos educativos. O servidor é a
+// Áreas de atuação, destaques de experiência e perguntas frequentes. O servidor é a
 // fonte da verdade: o excedente é CORTADO no save (não derruba a requisição, para
 // não travar quem acabou de fazer downgrade).
 export const AREA_LIMIT: Record<Plan, number> = { free: 2, pro: 6, premium: 20 }
 export const HIGHLIGHT_LIMIT: Record<Plan, number> = { free: 1, pro: 4, premium: 10 }
-export const ARTICLE_LIMIT: Record<Plan, number> = { free: 0, pro: 0, premium: 12 }
+// Perguntas frequentes respondidas no perfil: nenhuma no Free, 2 no Pro, 5 no Max.
+export const FAQ_LIMIT: Record<Plan, number> = { free: 0, pro: 2, premium: 5 }
 
-// Tetos de texto dos artigos (iguais em todos os planos — quem tem, tem por inteiro).
-export const ARTICLE_TITLE_MAX = 90
-export const ARTICLE_SUMMARY_MAX = 240
+// Tetos de texto do FAQ (iguais em todos os planos — quem tem, tem por inteiro).
+// CURTOS de propósito: FAQ é orientação geral, não parecer jurídico. Resposta longa
+// no celular vira parede de texto que ninguém lê — e quanto mais texto, mais chance
+// de escorregar para fora do que o Prov. 205/2021 permite.
+export const FAQ_QUESTION_MAX = 100
+export const FAQ_ANSWER_MAX = 300
 
 export function countLimit(
   table: Record<Plan, number>,
@@ -35,9 +39,9 @@ export function countLimit(
   return table[(plan as Plan) in table ? (plan as Plan) : 'free']
 }
 
-// Artigos educativos no perfil — recurso exclusivo do plano Max (premium).
-export function canUseArticles(plan: string | undefined): boolean {
-  return plan === 'premium'
+// Perguntas frequentes no perfil — recurso dos planos pagos (2 no Pro, 5 no Max).
+export function canUseFaq(plan: string | undefined): boolean {
+  return plan === 'pro' || plan === 'premium'
 }
 
 // ---- Temas visuais ----
