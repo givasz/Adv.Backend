@@ -274,7 +274,6 @@ model Profile {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   areas      PracticeArea[]
-  highlights Highlight[]
   faqs       Faq[]
   socials    SocialLink[]
   events     LinkEvent[]
@@ -355,17 +354,6 @@ model PracticeArea {
   order       Int     @default(0)
   profileId   String
   profile     Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
-
-  @@index([profileId])
-}
-
-model Highlight {
-  id        String  @id @default(cuid())
-  title     String
-  detail    String  @default("")
-  order     Int     @default(0)
-  profileId String
-  profile   Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
 
   @@index([profileId])
 }

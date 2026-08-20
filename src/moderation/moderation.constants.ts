@@ -31,7 +31,6 @@ export const SECTION_KEYS = [
   'headline',
   'bio',
   'areas',
-  'highlights',
   'faqs',
   'video',
   'socials',

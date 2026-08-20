@@ -118,7 +118,6 @@ export class ModerationService {
       where: { id: profileId },
       include: {
         areas: { orderBy: { order: 'asc' } },
-        highlights: { orderBy: { order: 'asc' } },
         faqs: { orderBy: { order: 'asc' } },
         socials: true,
         reports: { orderBy: { createdAt: 'desc' } },
