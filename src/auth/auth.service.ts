@@ -66,9 +66,31 @@ export class AuthService {
         password: hashPassword(senha),
         profile: { create: this.starterProfile(cleanName) },
       },
-      select: { id: true, email: true, profile: { select: { name: true, plan: true } } },
+      select: { id: true, email: true, profile: { select: { id: true, name: true, plan: true } } },
     })
+    if (user.profile) await this.resolvePendingInvites(mail, user.profile.id)
     return this.sessionFor(user.id, user.email, user.profile?.name || cleanName, user.profile?.plan ?? 'free')
+  }
+
+  // Convites feitos para um e-mail SEM conta ficam guardados em FirmInvite (o
+  // FirmMembership exige um Profile). No cadastro o convite vira vínculo pendente
+  // e aparece no painel do advogado — que aceita ou recusa. Um advogado pertence a
+  // no máximo um escritório (profileId é único), então só o primeiro é convertido;
+  // os outros seguem à espera de uma decisão.
+  private async resolvePendingInvites(email: string, profileId: string) {
+    const primeiro = await this.prisma.firmInvite.findFirst({
+      where: { email },
+      orderBy: { createdAt: 'asc' },
+    })
+    if (!primeiro) return
+    try {
+      await this.prisma.firmMembership.create({
+        data: { firmId: primeiro.firmId, profileId, role: primeiro.role, status: 'invited' },
+      })
+      await this.prisma.firmInvite.delete({ where: { id: primeiro.id } })
+    } catch {
+      // Convite inválido (escritório apagado) não pode derrubar o cadastro.
+    }
   }
 
   async login(email?: string, password?: string): Promise<AuthSession> {
