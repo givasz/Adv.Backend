@@ -313,7 +313,15 @@ No dia em que entrar SSE, upload de arquivo ou `_.template`, ele deixa de valer.
 
 ## Checklist de produção
 
-### Esta versão exige `prisma db push` (e esvaziar `Session` antes)
+### Esta versão exige `prisma db push` (e esvaziar `Session` antes) — ✅ aplicado
+
+> Feito na VPS em 21/08/2026, 22h58, com backup em
+> `/root/advocme-antes-cookie-2026-08-21-2254.sql`. Conferido em produção: cookie
+> `__Host-advocme_session` saindo `HttpOnly; Secure; SameSite=None` com 30 dias,
+> sessão sobrevivendo a fechar e reabrir o navegador (teste em Chromium de verdade
+> contra o Netlify), escrita sem `x-csrf-token` recusada com 403, pedido de outra
+> `Origin` recusado com 403, e sair derrubando a sessão no servidor. O registro do
+> procedimento fica abaixo para a próxima máquina.
 
 A tabela `Session` ganhou três colunas obrigatórias — `tokenHash`,
 `absoluteExpiresAt` e `remember` —, e `id` deixou de ter valor automático. As
