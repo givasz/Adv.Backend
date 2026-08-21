@@ -1,13 +1,25 @@
-import { Body, Controller, Get, Headers, Ip, Post, UnauthorizedException } from '@nestjs/common'
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  HttpCode,
+  Ip,
+  Post,
+  UnauthorizedException,
+} from '@nestjs/common'
 import { AuthService } from './auth.service'
-import { userIdFromHeader } from './user-auth'
+import { SessionService } from './session.service'
 import { AUTH_RATE_RULES, enforceRateLimit } from '../security/rate-limit'
 import { clientIp } from '../security/net'
 import { fingerprint, logSecurityEvent } from '../security/audit-log'
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly sessions: SessionService,
+  ) {}
 
   // POST /api/auth/signup  → { email, password, name? }
   @Post('signup')
@@ -79,9 +91,43 @@ export class AuthController {
 
   // GET /api/auth/me  (Authorization: Bearer <token>)
   @Get('me')
-  me(@Headers('authorization') authorization?: string) {
-    const userId = userIdFromHeader(authorization)
+  async me(@Headers('authorization') authorization?: string) {
+    const userId = await this.sessions.userIdFrom(authorization)
     if (!userId) throw new UnauthorizedException('Sessão inválida.')
     return this.auth.me(userId)
+  }
+
+  /**
+   * POST /api/auth/logout — encerra a sessão DESTE aparelho.
+   *
+   * Apaga a linha da sessão: o token para de valer na hora, mesmo que alguém
+   * tenha uma cópia. Antes, sair só limpava o navegador — quem tivesse copiado o
+   * token continuava entrando pelos 7 dias restantes.
+   *
+   * Responde 204 mesmo com token inválido ou ausente: sair é uma intenção, não um
+   * pedido que possa falhar, e um erro aqui só serviria para dizer a um curioso se
+   * o token que ele tem ainda vale.
+   */
+  @Post('logout')
+  @HttpCode(204)
+  async logout(@Headers('authorization') authorization?: string) {
+    const userId = await this.sessions.userIdFrom(authorization)
+    await this.sessions.revoke(authorization)
+    if (userId) logSecurityEvent({ event: 'logout', userId, result: 'ok' })
+  }
+
+  /**
+   * POST /api/auth/logout-all — encerra TODAS as sessões da conta.
+   *
+   * É o botão para quando o aparelho some ou a senha vazou: derruba o celular, o
+   * computador do escritório e qualquer token copiado, de uma vez. Este exige
+   * sessão válida — é uma ação sobre a conta, não um simples descartar de token.
+   */
+  @Post('logout-all')
+  async logoutAll(@Headers('authorization') authorization?: string) {
+    const userId = await this.sessions.requireUser(authorization)
+    const encerradas = await this.sessions.revokeAll(userId)
+    logSecurityEvent({ event: 'logout_all', userId, result: 'ok' })
+    return { encerradas }
   }
 }

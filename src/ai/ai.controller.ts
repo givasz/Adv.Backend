@@ -1,7 +1,7 @@
 import { Body, Controller, ForbiddenException, Headers, Ip, Post } from '@nestjs/common'
 import { AiService, type GenerateDto, type GenerateResult } from './ai.service'
 import { PrismaService } from '../prisma/prisma.service'
-import { userIdFromHeader } from '../auth/user-auth'
+import { SessionService } from '../auth/session.service'
 import { AI_RATE_RULES, enforceRateLimit } from '../security/rate-limit'
 import { clientIp } from '../security/net'
 
@@ -23,6 +23,7 @@ export class AiController {
   constructor(
     private readonly ai: AiService,
     private readonly prisma: PrismaService,
+    private readonly sessions: SessionService,
   ) {}
 
   // POST /api/ai/generate  → { text, complianceNotes }
@@ -33,7 +34,7 @@ export class AiController {
     @Ip() ip?: string,
     @Headers('x-forwarded-for') xff?: string,
   ): Promise<GenerateResult> {
-    const userId = userIdFromHeader(authorization)
+    const userId = await this.sessions.userIdFrom(authorization)
 
     // Cada geração custa dinheiro num provedor pago. Sem teto, um laço de terminal
     // esvazia o orçamento da conta em minutos — e a rota é pública de propósito

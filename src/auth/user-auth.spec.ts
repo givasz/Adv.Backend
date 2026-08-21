@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   hashPassword,
   issueUserSession,
-  userIdFromHeader,
+  readSessionToken,
+  sessionFromHeader,
   verifyPassword,
-  verifyUserSession,
 } from './user-auth'
 
 describe('senha', () => {
@@ -29,37 +29,46 @@ describe('senha', () => {
   })
 })
 
-describe('sessão', () => {
-  it('token emitido é aceito e devolve o dono', () => {
-    const { token } = issueUserSession('user-1')
-    expect(verifyUserSession(token)).toBe('user-1')
-    expect(userIdFromHeader(`Bearer ${token}`)).toBe('user-1')
+describe('token de sessão', () => {
+  const EXP = () => Date.now() + 60_000
+
+  it('token emitido é aceito e diz de quem é e de qual sessão', () => {
+    const { token } = issueUserSession('user-1', 'sess-1', EXP())
+    expect(readSessionToken(token)).toEqual({ userId: 'user-1', sessionId: 'sess-1' })
+    expect(sessionFromHeader(`Bearer ${token}`)).toEqual({ userId: 'user-1', sessionId: 'sess-1' })
   })
 
-  it('recusa token forjado, sem assinatura ou de outro payload', () => {
-    const { token } = issueUserSession('user-1')
+  it('recusa token forjado, sem assinatura ou com o dono trocado', () => {
+    const { token } = issueUserSession('user-1', 'sess-1', EXP())
     const [body, sig] = token.split('.')
     const outroBody = Buffer.from(
-      JSON.stringify({ sub: 'user-2', exp: Date.now() + 60_000 }),
+      JSON.stringify({ sub: 'user-2', sid: 'sess-1', exp: EXP() }),
     ).toString('base64url')
 
-    expect(verifyUserSession(`${outroBody}.${sig}`)).toBeNull() // troca de dono
-    expect(verifyUserSession(body)).toBeNull() // sem assinatura
-    expect(verifyUserSession(`${body}.`)).toBeNull()
-    expect(verifyUserSession('')).toBeNull()
-    expect(verifyUserSession(undefined)).toBeNull()
-    expect(verifyUserSession('lixo.lixo')).toBeNull()
+    expect(readSessionToken(`${outroBody}.${sig}`)).toBeNull() // troca de dono
+    expect(readSessionToken(body)).toBeNull() // sem assinatura
+    expect(readSessionToken(`${body}.`)).toBeNull()
+    expect(readSessionToken('')).toBeNull()
+    expect(readSessionToken(undefined)).toBeNull()
+    expect(readSessionToken('lixo.lixo')).toBeNull()
   })
 
-  it('recusa token expirado', () => {
-    const body = Buffer.from(JSON.stringify({ sub: 'u', exp: Date.now() - 1 })).toString('base64url')
-    expect(verifyUserSession(`${body}.qualquer`)).toBeNull()
+  it('recusa token expirado e token sem id de sessão', () => {
+    const vencido = Buffer.from(
+      JSON.stringify({ sub: 'u', sid: 's', exp: Date.now() - 1 }),
+    ).toString('base64url')
+    expect(readSessionToken(`${vencido}.qualquer`)).toBeNull()
+
+    // Token no formato antigo (sem `sid`) não vale mais: sem id de sessão não há
+    // linha no banco para conferir, e era exatamente esse o token irrevogável.
+    const antigo = Buffer.from(JSON.stringify({ sub: 'u', exp: EXP() })).toString('base64url')
+    expect(readSessionToken(`${antigo}.qualquer`)).toBeNull()
   })
 
   it('só o esquema Bearer é aceito no header', () => {
-    const { token } = issueUserSession('user-1')
-    expect(userIdFromHeader(token)).toBeNull()
-    expect(userIdFromHeader(`Basic ${token}`)).toBeNull()
-    expect(userIdFromHeader(undefined)).toBeNull()
+    const { token } = issueUserSession('user-1', 'sess-1', EXP())
+    expect(sessionFromHeader(token)).toBeNull()
+    expect(sessionFromHeader(`Basic ${token}`)).toBeNull()
+    expect(sessionFromHeader(undefined)).toBeNull()
   })
 })
