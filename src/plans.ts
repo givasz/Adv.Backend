@@ -80,6 +80,16 @@ export function canUseScheduling(plan: string | undefined): boolean {
   return plan === 'pro' || plan === 'premium'
 }
 
+// Modelos e teto de texto do cartão impresso — espelha frontend/src/lib/cardArt.ts.
+export const CARD_TEMPLATES = ['timbre', 'razao', 'reto'] as const
+export const CARD_TAGLINE_MAX = 48
+
+// Cartão de visita para IMPRIMIR (arte com sangria e marcas de corte) — só no Max.
+// Espelha canUsePrintCard de frontend/src/lib/plans.ts.
+export function canUsePrintCard(plan: string | undefined): boolean {
+  return plan === 'premium'
+}
+
 // Agenda nativa (cliente marca dia/hora, advogado aceita/recusa) — também só nos pagos.
 export function canUseNativeAgenda(plan: string | undefined): boolean {
   return plan === 'pro' || plan === 'premium'
