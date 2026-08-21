@@ -108,7 +108,6 @@ export class FirmsService {
         name: m.profile.name || m.profile.user?.email || 'Advogado(a)',
         email: m.profile.user?.email ?? undefined,
         oabNumber: m.profile.oabNumber || undefined,
-        oabVerified: m.profile.oabVerified,
         area: m.profile.areas?.[0]?.label ?? '',
         role: m.role,
         status: m.status,
@@ -403,25 +402,6 @@ export class FirmsService {
     return { status: 'left' as const }
   }
 
-  // ---- OAB da sociedade -----------------------------------------------------
-
-  // Solicita a conferência do registro da SOCIEDADE (workflow separado da OAB individual).
-  async requestOab(userId: string) {
-    const managed = await this.requireManagedFirm(userId)
-    const firm = await this.prisma.firm.findUnique({
-      where: { id: managed.id },
-      select: { id: true, oabStatus: true },
-    })
-    if (!firm) throw new NotFoundException('Escritório não encontrado')
-    if (firm.oabStatus === 'verified') return { oabStatus: 'verified' as const }
-    const u = await this.prisma.firm.update({
-      where: { id: firm.id },
-      data: { oabStatus: 'pending' },
-      select: { oabStatus: true },
-    })
-    return { oabStatus: u.oabStatus }
-  }
-
   // ---- Shape público --------------------------------------------------------
 
   private toApi(firm: any) {
@@ -437,7 +417,6 @@ export class FirmsService {
           slug: p.slug,
           name: p.name,
           oabNumber: p.oabNumber,
-          oabVerified: p.oabVerified, // verificação INDIVIDUAL (≠ registro da sociedade)
           area: p.areas?.[0]?.label ?? '',
           bio: p.bio ?? '',
           avatarUrl: p.avatarUrl ?? undefined,
@@ -459,7 +438,6 @@ export class FirmsService {
       slug: firm.slug,
       name: firm.name,
       oabRegistry: firm.oabRegistry,
-      oabVerified: firm.oabVerified, // verificação da SOCIEDADE
       monogram: firm.monogram,
       tagline: firm.tagline,
       about: firm.about,

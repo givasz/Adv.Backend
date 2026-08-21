@@ -58,12 +58,6 @@ export class FirmsController {
     return this.firms.removeMember(this.resolveUser(authorization), kind, id)
   }
 
-  // POST /api/firms/me/oab/request → solicita conferência do registro da sociedade
-  @Post('firms/me/oab/request')
-  requestOab(@Headers('authorization') authorization?: string) {
-    return this.firms.requestOab(this.resolveUser(authorization))
-  }
-
   // ---- Lado de quem foi convidado -------------------------------------------
 
   // GET /api/firms/me/invites → convites pendentes dirigidos a quem está logado

@@ -63,22 +63,10 @@ export class ProfilesService {
       socials?: unknown[]
     },
   >(profile: T) {
-    // Campos do DONO saem aqui: a devolutiva da conferência (motivo da rejeição,
-    // datas do pedido) é conversa entre a plataforma e o advogado — nunca vai ao
-    // visitante, que só vê a marca "OAB conferida" quando ela existe.
-    const {
-      hiddenSections,
-      moderationNote,
-      moderationStatus,
-      oabReason,
-      oabRequestedAt,
-      oabDecidedAt,
-      ...rest
-    } = profile as T & {
+    // Campos do DONO saem aqui: a nota do moderador é conversa entre a plataforma
+    // e o advogado — nunca vai ao visitante.
+    const { hiddenSections, moderationNote, moderationStatus, ...rest } = profile as T & {
       moderationNote?: string
-      oabReason?: string
-      oabRequestedAt?: Date | null
-      oabDecidedAt?: Date | null
     }
     if (moderationStatus !== 'partial') return rest
 
@@ -228,8 +216,6 @@ export class ProfilesService {
       slug: p.slug,
       name: p.name,
       oabNumber: p.oabNumber,
-      oabVerified: p.oabVerified,
-      oabStatus: p.oabStatus,
       headline: p.headline ?? '',
       bio: p.bio ?? '',
       avatarUrl: p.avatarUrl ?? undefined,
@@ -279,11 +265,6 @@ export class ProfilesService {
     if (p.moderationStatus !== undefined) out.moderationStatus = p.moderationStatus
     if (p.moderationNote) out.moderationNote = p.moderationNote
     if (p.contentModerated) out.contentModerated = true
-    // Estado do pedido de conferência: é o que o editor mostra enquanto espera a
-    // fila e o que devolve o motivo quando a plataforma rejeita.
-    if (p.oabRequestedAt !== undefined) out.oabRequestedAt = p.oabRequestedAt ?? undefined
-    if (p.oabDecidedAt !== undefined) out.oabDecidedAt = p.oabDecidedAt ?? undefined
-    if (p.oabReason) out.oabReason = p.oabReason
     return out
   }
 
@@ -437,7 +418,7 @@ export class ProfilesService {
     // POST /api/profiles/me/plan → setPlan().
     const current = await this.prisma.profile.findUnique({
       where: { userId },
-      select: { id: true, moderationStatus: true, plan: true, oabNumber: true, oabStatus: true },
+      select: { id: true, moderationStatus: true, plan: true, oabNumber: true },
     })
     // Perfil restrito pela moderação não pode ser republicado pelo dono.
     if (data.published && current?.moderationStatus === 'restricted') {
@@ -488,45 +469,12 @@ export class ProfilesService {
       )
     }
 
-    // Trocar o número de inscrição derruba a conferência: o que foi conferido foi
-    // AQUELE número. Sem isto bastava ser conferido uma vez e depois trocar o
-    // número para carregar a marca em cima de uma inscrição que ninguém conferiu.
-    const oabChanged =
-      typeof data.oabNumber === 'string' &&
-      !!current &&
-      data.oabNumber.trim() !== current.oabNumber.trim()
-    const resetOab = oabChanged && current!.oabStatus !== 'none'
-    if (resetOab) {
-      await this.prisma.oabVerificationEvent.create({
-        data: {
-          profileId: current!.id,
-          fromStatus: current!.oabStatus,
-          toStatus: 'none',
-          method: 'manual',
-          reviewer: '',
-          reason: 'Número de inscrição alterado pelo advogado — conferência reiniciada.',
-        },
-      })
-    }
-
     const updated = await this.prisma.profile.update({
       where: { userId },
       data: {
         name: data.name,
         slug, // slug resolvido pelo servidor (regra de nomes iguais + perk do Max)
         oabNumber: data.oabNumber,
-        ...(resetOab
-          ? {
-              oabStatus: 'none' as const,
-              oabVerified: false,
-              oabVerifiedAt: null,
-              oabVerifiedMethod: null,
-              oabVerifiedBy: null,
-              oabRequestedAt: null,
-              oabDecidedAt: null,
-              oabReason: '',
-            }
-          : {}),
         headline: data.headline,
         bio: data.bio,
         avatarUrl: data.avatarUrl,
@@ -655,8 +603,10 @@ export class ProfilesService {
     return this.toApi(updated)
   }
 
-  // A conferência de OAB (workflow none → pending → verified/rejected) foi movida para
-  // um módulo desacoplado: ver src/oab/verification/oab-verification.service.ts.
+  // A plataforma NÃO confere inscrições na OAB. O número é auto-declarado e o
+  // perfil público expõe, ao lado dele, um link para a consulta do CNA (base
+  // oficial), igual para todos os planos — ver frontend components/ui/CnaLink.
+  // Registro falso é tratado pela moderação (denúncia com motivo `oab_invalid`).
 
   // Busca do PAINEL ADMIN: ao contrário do diretório público, retorna perfis de
   // qualquer status (não publicados, restritos etc.) para o moderador localizar e agir.
@@ -685,7 +635,6 @@ export class ProfilesService {
         plan: true,
         published: true,
         moderationStatus: true,
-        oabStatus: true,
       },
     })
   }
@@ -717,7 +666,6 @@ export class ProfilesService {
         slug: true,
         name: true,
         oabNumber: true,
-        oabVerified: true,
         headline: true,
         city: true,
         state: true,

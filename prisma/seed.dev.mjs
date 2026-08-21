@@ -29,7 +29,6 @@ async function main() {
           slug: 'demo-advogada',
           name: 'Marina Sales',
           oabNumber: 'OAB/SP 123.456',
-          oabVerified: true,
           headline: 'Advocacia previdenciária e trabalhista',
           bio: 'Advogada inscrita na OAB/SP, com atuação em Direito Previdenciário e Trabalhista.',
           city: 'São Paulo',

@@ -248,7 +248,7 @@ export const RULES: Rule[] = [
     explanation:
       'O Art. 5º, §2º proíbe usar símbolos, brasão, logotipo ou qualquer expressão que insinue chancela oficial da OAB ("aprovado/verificado pela OAB"). Isso engana o público sobre um endosso institucional inexistente.',
     suggestion:
-      'Nunca sugira aval da OAB. A marca informativa correta é "OAB conferida" — conferência feita pela plataforma, sem símbolos oficiais.',
+      'Nunca sugira aval da OAB. Para dar transparência ao registro, aponte para a consulta pública do CNA — quem confere é o leitor, na fonte oficial.',
     examplesForbidden: [
       'Advogado aprovado pela OAB',
       'Perfil com selo oficial da OAB',
@@ -256,7 +256,7 @@ export const RULES: Rule[] = [
     ],
     examplesAllowed: [
       'Inscrito na OAB/SP sob nº 123.456',
-      'OAB conferida pela plataforma',
+      'Consulte minha inscrição no Cadastro Nacional dos Advogados',
     ],
   },
   {

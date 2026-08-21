@@ -97,7 +97,7 @@ Redirect SPA:        /*  →  /index.html  200   (React Router)
 - **Híbrido (recomendado)** — só `VITE_API_URL`. Perfis ficam no **localStorage** do
   navegador; a **geração de bio** usa o backend (Gemini). Funciona sem depender do banco.
 - **Real completo** — também `VITE_USE_REAL_API=true`. Perfis, busca, moderação e
-  conferência de OAB passam pelo **Postgres**. (Protótipo: ainda usa um `DEMO_USER`, sem
+  moderação passam pelo **Postgres**. (Protótipo: ainda usa um `DEMO_USER`, sem
   login por advogado.)
 
 ---
@@ -136,8 +136,9 @@ Redirect SPA:        /*  →  /index.html  200   (React Router)
   `.../painel-mod-7fq3k9x2a`) — rota `noindex`, escondida.
 - Login com `ADMIN_USERNAME` + `ADMIN_PASSWORD` (do Render). A sessão é um token HMAC
   assinado com `ADMIN_SESSION_SECRET`.
-- Abas: **Denúncias** (moderação), **Advogados** (busca por nome/OAB, ver/moderar) e
-  **Conferência OAB**.
+- Abas: **Denúncias** (moderação), **Suporte** e **Advogados** (busca por nome/OAB,
+  ver/moderar, conferir no CNA). Não há conferência de OAB — ver
+  `docs/decisao-sem-verificacao-de-oab.md`.
 
 ---
 
