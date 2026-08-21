@@ -28,6 +28,12 @@ export interface GenerateDto {
   currentText?: string
   /** plano do perfil — controla profundidade/tamanho e o enriquecimento */
   plan?: Plan
+  /**
+   * Teto de caracteres do campo de destino (vem do front, que conhece o campo).
+   * Entra no prompt E corta o texto devolvido: gerar acima do limite produzia um
+   * perfil que o próprio servidor recusava salvar depois.
+   */
+  maxChars?: number
 }
 
 export interface GenerateResult {
@@ -110,12 +116,33 @@ export class AiService {
       usedFallback = true
     }
 
+    // Teto de caracteres do campo (fonte da verdade do tamanho): o modelo escorrega
+    // e devolve mais do que cabe. Cortar na última frase completa é melhor que
+    // devolver algo que o save vai recusar.
+    text = this.fitToLimit(text, dto.maxChars ?? 0)
+
     return {
       text,
       complianceNotes: checkCompliance(text).map((i) => i.reason),
       usedFallback,
       policyVersion: POLICY_VERSION,
     }
+  }
+
+  /**
+   * Ajusta o texto ao limite do campo: cabe inteiro → devolve; senão termina na
+   * última frase completa que couber; sem frase completa, na última palavra.
+   * ⚠️ MANTER EM SINCRONIA com frontend/src/lib/textLimit.ts.
+   */
+  private fitToLimit(text: string, limit: number): string {
+    const clean = text.trim()
+    if (!limit || clean.length <= limit) return clean
+    const cut = clean.slice(0, limit)
+    if (/[.!?]$/.test(cut)) return cut.trim()
+    const lastSentence = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '))
+    if (lastSentence > limit * 0.5) return cut.slice(0, lastSentence + 1).trim()
+    const lastSpace = cut.lastIndexOf(' ')
+    return (lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trim()
   }
 
   // Orçamento de tokens de saída. Folgado de propósito: os modelos flash novos
@@ -171,7 +198,13 @@ export class AiService {
       extra.push(`Áreas do perfil: ${dto.areas.filter(Boolean).join(', ')}.`)
     }
     const ctx = extra.length ? ` Contexto: ${extra.join(' ')}` : ''
-    const sentences = premium ? 'No máximo 4 frases' : 'No máximo 3 frases'
+    // Orçamento de tamanho: quando o campo tem teto, ele MANDA (é o que decide se o
+    // texto pode ser salvo). Sem teto, segue a contagem de frases de antes.
+    const sentences = dto.maxChars
+      ? `No máximo ${dto.maxChars} caracteres, contando-os`
+      : premium
+        ? 'No máximo 4 frases'
+        : 'No máximo 3 frases'
 
     switch (dto.kind) {
       case 'area':
@@ -184,7 +217,7 @@ export class AiService {
           dto.name ? ` de ${dto.name}` : ''
         }, indicando a atuação${
           kws ? ` em: ${kws}` : dto.areas?.length ? ` em: ${dto.areas.filter(Boolean).join(', ')}` : ''
-        }. Máximo de 8 palavras, factual e sóbria, sem ponto final. Exemplo de estilo: "Advogada · Direito de Família e Sucessões". Responda apenas a frase.`
+        }. Máximo de 8 palavras${dto.maxChars ? ` e ${dto.maxChars} caracteres` : ''}, factual e sóbria, sem ponto final. Exemplo de estilo: "Advogada · Direito de Família e Sucessões". Responda apenas a frase.`
 
       case 'improve':
         return `Revise e reescreva o texto abaixo para ficar mais claro, sóbrio e dentro das normas da OAB, preservando o sentido e os fatos. Não invente qualificações nem dados.${ctx} ${sentences}, sem emojis.\n\nTexto:\n"""${dto.currentText ?? ''}"""`
@@ -210,7 +243,7 @@ ${contexto}${kws ? `
 Pontos a abordar: ${kws}` : ''}${ctx}
 
 Regras obrigatórias (normas de publicidade da advocacia, Provimento 205/2021 da OAB):
-- Resposta EDUCATIVA e GERAL, CURTA: no máximo 300 caracteres (2 a 3 frases).
+- Resposta EDUCATIVA e GERAL, CURTA: no máximo ${dto.maxChars ?? 300} caracteres (2 a 3 frases).
 - Pode explicar como a lei trata o tema e citar o dispositivo ou instituto aplicável.
 - NÃO prometa resultado, prazo ou êxito; não diga que "resolve" ou "garante" nada.
 - NÃO cite casos, clientes, processos, valores de honorários nem preços.
@@ -247,7 +280,9 @@ Texto atual:
 Problemas a eliminar:
 ${problems}
 
-Devolva o texto completo já corrigido — sem promessas ou garantias de resultado, sem preços, sem comparações, superlativos ou menção a terceiros. Responda apenas com o texto final.`
+Devolva o texto completo já corrigido — sem promessas ou garantias de resultado, sem preços, sem comparações, superlativos ou menção a terceiros.${
+      dto.maxChars ? ` Use no máximo ${dto.maxChars} caracteres.` : ''
+    } Responda apenas com o texto final.`
   }
 
   // Template garantidamente compliant, usado quando a IA não produz texto aprovado.
