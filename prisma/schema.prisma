@@ -83,11 +83,11 @@ enum BookingStatus {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  password  String // hash (argon2)
-  createdAt DateTime @default(now())
-  profile   Profile?
+  id         String          @id @default(cuid())
+  email      String          @unique
+  password   String // hash (argon2)
+  createdAt  DateTime        @default(now())
+  profile    Profile?
   // Escritórios dos quais este usuário é dono/faturamento (normalmente 0 ou 1).
   firmsOwned Firm[]
   // Chamados de suporte abertos por este advogado (bug, dúvida, conta).
@@ -116,19 +116,19 @@ enum SupportStatus {
 // usuário não sabe informar e o que resolve metade dos bugs — e porque pedir
 // isso num formulário faria o chamado nunca ser aberto.
 model SupportTicket {
-  id         String        @id @default(cuid())
-  userId     String
-  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  kind       SupportKind   @default(bug)
-  subject    String
-  message    String
-  pageUrl    String        @default("")
-  userAgent  String        @default("")
-  status     SupportStatus @default(open)
+  id        String        @id @default(cuid())
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      SupportKind   @default(bug)
+  subject   String
+  message   String
+  pageUrl   String        @default("")
+  userAgent String        @default("")
+  status    SupportStatus @default(open)
   // Resposta/observação do admin, visível para o autor do chamado.
-  adminNote  String        @default("")
-  createdAt  DateTime      @default(now())
-  handledAt  DateTime?
+  adminNote String        @default("")
+  createdAt DateTime      @default(now())
+  handledAt DateTime?
 
   @@index([status, createdAt])
   @@index([userId, createdAt])
@@ -138,34 +138,35 @@ model SupportTicket {
 // mantém seu Profile individual; o vínculo é feito por FirmMembership. Registro da
 // SOCIEDADE na OAB é conferido à parte da OAB individual de cada advogado.
 model Firm {
-  id          String    @id @default(cuid())
-  slug        String    @unique // advoc.me/escritorio/<slug>
-  name        String
-  oabRegistry String // registro da SOCIEDADE (≠ OAB individual dos advogados)
-  oabStatus   OabStatus @default(none) // reutiliza o workflow de conferência
-  oabVerified Boolean   @default(false)
-  monogram    String    @default("")
-  logoUrl     String?
-  tagline     String    @default("")
-  about       String    @default("")
-  city        String    @default("")
-  state       String    @default("")
+  id             String    @id @default(cuid())
+  slug           String    @unique // advoc.me/escritorio/<slug>
+  name           String
+  oabRegistry    String // registro da SOCIEDADE (≠ OAB individual dos advogados)
+  oabStatus      OabStatus @default(none) // reutiliza o workflow de conferência
+  oabVerified    Boolean   @default(false)
+  monogram       String    @default("")
+  logoUrl        String?
+  tagline        String    @default("")
+  about          String    @default("")
+  city           String    @default("")
+  state          String    @default("")
   // Contato INSTITUCIONAL (separado das redes pessoais de cada advogado)
-  phone     String?
-  email     String?
-  whatsapp  String?
-  instagram String?
-  linkedin  String?
+  phone          String?
+  email          String?
+  whatsapp       String?
+  instagram      String?
+  linkedin       String?
   // ---- White-label canônico do escritório (membros herdam a marca) ----
-  brandAccent  String? // cor de destaque (hex)
-  customDomain String? // domínio próprio (informativo no protótipo)
+  brandAccent    String? // cor de destaque (hex)
+  customDomain   String? // domínio próprio (informativo no protótipo)
   // ---- Plano / assentos (billing real entra depois; hoje é campo, como Profile.plan) ----
-  plan           Plan @default(premium) // escritório opera no tier alto
-  seatsPurchased Int  @default(5) // base do plano Escritório inclui 5 assentos
+  plan           Plan      @default(premium) // escritório opera no tier alto
+  seatsPurchased Int       @default(5) // base do plano Escritório inclui 5 assentos
 
   ownerUserId String
   ownerUser   User             @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
   members     FirmMembership[]
+  invites     FirmInvite[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -183,6 +184,11 @@ model FirmMembership {
   order     Int              @default(0)
   createdAt DateTime         @default(now())
 
+  // Plano individual do advogado no momento em que ele ACEITOU o convite. Enquanto
+  // ativo ele usa o tier do escritório; ao sair, volta para este plano — sem isso,
+  // quem entra num escritório perderia o plano que já pagava.
+  previousPlan Plan?
+
   firmId    String
   firm      Firm    @relation(fields: [firmId], references: [id], onDelete: Cascade)
   profileId String  @unique
@@ -191,96 +197,112 @@ model FirmMembership {
   @@index([firmId, status])
 }
 
+// Convite feito para um e-mail que AINDA NÃO tem conta. FirmMembership exige um
+// Profile; este modelo guarda o convite até a pessoa se cadastrar, e o cadastro
+// (auth.service) o converte em FirmMembership(invited).
+model FirmInvite {
+  id        String   @id @default(cuid())
+  email     String
+  role      FirmRole @default(member)
+  createdAt DateTime @default(now())
+
+  firmId String
+  firm   Firm   @relation(fields: [firmId], references: [id], onDelete: Cascade)
+
+  @@unique([firmId, email])
+  @@index([email])
+}
+
 model Profile {
-  id          String   @id @default(cuid())
-  slug        String   @unique
-  name        String
-  oabNumber   String
-  oabVerified Boolean   @default(false) // espelha (oabStatus == verified) — usado na UI
-  oabStatus   OabStatus @default(none)
+  id                   String           @id @default(cuid())
+  slug                 String           @unique
+  name                 String
+  oabNumber            String
+  oabVerified          Boolean          @default(false) // espelha (oabStatus == verified) — usado na UI
+  oabStatus            OabStatus        @default(none)
   // Snapshot da última conferência de OAB (histórico completo em OabVerificationEvent).
   // Desacoplado: hoje preenchido pela conferência manual; pronto para CNA/ConfirmADV.
-  oabVerifiedAt     DateTime? // data/hora da conferência (quando verified)
-  oabVerifiedMethod String? // método: "manual" | "cna_ws" | "confirmadv"
-  oabVerifiedBy     String? // responsável pela conferência (identificação do admin)
+  oabVerifiedAt        DateTime? // data/hora da conferência (quando verified)
+  oabVerifiedMethod    String? // método: "manual" | "cna_ws" | "confirmadv"
+  oabVerifiedBy        String? // responsável pela conferência (identificação do admin)
   // Estado do PEDIDO em si — é o que o advogado vê enquanto espera e depois da
   // decisão. Sem isso a rejeição morria no histórico e o dono do perfil ficava
   // sem saber por que não foi conferido.
-  oabRequestedAt    DateTime? // quando o advogado pediu a conferência (entrou na fila)
-  oabDecidedAt      DateTime? // quando a plataforma decidiu (conferida ou rejeitada)
-  oabReason         String    @default("") // devolutiva do admin ao advogado (motivo da rejeição)
-  headline    String   @default("")
-  bio         String   @default("")
-  avatarUrl   String?
-  city        String   @default("")
-  state       String   @default("")
-  regionNote  String?
-  inPerson    Boolean  @default(true)
-  online      Boolean  @default(true)
-  whatsapp    String?
-  email       String?
-  scheduling  String?
+  oabRequestedAt       DateTime? // quando o advogado pediu a conferência (entrou na fila)
+  oabDecidedAt         DateTime? // quando a plataforma decidiu (conferida ou rejeitada)
+  oabReason            String           @default("") // devolutiva do admin ao advogado (motivo da rejeição)
+  headline             String           @default("")
+  bio                  String           @default("")
+  avatarUrl            String?
+  city                 String           @default("")
+  state                String           @default("")
+  regionNote           String?
+  inPerson             Boolean          @default(true)
+  online               Boolean          @default(true)
+  whatsapp             String?
+  email                String?
+  scheduling           String?
   // ---- Agendamento ----
   // Modo do botão "Agendar": "off" (sem botão) | "external" (link Calendly/Google,
   // usa `scheduling`) | "native" (agenda própria do advoc.me — model Booking abaixo).
-  schedulingMode     String @default("external")
+  schedulingMode       String           @default("external")
   // Config da agenda nativa (só relevante quando schedulingMode == "native").
-  bookingWeekdays    String @default("[1,2,3,4,5]") // JSON de dias (0=dom … 6=sáb)
-  bookingStartMin    Int    @default(540)  // início do expediente em minutos (09:00)
-  bookingEndMin      Int    @default(1080) // fim do expediente (18:00)
-  bookingSlotMin     Int    @default(30)   // duração de cada horário
-  bookingLeadHours   Int    @default(12)   // antecedência mínima para marcar
-  bookingHorizonDays Int    @default(30)   // até quantos dias à frente é possível marcar
+  bookingWeekdays      String           @default("[1,2,3,4,5]") // JSON de dias (0=dom … 6=sáb)
+  bookingStartMin      Int              @default(540) // início do expediente em minutos (09:00)
+  bookingEndMin        Int              @default(1080) // fim do expediente (18:00)
+  bookingSlotMin       Int              @default(30) // duração de cada horário
+  bookingLeadHours     Int              @default(12) // antecedência mínima para marcar
+  bookingHorizonDays   Int              @default(30) // até quantos dias à frente é possível marcar
   // ---- Assistente virtual (schedulingMode == "assistant") ----
   // Conversa guiada no perfil: oferece só esta grade, coleta assunto/nome e monta a
   // mensagem para o WhatsApp do advogado. Ver frontend/src/lib/assistant.ts.
-  assistantDays        String @default("[]") // JSON: [{ "weekday": 1, "times": ["09:00"] }]
-  assistantDurationMin Int    @default(45)   // duração indicativa da conversa
-  assistantLeadHours   Int    @default(12)   // antecedência mínima para oferecer um horário
-  assistantHorizonDays Int    @default(14)   // até quantos dias à frente sugerir datas
-  assistantGreeting    String @default("")   // frase de abertura (passa pela checagem OAB)
+  assistantDays        String           @default("[]") // JSON: [{ "weekday": 1, "times": ["09:00"] }]
+  assistantDurationMin Int              @default(45) // duração indicativa da conversa
+  assistantLeadHours   Int              @default(12) // antecedência mínima para oferecer um horário
+  assistantHorizonDays Int              @default(14) // até quantos dias à frente sugerir datas
+  assistantGreeting    String           @default("") // frase de abertura (passa pela checagem OAB)
   // ---- Vídeo de apresentação (plano Max) ----
   // Guardamos só o LINK (YouTube/Vimeo) já normalizado — nunca o arquivo. A
   // validação do provedor é do servidor: ver src/video.ts.
-  videoUrl     String?
-  videoCaption String  @default("")
-  plan        Plan     @default(free)
-  theme       String   @default("papel") // ThemeId — ver frontend/src/lib/themes.ts
-  views       Int      @default(0)
-  published   Boolean  @default(false)
+  videoUrl             String?
+  videoCaption         String           @default("")
+  plan                 Plan             @default(free)
+  theme                String           @default("papel") // ThemeId — ver frontend/src/lib/themes.ts
+  views                Int              @default(0)
+  published            Boolean          @default(false)
   // Versão da política de publicidade (Provimento) aplicada à última verificação.
-  policyVersion String @default("Prov. 205/2021")
+  policyVersion        String           @default("Prov. 205/2021")
   // Revisão do conjunto de regras (RULESET_REV) conferida na última verificação.
   // Monitor de mudanças normativas: se a revisão vigente for maior, o perfil é
   // reavaliado e o advogado é avisado. Ver src/oab/compliance.ts (policyOutdated).
-  policyRevChecked Int @default(0)
+  policyRevChecked     Int              @default(0)
   // ---- Identidade própria (white-label) — plano Premium/Escritório ----
   // Não afeta conformidade: o conteúdo segue sujeito ao Prov. 205/2021.
-  brandName          String?
-  brandAccent        String? // cor de destaque personalizada (hex)
-  brandHideWatermark Boolean @default(false)
-  customDomain       String? // domínio próprio (informativo; DNS fora do escopo do protótipo)
+  brandName            String?
+  brandAccent          String? // cor de destaque personalizada (hex)
+  brandHideWatermark   Boolean          @default(false)
+  customDomain         String? // domínio próprio (informativo; DNS fora do escopo do protótipo)
   // ---- Moderação (denúncias) ----
-  moderationStatus ModerationStatus @default(active)
+  moderationStatus     ModerationStatus @default(active)
   // Aviso do admin visível ao dono do perfil (motivo do aviso/restrição).
-  moderationNote   String           @default("")
+  moderationNote       String           @default("")
   // Seções censuradas quando moderationStatus == partial. JSON de chaves,
   // ex.: ["bio","socials","area:<id>"]. Aplicado no getBySlug (público).
-  hiddenSections   String           @default("[]")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  hiddenSections       String           @default("[]")
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
 
   userId String @unique
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  areas      PracticeArea[]
-  faqs       Faq[]
-  socials    SocialLink[]
-  events     LinkEvent[]
-  auditLogs  AuditLog[]
-  reports    Report[]
-  bookings   Booking[]
-  oabEvents  OabVerificationEvent[]
+  areas          PracticeArea[]
+  faqs           Faq[]
+  socials        SocialLink[]
+  events         LinkEvent[]
+  auditLogs      AuditLog[]
+  reports        Report[]
+  bookings       Booking[]
+  oabEvents      OabVerificationEvent[]
   // Vínculo com um escritório (opcional). Presente quando o advogado integra uma sociedade.
   firmMembership FirmMembership?
 
