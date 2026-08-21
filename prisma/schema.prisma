@@ -25,14 +25,6 @@ enum SocialKind {
   tiktok
 }
 
-// Estado da conferência de OAB (workflow) — a marca "OAB conferida" só quando `verified`.
-enum OabStatus {
-  none
-  pending
-  verified
-  rejected
-}
-
 // Estado de moderação do perfil (resultado de denúncias avaliadas pelo admin).
 //   active   → sem restrição
 //   warned   → dono recebeu aviso, perfil segue no ar
@@ -135,15 +127,13 @@ model SupportTicket {
 }
 
 // Escritório (sociedade de advogados) — página institucional. Cada advogado listado
-// mantém seu Profile individual; o vínculo é feito por FirmMembership. Registro da
-// SOCIEDADE na OAB é conferido à parte da OAB individual de cada advogado.
+// mantém seu Profile individual; o vínculo é feito por FirmMembership. O registro da
+// SOCIEDADE é auto-declarado — a plataforma não confere inscrições (ver Profile).
 model Firm {
   id             String    @id @default(cuid())
   slug           String    @unique // advoc.me/escritorio/<slug>
   name           String
   oabRegistry    String // registro da SOCIEDADE (≠ OAB individual dos advogados)
-  oabStatus      OabStatus @default(none) // reutiliza o workflow de conferência
-  oabVerified    Boolean   @default(false)
   monogram       String    @default("")
   logoUrl        String?
   tagline        String    @default("")
@@ -221,20 +211,11 @@ model Profile {
   id                   String           @id @default(cuid())
   slug                 String           @unique
   name                 String
+  // Número AUTO-DECLARADO. A plataforma não confere, não valida e não exibe marca
+  // de verificação — o perfil público linka a consulta do CNA (base oficial da OAB),
+  // igual em todos os planos. Registro falso é tratado pela moderação (Report com
+  // motivo `oab_invalid`). Ver frontend/src/components/ui/CnaLink.tsx.
   oabNumber            String
-  oabVerified          Boolean          @default(false) // espelha (oabStatus == verified) — usado na UI
-  oabStatus            OabStatus        @default(none)
-  // Snapshot da última conferência de OAB (histórico completo em OabVerificationEvent).
-  // Desacoplado: hoje preenchido pela conferência manual; pronto para CNA/ConfirmADV.
-  oabVerifiedAt        DateTime? // data/hora da conferência (quando verified)
-  oabVerifiedMethod    String? // método: "manual" | "cna_ws" | "confirmadv"
-  oabVerifiedBy        String? // responsável pela conferência (identificação do admin)
-  // Estado do PEDIDO em si — é o que o advogado vê enquanto espera e depois da
-  // decisão. Sem isso a rejeição morria no histórico e o dono do perfil ficava
-  // sem saber por que não foi conferido.
-  oabRequestedAt       DateTime? // quando o advogado pediu a conferência (entrou na fila)
-  oabDecidedAt         DateTime? // quando a plataforma decidiu (conferida ou rejeitada)
-  oabReason            String           @default("") // devolutiva do admin ao advogado (motivo da rejeição)
   headline             String           @default("")
   bio                  String           @default("")
   avatarUrl            String?
@@ -306,29 +287,10 @@ model Profile {
   auditLogs      AuditLog[]
   reports        Report[]
   bookings       Booking[]
-  oabEvents      OabVerificationEvent[]
   // Vínculo com um escritório (opcional). Presente quando o advogado integra uma sociedade.
   firmMembership FirmMembership?
 
   @@index([city, state])
-}
-
-// Histórico IMUTÁVEL da conferência de OAB de um perfil (append-only). Cada
-// transição de estado (none → pending → verified/rejected) gera um evento com data,
-// método, responsável e motivo — trilha auditável para fiscalização. O snapshot atual
-// vive em Profile.oab*; aqui fica o histórico completo. Ver docs/oab-verificacao-escalonamento.md.
-model OabVerificationEvent {
-  id         String    @id @default(cuid())
-  profileId  String
-  profile    Profile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
-  fromStatus OabStatus // estado anterior
-  toStatus   OabStatus // novo estado
-  method     String // "manual" | "cna_ws" | "confirmadv"
-  reviewer   String    @default("") // responsável (admin) — vazio quando é solicitação do próprio advogado
-  reason     String    @default("") // motivo/observação (ex.: justificativa de rejeição)
-  createdAt  DateTime  @default(now())
-
-  @@index([profileId, createdAt])
 }
 
 // Denúncia feita por qualquer visitante sobre um perfil (conteúdo que viola as

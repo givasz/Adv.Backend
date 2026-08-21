@@ -10,7 +10,6 @@ import {
   Query,
 } from '@nestjs/common'
 import { ProfilesService } from './profiles.service'
-import { OabVerificationService } from '../oab/verification/oab-verification.service'
 import { adminLabel, isAdminAuthenticated } from '../admin/admin-auth'
 import { userIdFromHeader } from '../auth/user-auth'
 
@@ -20,10 +19,7 @@ const DEMO_USER = 'demo-user-id'
 
 @Controller()
 export class ProfilesController {
-  constructor(
-    private readonly profiles: ProfilesService,
-    private readonly oab: OabVerificationService,
-  ) {}
+  constructor(private readonly profiles: ProfilesService) {}
 
   // Resolve o dono da requisição: sessão do usuário (Bearer) ou o anônimo demo.
   private resolveUser(authorization?: string): string {
@@ -92,55 +88,5 @@ export class ProfilesController {
   ) {
     this.assertAdmin(token, authorization)
     return this.profiles.adminSearch(q)
-  }
-
-  // ---- Conferência de OAB ----
-
-  // POST /api/profiles/me/oab/request  → advogado solicita (vira "pending")
-  // Só disponível nos planos pagos (o service reforça a regra).
-  @Post('profiles/me/oab/request')
-  requestOab(@Headers('authorization') authorization?: string) {
-    return this.oab.request(this.resolveUser(authorization))
-  }
-
-  // GET /api/profiles/me/oab  → estado do próprio pedido (status, datas e motivo)
-  // O editor consulta este recorte enquanto o pedido está na fila, sem baixar o
-  // perfil inteiro (que sobrescreveria o que o advogado está digitando).
-  @Get('profiles/me/oab')
-  myOabStatus(@Headers('authorization') authorization?: string) {
-    return this.oab.status(this.resolveUser(authorization))
-  }
-
-  // GET /api/admin/oab/pending  → fila de conferências (admin)
-  @Get('admin/oab/pending')
-  pendingOab(
-    @Headers('x-admin-token') token?: string,
-    @Headers('authorization') authorization?: string,
-  ) {
-    this.assertAdmin(token, authorization)
-    return this.oab.listPending()
-  }
-
-  // GET /api/admin/profiles/:id/oab/history  → histórico de conferência (admin)
-  @Get('admin/profiles/:id/oab/history')
-  oabHistory(
-    @Param('id') id: string,
-    @Headers('x-admin-token') token?: string,
-    @Headers('authorization') authorization?: string,
-  ) {
-    this.assertAdmin(token, authorization)
-    return this.oab.history(id)
-  }
-
-  // POST /api/admin/profiles/:id/oab/decision  → { decision: 'verify'|'reject', reason? }
-  @Post('admin/profiles/:id/oab/decision')
-  decideOab(
-    @Param('id') id: string,
-    @Body() body: { decision: 'verify' | 'reject'; reason?: string },
-    @Headers('x-admin-token') token?: string,
-    @Headers('authorization') authorization?: string,
-  ) {
-    this.assertAdmin(token, authorization)
-    return this.oab.decide(id, body.decision, adminLabel(), body.reason)
   }
 }

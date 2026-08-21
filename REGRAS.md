@@ -1,4 +1,12 @@
 # Resumo Executivo  
+
+> **Nota de revisão (21/08/2026).** A recomendação "Validação de OAB no cadastro"
+> (tabela de implementações técnicas, adiante) foi **superada**: o advoc.me não
+> verifica inscrições e não exibe marca de conferência — cada perfil linka a consulta
+> pública do CNA, igual em todos os planos. O porquê está em
+> `docs/decisao-sem-verificacao-de-oab.md`. As demais vedações deste documento
+> continuam valendo integralmente.
+
 A proposta **advoc.me** é inovadora, mas o verdadeiro diferencial está na garantia de **conformidade ética e disciplinar** com as regras da OAB. Todo conteúdo – texto, imagens, elementos de UI – deve seguir estritamente o Provimento 205/2021 (CFOAB), o Código de Ética/Disciplina (Res. 02/2015) e demais normativos. Em suma: **nada de linguagem mercadológica, promessas de sucesso ou apelo comercial**. Cada perfil deve ser *informativo* e *sóbrio*, sem captação de clientela disfarçada. Caso contrário, o produto se torna apenas mais um “Linktree” e expõe o advogado a sanções disciplinares (advertência, censura, suspensão).  
 
 Nas recomendações técnicas abaixo, listamos **itens absolutamente vedados** (com fontes legais e exemplos proibidos), e sugerimos **mudanças no código** para reforçar o compliance: reforço de regex de bloqueio, trilha de auditoria, engine de políticas versionadas, validação humana pós-Geração IA etc. Também apresentamos um prompt detalhado para guiar o gerador de bios conforme as regras da OAB, incluindo verificações pós-Geração. Diagramas Mermaid ilustram o workflow de compliance, o modelo de dados estendido (com auditoria e verificação) e um cronograma de 3 fases para o lançamento. Em todos os pontos, priorizamos fontes oficiais (Provimento/CFOAB, Cartilhas OAB, Código de Ética) e segurança jurídica, marcando qualquer área ambígua como “não especificado”.

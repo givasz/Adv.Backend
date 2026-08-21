@@ -25,14 +25,12 @@ model User {
   firmsOwned Firm[]
 }
 
-// Escritório (sociedade). Enums OabStatus/Plan/FirmRole/FirmMemberStatus viram String no SQLite.
+// Escritório (sociedade). Enums Plan/FirmRole/FirmMemberStatus viram String no SQLite.
 model Firm {
   id          String  @id @default(cuid())
   slug        String  @unique
   name        String
   oabRegistry String
-  oabStatus   String  @default("none")
-  oabVerified Boolean @default(false)
   monogram    String  @default("")
   logoUrl     String?
   tagline     String  @default("")
@@ -78,16 +76,8 @@ model Profile {
   id          String   @id @default(cuid())
   slug        String   @unique
   name        String
+  // Auto-declarado: a plataforma não confere inscrições (espelha schema.prisma).
   oabNumber   String
-  oabVerified Boolean  @default(false) // espelha (oabStatus == "verified") — usado na UI
-  oabStatus   String   @default("none") // enum OabStatus no Postgres: none|pending|verified|rejected
-  // Snapshot da conferência (espelha schema.prisma — histórico em OabVerificationEvent).
-  oabVerifiedAt     DateTime?
-  oabVerifiedMethod String?
-  oabVerifiedBy     String?
-  oabRequestedAt    DateTime? // entrada na fila (status pending)
-  oabDecidedAt      DateTime? // decisão da plataforma (verified|rejected)
-  oabReason         String    @default("") // devolutiva ao advogado (motivo da rejeição)
   headline    String   @default("")
   bio         String   @default("")
   avatarUrl   String?
