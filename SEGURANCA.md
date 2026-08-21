@@ -159,6 +159,42 @@ frontend. `npm test` nos dois; `npm run smoke` abre as 21 rotas num navegador re
 
 ---
 
+## Dependências (varredura de 21/08/2026)
+
+### Corrigido
+
+**react-router 6.30.4 → 6.30.6** e, junto, dois redirecionamentos abertos que
+existiam no nosso próprio código — o aviso do react-router foi o que fez procurar:
+
+- `caminhoDeVolta()` barrava `//outro.site` mas **não** `/\outro.site`. O navegador
+  lê os dois como endereço externo, então `?voltar=/\site-falso` fazia a subpágina
+  devolver a pessoa para fora. Também passou a recusar caractere de controle.
+- `AuthPage` usava `?next=` **sem validação nenhuma**: `/entrar?next=https://site-falso`
+  mandava o advogado **recém-autenticado** direto para a página de quem montou o
+  link. Agora passa pela mesma trava.
+
+### Conhecido e não alcançável (avaliado item a item)
+
+O backend tem 10 avisos do `npm audit`, **todos** exigindo Nest 10 → 11 (major).
+A migração não entra numa correção de segurança sem ser pedida — e nenhum dos
+avisos é alcançável neste código:
+
+| Pacote | Aviso | Por que não alcança |
+|---|---|---|
+| `@nestjs/core` | injeção em SSE (`GHSA-36xv-jgw5-4q75`, CVSS 6.1) | não há rota SSE; a falha exige mapear dado do usuário em `message.type`/`id` |
+| `multer` | 5 avisos de negação de serviço | não há upload de arquivo — a foto é data URI no corpo JSON |
+| `lodash` | injeção de código via `_.template` | transitivo do `@nestjs/config`; não é chamado com entrada do usuário |
+| `body-parser` | limite inválido desativa o teto em silêncio | nosso limite é `'1mb'` (válido), então o teto vale |
+| `qs` | DoS no `stringify` com `encodeValuesOnly` | usamos só o parse |
+
+O frontend fica com 2 avisos, **ambos só no servidor de desenvolvimento**
+(`vite`/`esbuild`) — não vão para o `dist` publicado. A correção também é major.
+
+**Reavaliar** a cada `npm audit`: o argumento acima é "não usamos esse recurso".
+No dia em que entrar SSE, upload de arquivo ou `_.template`, ele deixa de valer.
+
+---
+
 ## Checklist de produção
 
 **A API não sobe** se qualquer item de segredo estiver com valor de exemplo. Antes
