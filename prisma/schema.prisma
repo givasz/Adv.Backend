@@ -159,6 +159,10 @@ model Firm {
   // ---- White-label canônico do escritório (membros herdam a marca) ----
   brandAccent    String? // cor de destaque (hex)
   customDomain   String? // domínio próprio (informativo no protótipo)
+  // Destino do pedido montado pelo assistente virtual da página:
+  //   "institutional" (padrão) → WhatsApp do escritório
+  //   "lawyer"                 → WhatsApp do advogado escolhido na conversa
+  assistantRoute String    @default("institutional")
   // ---- Plano / assentos (billing real entra depois; hoje é campo, como Profile.plan) ----
   plan           Plan      @default(premium) // escritório opera no tier alto
   seatsPurchased Int       @default(5) // base do plano Escritório inclui 5 assentos
