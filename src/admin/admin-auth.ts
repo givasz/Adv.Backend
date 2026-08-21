@@ -12,6 +12,7 @@
 // ⚠️ Em produção defina ADMIN_PASSWORD e ADMIN_SESSION_SECRET fortes.
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import { IS_PROD, requireSecret } from '../security/config'
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8 // 8 horas
 
@@ -24,10 +25,12 @@ export function adminLabel(): string {
   return adminUsername()
 }
 function adminPassword(): string {
-  return process.env.ADMIN_PASSWORD || process.env.ADMIN_TOKEN || 'dev-admin-123'
+  // Em produção não existe senha padrão: sem ADMIN_PASSWORD, nenhuma senha entra
+  // (requireSecret lança) — o painel fica trancado em vez de aberto com "dev-admin-123".
+  return requireSecret([process.env.ADMIN_PASSWORD, process.env.ADMIN_TOKEN], 'dev-admin-123')
 }
 function sessionSecret(): string {
-  return process.env.ADMIN_SESSION_SECRET || process.env.ADMIN_TOKEN || 'dev-admin-secret'
+  return requireSecret([process.env.ADMIN_SESSION_SECRET, process.env.ADMIN_TOKEN], 'dev-admin-secret')
 }
 
 /** Comparação de strings resistente a timing attacks. */
@@ -38,9 +41,19 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb)
 }
 
-/** Valida usuário/senha do painel. */
+/**
+ * Valida usuário/senha do painel. As duas comparações rodam SEMPRE (nada de `&&`
+ * curto-circuitando a segunda): assim o tempo de resposta não diz se o usuário
+ * existe. Falha fechada se o segredo não estiver configurado.
+ */
 export function verifyCredentials(username?: string, password?: string): boolean {
-  return safeEqual(username ?? '', adminUsername()) && safeEqual(password ?? '', adminPassword())
+  try {
+    const userOk = safeEqual(username ?? '', adminUsername())
+    const passOk = safeEqual(password ?? '', adminPassword())
+    return userOk && passOk
+  } catch {
+    return false
+  }
 }
 
 /** Emite um token de sessão assinado, com expiração. */
@@ -57,7 +70,12 @@ export function verifySession(token?: string): boolean {
   if (!token) return false
   const [body, sig] = token.split('.')
   if (!body || !sig) return false
-  const expected = createHmac('sha256', sessionSecret()).update(body).digest('base64url')
+  let expected: string
+  try {
+    expected = createHmac('sha256', sessionSecret()).update(body).digest('base64url')
+  } catch {
+    return false // segredo ausente em produção → nenhuma sessão vale
+  }
   if (!safeEqual(sig, expected)) return false
   try {
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString()) as { exp?: number }
@@ -80,6 +98,10 @@ export function bearerFromHeader(authorization?: string): string | undefined {
  */
 export function isAdminAuthenticated(authorization?: string, adminToken?: string): boolean {
   if (verifySession(bearerFromHeader(authorization))) return true
+  // Token estático legado: é um bearer sem expiração, então em produção só vale se
+  // for longo o bastante para não ser adivinhado (o boot já recusa valores fracos).
   const staticToken = process.env.ADMIN_TOKEN
-  return !!staticToken && !!adminToken && safeEqual(adminToken, staticToken)
+  if (!staticToken || !adminToken) return false
+  if (IS_PROD && staticToken.length < 24) return false
+  return safeEqual(adminToken, staticToken)
 }

@@ -12,6 +12,9 @@ import {
 } from '@nestjs/common'
 import { ModerationService } from './moderation.service'
 import { isAdminAuthenticated, issueSession, verifyCredentials } from '../admin/admin-auth'
+import { AUTH_RATE_RULES, enforceRateLimit } from '../security/rate-limit'
+import { clientIp } from '../security/net'
+import { logSecurityEvent } from '../security/audit-log'
 
 @Controller()
 export class ModerationController {
@@ -20,6 +23,7 @@ export class ModerationController {
   // Exige sessão de admin (Bearer) ou o token estático legado (x-admin-token).
   private assertAdmin(authorization?: string, adminToken?: string) {
     if (!isAdminAuthenticated(authorization, adminToken)) {
+      logSecurityEvent({ event: 'access_denied', resource: 'admin', result: 'negado' })
       throw new ForbiddenException('Acesso de administrador inválido')
     }
   }
@@ -34,19 +38,37 @@ export class ModerationController {
     @Ip() ip?: string,
     @Headers('x-forwarded-for') forwardedFor?: string,
   ) {
-    // Atrás de proxy (Render/Netlify), o IP real vem no X-Forwarded-For.
-    const clientIp = forwardedFor?.split(',')[0]?.trim() || ip
-    return this.moderation.createReport(slug, { ...body, ip: clientIp })
+    // O X-Forwarded-For só entra quando TRUST_PROXY diz que há um proxy à frente:
+    // cabeçalho que o cliente escreve não pode ser a chave do rate limit.
+    return this.moderation.createReport(slug, { ...body, ip: clientIp(ip, forwardedFor) })
   }
 
   // ---- Admin: login ----
 
   // POST /api/admin/login  { username, password } → { token, expiresAt }
   @Post('admin/login')
-  login(@Body() body: { username?: string; password?: string }) {
+  login(
+    @Body() body: { username?: string; password?: string },
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') forwardedFor?: string,
+  ) {
+    // Uma senha só protege o painel inteiro: sem teto de tentativas, é só questão
+    // de tempo. O limite global segura a mesma varredura vinda de muitos IPs.
+    enforceRateLimit(
+      [
+        [`admin-login:${clientIp(ip, forwardedFor)}`, AUTH_RATE_RULES.adminLoginPerIp],
+        ['admin-login:global', AUTH_RATE_RULES.adminLoginGlobal],
+      ],
+      'Muitas tentativas. Aguarde alguns minutos.',
+    )
+    const endereco = clientIp(ip, forwardedFor)
     if (!verifyCredentials(body?.username, body?.password)) {
+      // O painel de moderação decide o que some do ar: cada tentativa contra ele
+      // é registrada, acertando ou não.
+      logSecurityEvent({ event: 'admin_login_fail', ip: endereco, result: 'negado' })
       throw new UnauthorizedException('Usuário ou senha inválidos')
     }
+    logSecurityEvent({ event: 'admin_login_ok', ip: endereco, result: 'ok' })
     return issueSession()
   }
 

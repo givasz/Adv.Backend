@@ -105,13 +105,20 @@ export function firmMonthlyPrice(seats: number): number {
 export const FIRM_LIMITS = { tagline: 120, about: 1200 } as const
 
 // Gera o slug base a partir do nome (mesma regra do frontend).
-export function slugify(s: string): string {
+// Teto do endereço público. Sem ele, um nome de 8 mil caracteres virava um slug
+// de 8 mil caracteres — chave única gigante no banco e URL que ninguém abre.
+export const SLUG_MAX = 60
+
+export function slugify(s: unknown): string {
   return (
-    s
+    String(s ?? '')
+      .slice(0, 200)
       .toLowerCase()
       .normalize('NFD')
       .replace(/[̀-ͯ]/g, '')
       .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)/g, '') || 'perfil'
+      .replace(/(^-|-$)/g, '')
+      .slice(0, SLUG_MAX)
+      .replace(/-$/, '') || 'perfil'
   )
 }

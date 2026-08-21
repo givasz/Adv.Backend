@@ -7,10 +7,29 @@ import {
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { FIRM_PRICING, firmMonthlyPrice, slugify } from '../plans'
+import {
+  clampOrNull,
+  clampText,
+  safeEmail,
+  safeHexColor,
+  safeHostname,
+  safePhone,
+  safeUrl,
+} from '../security/sanitize'
 import { hasBlockingIssue } from '../oab/compliance'
 
 // Mesmo formato aceito no cadastro (auth.service).
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+// Tetos de texto da página institucional. Nenhum campo entra sem limite: o corpo
+// do PUT é JSON livre e o que for gravado aqui é lido por visitantes.
+const FIRM_NAME_MAX = 90
+const MONOGRAM_MAX = 4
+const REGISTRY_MAX = 40
+const TAGLINE_MAX = 160
+const ABOUT_MAX = 2000
+const CITY_MAX = 80
+const STATE_MAX = 40
 
 // Serviço do escritório (sociedade de advogados).
 //
@@ -153,10 +172,14 @@ export class FirmsService {
     // O NOME da sociedade entra na checagem junto com os textos: ele é a linha mais
     // visível da página institucional, e "Advocacia Vitória Certa" é publicidade
     // irregular tanto quanto a mesma frase no corpo do texto.
+    const d = data && typeof data === 'object' ? data : {}
+    const nome = clampText(d.name, FIRM_NAME_MAX)
+    const tagline = clampText(d.tagline, TAGLINE_MAX)
+    const about = clampText(d.about, ABOUT_MAX)
     const campos: [string, string][] = [
-      ['Nome da sociedade', data.name],
-      ['Frase institucional', data.tagline],
-      ['Sobre o escritório', data.about],
+      ['Nome da sociedade', nome],
+      ['Frase institucional', tagline],
+      ['Sobre o escritório', about],
     ]
     const travados = campos.filter(([, t]) => t && hasBlockingIssue(t)).map(([label]) => label)
     if (travados.length) {
@@ -173,25 +196,26 @@ export class FirmsService {
     if (!owner) throw new UnauthorizedException('Sessão inválida: usuário não encontrado')
 
     const managed = await this.findManagedFirm(userId)
-    const slug = await this.resolveFirmSlug(data.name, managed?.id)
-    const c = data.contact ?? {}
+    const slug = await this.resolveFirmSlug(nome, managed?.id)
+    const c = d.contact && typeof d.contact === 'object' ? d.contact : {}
     const fields = {
-      name: data.name ?? '',
+      name: nome,
       slug,
-      oabRegistry: data.oabRegistry ?? '',
-      monogram: data.monogram ?? '',
-      tagline: data.tagline ?? '',
-      about: data.about ?? '',
-      city: data.city ?? '',
-      state: data.state ?? '',
-      phone: c.phone ?? null,
-      email: c.email ?? null,
-      whatsapp: c.whatsapp ?? null,
-      instagram: c.instagram ?? null,
-      linkedin: c.linkedin ?? null,
-      brandAccent: data.brandAccent ?? null,
-      customDomain: data.customDomain ?? null,
-      assistantRoute: data.assistantRoute === 'lawyer' ? 'lawyer' : 'institutional',
+      oabRegistry: clampText(d.oabRegistry, REGISTRY_MAX),
+      monogram: clampText(d.monogram, MONOGRAM_MAX),
+      tagline,
+      about,
+      city: clampText(d.city, CITY_MAX),
+      state: clampText(d.state, STATE_MAX),
+      phone: safePhone(c.phone),
+      email: safeEmail(c.email),
+      whatsapp: safePhone(c.whatsapp),
+      // Redes viram href na página do escritório — só http/https entram.
+      instagram: safeUrl(c.instagram),
+      linkedin: safeUrl(c.linkedin),
+      brandAccent: safeHexColor(d.brandAccent),
+      customDomain: safeHostname(d.customDomain),
+      assistantRoute: d.assistantRoute === 'lawyer' ? 'lawyer' : 'institutional',
     }
 
     if (managed) {
@@ -231,9 +255,9 @@ export class FirmsService {
 
   // Convida um advogado por e-mail. Já tem conta → vira FirmMembership(invited) no
   // perfil que ele JÁ tem. Ainda não tem → fica um FirmInvite, resolvido no cadastro.
-  async invite(userId: string, emailRaw?: string, roleRaw?: string) {
+  async invite(userId: string, emailRaw?: unknown, roleRaw?: unknown) {
     const firm = await this.requireManagedFirm(userId)
-    const email = (emailRaw ?? '').trim().toLowerCase()
+    const email = clampText(emailRaw, 200).toLowerCase()
     if (!EMAIL_RE.test(email)) throw new BadRequestException('Informe um e-mail válido.')
     const role = roleRaw === 'admin' ? ('admin' as const) : ('member' as const)
 

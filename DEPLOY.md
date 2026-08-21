@@ -21,6 +21,13 @@ repositórios independentes**:
 O deploy é **automático por push**: todo push na branch `main` de cada repo dispara um
 novo build no Netlify / Render (Auto-Deploy on commit).
 
+> ⚠️ **Desde 21/08/2026 a API recusa subir com segredo de desenvolvimento.** Se o
+> ambiente não tiver `AUTH_SESSION_SECRET`, `ADMIN_SESSION_SECRET`, `ADMIN_PASSWORD` e
+> `FRONTEND_ORIGIN` com valores reais, o processo morre no boot dizendo o que falta —
+> de propósito: com os valores de exemplo, qualquer pessoa que leia o repositório
+> assina a própria sessão de admin. O checklist completo está em
+> [SEGURANCA.md](SEGURANCA.md#checklist-de-produção).
+
 ---
 
 ## 1. Backend no Render

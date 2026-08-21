@@ -7,8 +7,10 @@ import {
 import { PrismaService } from '../prisma/prisma.service'
 import { POLICY_VERSION } from '../oab/compliance'
 import { slugify } from '../plans'
-import { hashPassword, issueUserSession, verifyPassword } from './user-auth'
+import { burnPasswordTime, hashPassword, issueUserSession, verifyPassword } from './user-auth'
 import { passwordProblem } from '../password'
+import { clampText, EMAIL_MAX } from '../security/sanitize'
+import { NAME_MAX } from '../plans'
 
 // Formato de e-mail simples (o mesmo do front). A validação forte fica a cargo
 // da confirmação de e-mail (fora do escopo do protótipo).
@@ -24,8 +26,10 @@ export interface AuthSession {
 export class AuthService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private normalizeEmail(email?: string): string {
-    return (email ?? '').trim().toLowerCase()
+  // Coerção antes de qualquer coisa: o corpo é JSON livre, e `email: 12345`
+  // chegando num `.trim()` viraria 500 (erro interno vazado) em vez de 400.
+  private normalizeEmail(email?: unknown): string {
+    return clampText(email, EMAIL_MAX).toLowerCase()
   }
 
   // Cria um perfil inicial (rascunho Free) junto com a conta, para que
@@ -48,18 +52,18 @@ export class AuthService {
     return { token, expiresAt, user: { id, email, name: name || undefined, plan } }
   }
 
-  async signup(email?: string, password?: string, name?: string): Promise<AuthSession> {
+  async signup(email?: unknown, password?: unknown, name?: unknown): Promise<AuthSession> {
     const mail = this.normalizeEmail(email)
     if (!EMAIL_RE.test(mail)) throw new BadRequestException('E-mail inválido.')
     // Regras de senha: ver src/password.ts. Valem só no CADASTRO — o login não
     // pode trancar quem criou a conta sob a regra antiga.
-    const senha = password ?? ''
+    const senha = typeof password === 'string' ? password : ''
     const problema = passwordProblem(senha, mail)
     if (problema) throw new BadRequestException(problema)
     const exists = await this.prisma.user.findUnique({ where: { email: mail }, select: { id: true } })
     if (exists) throw new ConflictException('Já existe uma conta com este e-mail.')
 
-    const cleanName = (name ?? '').trim() || undefined
+    const cleanName = clampText(name, NAME_MAX) || undefined
     const user = await this.prisma.user.create({
       data: {
         email: mail,
@@ -93,13 +97,21 @@ export class AuthService {
     }
   }
 
-  async login(email?: string, password?: string): Promise<AuthSession> {
+  async login(email?: unknown, password?: unknown): Promise<AuthSession> {
     const mail = this.normalizeEmail(email)
+    const senha = typeof password === 'string' ? password : ''
     const user = await this.prisma.user.findUnique({
       where: { email: mail },
       select: { id: true, email: true, password: true, profile: { select: { name: true, plan: true } } },
     })
-    if (!user || !verifyPassword(password ?? '', user.password)) {
+    // E-mail inexistente também paga o preço de uma verificação de senha: sem
+    // isso, a diferença de tempo entre "não existe" e "senha errada" entrega quais
+    // e-mails têm conta aqui. A mensagem já era única; o tempo agora também é.
+    if (!user) {
+      burnPasswordTime(senha)
+      throw new UnauthorizedException('E-mail ou senha incorretos.')
+    }
+    if (!verifyPassword(senha, user.password)) {
       throw new UnauthorizedException('E-mail ou senha incorretos.')
     }
     return this.sessionFor(user.id, user.email, user.profile?.name || undefined, user.profile?.plan ?? 'free')

@@ -13,7 +13,9 @@ import {
 import { SupportService } from './support.service'
 import { isAdminAuthenticated } from '../admin/admin-auth'
 import { userIdFromHeader } from '../auth/user-auth'
-import { checkRateLimit } from '../moderation/rate-limit'
+import { logSecurityEvent } from '../security/audit-log'
+import { checkRateLimit } from '../security/rate-limit'
+import { clientIp } from '../security/net'
 
 @Controller()
 export class SupportController {
@@ -29,6 +31,7 @@ export class SupportController {
 
   private assertAdmin(authorization?: string, adminToken?: string) {
     if (!isAdminAuthenticated(authorization, adminToken)) {
+      logSecurityEvent({ event: 'access_denied', resource: 'admin:support', result: 'negado' })
       throw new ForbiddenException('Acesso de administrador inválido')
     }
   }
@@ -45,10 +48,10 @@ export class SupportController {
     const userId = this.requireUser(authorization)
     // Teto por usuário: chamado é conversa, não fila de mensagens. Segura tanto
     // o clique nervoso quanto uma conta comprometida despejando lixo.
-    const clientIp = forwardedFor?.split(',')[0]?.trim() || ip || 'sem-ip'
+    const ipKey = clientIp(ip, forwardedFor)
     const ok =
       checkRateLimit(`support:${userId}`, { windowMs: 60 * 60 * 1000, max: 10 }) &&
-      checkRateLimit(`support-ip:${clientIp}`, { windowMs: 60 * 60 * 1000, max: 30 })
+      checkRateLimit(`support-ip:${ipKey}`, { windowMs: 60 * 60 * 1000, max: 30 })
     if (!ok) {
       throw new ForbiddenException(
         'Você abriu muitos chamados agora há pouco. Aguarde um instante e tente de novo.',

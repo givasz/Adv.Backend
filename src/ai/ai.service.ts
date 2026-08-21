@@ -6,6 +6,20 @@ import {
   POLICY_VERSION,
   type ComplianceIssue,
 } from '../oab/compliance'
+import { clampList, clampText } from '../security/sanitize'
+
+// Tetos do que entra no prompt. Duas razões, nesta ordem: o prompt é enviado a um
+// provedor que cobra por token (texto sem limite é conta sem limite), e um campo
+// que devia ser uma lista chegando como número derrubaria a rota com 500.
+const KEYWORDS_MAX = 12
+const KEYWORD_CHARS = 80
+const CURRENT_TEXT_MAX = 2000
+const AREA_LABEL_MAX = 120
+const NAME_CHARS = 70
+const CITY_CHARS = 80
+const AREAS_MAX = 20
+const MAXCHARS_TETO = 1200
+const KINDS = ['bio', 'area', 'headline', 'improve', 'faq'] as const
 
 // Recursos de IA. Disponibilidade por plano é decidida no FRONTEND (aiFeatures.ts):
 //   free    → bio, area
@@ -80,7 +94,8 @@ export class AiService {
         ? 'gemini-flash-lite-latest' // alias sempre atual; tem cota grátis e é rápido
         : 'claude-sonnet-5')
 
-  async generate(dto: GenerateDto): Promise<GenerateResult> {
+  async generate(entrada: GenerateDto): Promise<GenerateResult> {
+    const dto = this.sanitizeDto(entrada)
     const prompt = this.buildPrompt(dto)
     const maxTokens = this.maxTokens(dto)
 
@@ -126,6 +141,32 @@ export class AiService {
       complianceNotes: checkCompliance(text).map((i) => i.reason),
       usedFallback,
       policyVersion: POLICY_VERSION,
+    }
+  }
+
+  /**
+   * Fronteira de entrada da IA: tudo o que vai para o prompt passa por aqui, com
+   * tipo conferido e teto de tamanho. O `plan` NÃO é lido do corpo — quem o define
+   * é o controller, a partir da assinatura gravada no banco.
+   */
+  private sanitizeDto(d: any): GenerateDto {
+    const kind = (KINDS as readonly string[]).includes(d?.kind) ? d.kind : 'bio'
+    const maxChars = Number(d?.maxChars)
+    return {
+      kind: kind as GenerateKind,
+      keywords: clampList<unknown>(d?.keywords, KEYWORDS_MAX)
+        .map((k) => clampText(k, KEYWORD_CHARS))
+        .filter(Boolean),
+      areaLabel: clampText(d?.areaLabel, AREA_LABEL_MAX) || undefined,
+      name: clampText(d?.name, NAME_CHARS) || undefined,
+      city: clampText(d?.city, CITY_CHARS) || undefined,
+      areas: clampList<unknown>(d?.areas, AREAS_MAX)
+        .map((a) => clampText(a, AREA_LABEL_MAX))
+        .filter(Boolean),
+      currentText: clampText(d?.currentText, CURRENT_TEXT_MAX) || undefined,
+      plan: d?.plan === 'pro' || d?.plan === 'premium' ? d.plan : 'free',
+      maxChars:
+        Number.isFinite(maxChars) && maxChars > 0 ? Math.min(Math.round(maxChars), MAXCHARS_TETO) : 0,
     }
   }
 
