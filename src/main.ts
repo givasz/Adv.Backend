@@ -50,7 +50,10 @@ async function bootstrap() {
     origin: origensPermitidas(),
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-token', CSRF_HEADER],
+    // Sem `Authorization`: nenhuma rota lê esse cabeçalho desde que a sessão do
+    // advogado e a do painel viraram cookie. Anunciar o que não é aceito só
+    // convida alguém a tentar autenticar por ali.
+    allowedHeaders: ['Content-Type', 'x-admin-token', CSRF_HEADER],
     maxAge: 600,
   })
   // 0.0.0.0 + process.env.PORT: exigido por Render e afins.

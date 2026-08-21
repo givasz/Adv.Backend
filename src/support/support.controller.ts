@@ -9,13 +9,11 @@ import {
   Post,
   Query,
   Req,
-  UnauthorizedException,
 } from '@nestjs/common'
 import { SupportService } from './support.service'
-import { isAdminAuthenticated } from '../admin/admin-auth'
+import { assertAdmin } from '../admin/admin-auth'
 import { SessionService } from '../auth/session.service'
 import type { RequisicaoComAuth } from '../auth/session-context'
-import { logSecurityEvent } from '../security/audit-log'
 import { checkRateLimit } from '../security/rate-limit'
 import { clientIp } from '../security/net'
 
@@ -30,13 +28,6 @@ export class SupportController {
   // separa suporte de formulário público de spam — e o que permite responder.
   private requireUser(req: RequisicaoComAuth): Promise<string> {
     return this.sessions.requireUser(req, 'Entre na sua conta para falar com o suporte.')
-  }
-
-  private assertAdmin(authorization?: string, adminToken?: string) {
-    if (!isAdminAuthenticated(authorization, adminToken)) {
-      logSecurityEvent({ event: 'access_denied', resource: 'admin:support', result: 'negado' })
-      throw new ForbiddenException('Acesso de administrador inválido')
-    }
   }
 
   // POST /api/support  { kind, subject, message, pageUrl?, userAgent? }
@@ -74,21 +65,18 @@ export class SupportController {
   // GET /api/admin/support?status=open|in_progress|resolved
   @Get('admin/support')
   list(
+    @Req() req: RequisicaoComAuth,
     @Query('status') status?: string,
     @Headers('x-admin-token') token?: string,
-    @Headers('authorization') authorization?: string,
   ) {
-    this.assertAdmin(authorization, token)
+    assertAdmin(req, token, 'admin:support')
     return this.support.listAll(status)
   }
 
   // GET /api/admin/support/counts → { open, in_progress, resolved }
   @Get('admin/support/counts')
-  counts(
-    @Headers('x-admin-token') token?: string,
-    @Headers('authorization') authorization?: string,
-  ) {
-    this.assertAdmin(authorization, token)
+  counts(@Req() req: RequisicaoComAuth, @Headers('x-admin-token') token?: string) {
+    assertAdmin(req, token, 'admin:support')
     return this.support.counts()
   }
 
@@ -97,10 +85,10 @@ export class SupportController {
   setStatus(
     @Param('id') id: string,
     @Body() body: { status?: string; note?: string },
+    @Req() req?: RequisicaoComAuth,
     @Headers('x-admin-token') token?: string,
-    @Headers('authorization') authorization?: string,
   ) {
-    this.assertAdmin(authorization, token)
+    assertAdmin(req, token, 'admin:support')
     return this.support.setStatus(id, body?.status, body?.note)
   }
 }

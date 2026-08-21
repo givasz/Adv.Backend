@@ -178,6 +178,31 @@ chamadas que uma tela do painel dispara. Onde as sessões moram é uma variável
 ambiente (`SESSION_STORE=prisma|redis`), não uma refatoração.
 `backend/src/auth/`
 
+### 16. Painel admin: token no `sessionStorage` e nenhuma revogação
+
+O painel de moderação — que decide o que sai do ar — guardava um token assinado no
+`sessionStorage` e o mandava como `Authorization: Bearer`. Dois problemas: era
+legível por qualquer script que rodasse naquela página, e não havia como encerrar
+a sessão antes das 8 horas, porque o token não tinha estado nenhum do outro lado.
+
+Agora o painel usa o mesmo desenho da sessão do advogado — cookie HttpOnly com
+segredo sorteado, hash do lado do servidor, CSRF nas escritas — com duas
+diferenças deliberadas:
+
+- **As sessões do painel ficam em memória**, não no banco. Não há linha `User`
+  para o admin (ele vem do `.env`), e são poucas sessões de poucas horas. O preço
+  é que reiniciar o processo desloga o painel, o que num painel de moderação é
+  aceitável e até saudável.
+- **O cookie vale só em `/api/admin`.** Todas as rotas do painel moram lá, então
+  o cookie do admin não viaja junto de nenhuma visita a perfil público.
+
+A porta virou uma função só, `assertAdmin(req, token)`, em vez de três cópias em
+três controllers — uma rota nova do painel não tem como esquecer metade da
+verificação. O token estático legado (`x-admin-token`) segue aceito para script e
+curl, e continua dispensado de CSRF: ele é escrito à mão por quem chama, e nenhum
+site consegue forjá-lo a partir do navegador de outra pessoa.
+`backend/src/admin/admin-auth.ts`
+
 ---
 
 ## Verificado em execução
@@ -210,9 +235,10 @@ O percurso da LGPD foi percorrido num navegador de verdade contra a API real:
 cadastro pela tela → baixar o arquivo → senha errada recusada → exclusão →
 sessão morta e perfil fora do ar, sem nenhum erro de JavaScript.
 
-Mais 125 testes automatizados no backend (62 deles de autenticação e segurança) e
-289 no frontend. `npm test` nos dois; `npm run smoke` abre as 23 rotas num
-navegador real.
+Mais 142 testes automatizados no backend (79 deles de autenticação e segurança) e
+289 no frontend. `npm test` nos dois; `npm run smoke` abre as 24 rotas num
+navegador real — a do painel de moderação entrou na lista quando ele passou a
+perguntar ao servidor quem está logado antes de decidir o que desenhar.
 
 ---
 
@@ -329,7 +355,7 @@ node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 | `ADMIN_TOKEN` | remova, ou 24+ caracteres (é um bearer sem validade) |
 | `FRONTEND_ORIGIN` | origem(ns) reais do site, separadas por vírgula |
 | `TRUST_PROXY` | `1` **se** houver Nginx/proxy à frente; senão deixe `0` |
-| `NODE_ENV` | `production` |
+| `NODE_ENV` | `production` — **obrigatório**: é o que faz o cookie sair `Secure`. Sem ele (ou sem `TRUST_PROXY=1`), o `SameSite=None` cai para `Lax` e ninguém entra, sem erro nenhum no log. |
 
 Trocar `AUTH_SESSION_SECRET` **desloga todo mundo** (as sessões atuais foram
 assinadas com o valor antigo) — é o comportamento correto e só acontece uma vez.

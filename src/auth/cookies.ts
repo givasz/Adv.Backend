@@ -193,6 +193,8 @@ export function cookieAttrs(opts: {
   proto?: string
   httpOnly: boolean
   maxAgeMs?: number
+  /** Onde o cookie vale. Padrão `/`; o painel admin usa `/api/admin`. */
+  path?: string
 }): CookieAttrs {
   const secure = requisicaoSegura(opts.proto)
 
@@ -207,7 +209,7 @@ export function cookieAttrs(opts: {
     httpOnly: opts.httpOnly,
     secure,
     sameSite,
-    path: '/',
+    path: opts.path ?? '/',
     domain,
     maxAgeMs: opts.maxAgeMs,
   }

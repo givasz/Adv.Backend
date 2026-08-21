@@ -166,7 +166,7 @@ export class SessionService {
    */
   async encerrar(req: RequisicaoComAuth): Promise<string | null> {
     const auth = authDe(req)
-    const valor = lerCookie(auth.cookieValue)
+    const valor = lerCookie(auth.cookie(SESSION_COOKIE))
     let userId: string | null = null
     if (valor) {
       const registro = await this.store.buscar(valor.sessionId).catch(() => null)
@@ -221,7 +221,7 @@ export class SessionService {
 
   /** Validação de verdade. Devolve a sessão viva ou null. */
   private async resolver(auth: AuthContext): Promise<SessaoAtiva | null> {
-    const valor = lerCookie(auth.cookieValue)
+    const valor = lerCookie(auth.cookie(SESSION_COOKIE))
     if (!valor) return null
     try {
       const registro = await this.carregar(valor.sessionId)
@@ -277,7 +277,7 @@ export class SessionService {
     // antigo e a sessão "renovada" morreria no cliente. Só faz sentido quando o
     // cookie é persistente; sem "lembrar de mim" ele vive enquanto a janela viver.
     if (persistente) {
-      const valor = lerCookie(auth.cookieValue)
+      const valor = lerCookie(auth.cookie(SESSION_COOKIE))
       if (valor) {
         auth.setCookie(SESSION_COOKIE, montarCookie(valor.sessionId, valor.secret), {
           httpOnly: true,

@@ -21,6 +21,7 @@ export type SecurityEvent =
   | 'account_delete'
   | 'admin_login_ok'
   | 'admin_login_fail'
+  | 'admin_logout'
   | 'rate_limited'
   | 'access_denied'
 
