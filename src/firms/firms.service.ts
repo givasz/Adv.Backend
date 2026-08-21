@@ -184,6 +184,7 @@ export class FirmsService {
       linkedin: c.linkedin ?? null,
       brandAccent: data.brandAccent ?? null,
       customDomain: data.customDomain ?? null,
+      assistantRoute: data.assistantRoute === 'lawyer' ? 'lawyer' : 'institutional',
     }
 
     if (managed) {
@@ -441,6 +442,9 @@ export class FirmsService {
           bio: p.bio ?? '',
           avatarUrl: p.avatarUrl ?? undefined,
           linkedin,
+          // Só serve ao encaminhamento do assistente (assistantRoute: 'lawyer');
+          // o card do grid não mostra o número de ninguém.
+          whatsapp: p.whatsapp ?? undefined,
         }
       })
       // Ordem NEUTRA (alfabética) — sem hierarquia por senioridade/destaque.
@@ -471,6 +475,7 @@ export class FirmsService {
       // White-label herdado do escritório (aplicado na página).
       brandAccent: firm.brandAccent ?? undefined,
       customDomain: firm.customDomain ?? undefined,
+      assistantRoute: firm.assistantRoute ?? 'institutional',
       areas,
       lawyers,
       // Metadados de plano/assentos (usados por área administrativa; inócuos ao público).
