@@ -119,6 +119,7 @@ export interface PublicTextSource {
   faqs?: { question?: string | null; answer?: string | null }[] | null
   branding?: { brandName?: string | null } | null
   assistant?: { greeting?: string | null } | null
+  card?: { tagline?: string | null } | null
 }
 
 export interface PublicText {
@@ -150,6 +151,9 @@ export function publicTexts(p: PublicTextSource): PublicText[] {
   add('Legenda do vídeo', 'video', p.videoCaption)
   add('Abertura do assistente', 'agenda', p.assistant?.greeting)
   add('Nome no rodapé do perfil', 'marca', p.branding?.brandName)
+  // Cartão de visita: não fica na página, mas é divulgação impressa saída daqui —
+  // a mesma checagem vale (Prov. 205/2021 não distingue suporte).
+  add('Linha do cartão de visita', 'cartao', p.card?.tagline)
 
   return out
 }

@@ -9,6 +9,9 @@ import { blockingFields, POLICY_VERSION, publicStatus, RULESET_REV } from '../oa
 import {
   AREA_LIMIT,
   canUseFaq,
+  canUsePrintCard,
+  CARD_TAGLINE_MAX,
+  CARD_TEMPLATES,
   FAQ_ANSWER_MAX,
   FAQ_LIMIT,
   FAQ_QUESTION_MAX,
@@ -232,6 +235,37 @@ export class ProfilesService {
     return Object.keys(b).length ? b : undefined
   }
 
+  // Cartão de visita → uma coluna de JSON, saneada campo a campo. Aceitar o
+  // objeto do cliente cru deixaria entrar chave desconhecida e string gigante numa
+  // coluna que ninguém mais valida.
+  private cardCol(c: any): string {
+    if (!c || typeof c !== 'object') return ''
+    const bool = (v: unknown, dflt: boolean) => (typeof v === 'boolean' ? v : dflt)
+    const template = oneOf(c.template, CARD_TEMPLATES, 'timbre')
+    return JSON.stringify({
+      template,
+      showPhoto: bool(c.showPhoto, false),
+      showQr: bool(c.showQr, true),
+      showWhatsapp: bool(c.showWhatsapp, true),
+      showEmail: bool(c.showEmail, true),
+      showCity: bool(c.showCity, true),
+      showAreas: bool(c.showAreas, true),
+      tagline: clampText(c.tagline, CARD_TAGLINE_MAX),
+    })
+  }
+
+  // Coluna → objeto `card` do frontend. JSON inválido vira "sem cartão montado":
+  // o editor cai no padrão em vez de quebrar a tela.
+  private buildCard(p: any) {
+    if (!canUsePrintCard(p.plan) || !p.card) return undefined
+    try {
+      const parsed = JSON.parse(p.card)
+      return parsed && typeof parsed === 'object' ? parsed : undefined
+    } catch {
+      return undefined
+    }
+  }
+
   // Mapeia a linha (plana) do Prisma para o shape ANINHADO esperado pelo frontend
   // (serviceMode/contact/branding + coleções filhas). Ver frontend/src/lib/types.ts.
   // Usado nos retornos públicos (getBySlug/getMine/update); a moderação tem shape
@@ -285,6 +319,7 @@ export class ProfilesService {
       published: p.published,
       policyRevChecked: p.policyRevChecked,
       branding: this.buildBranding(p),
+      card: this.buildCard(p),
     }
     // Campos do dono (getMine) — ausentes no público (toPublic os remove).
     if (p.moderationStatus !== undefined) out.moderationStatus = p.moderationStatus
@@ -590,6 +625,10 @@ export class ProfilesService {
         // Carimba a revisão vigente das regras (monitor normativo): ao salvar, o
         // perfil passa a estar "em dia" com o RULESET_REV atual.
         policyRevChecked: RULESET_REV,
+        // Cartão impresso é perk do Max. Fora dele a chave nem entra no update: a
+        // coluna fica como estava, e quem rebaixa e volta reencontra o cartão
+        // montado (mesma regra do branding).
+        ...(canUsePrintCard(plan) ? { card: this.cardCol(data.card) } : {}),
         // Identidade própria (white-label) — persistida em colunas planas.
         brandName: data.branding?.brandName ?? null,
         brandAccent: data.branding?.accent ?? null,
