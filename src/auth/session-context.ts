@@ -12,9 +12,8 @@
 import {
   cookieAttrs,
   expiredCookie,
-  readCookie,
+  parseCookies,
   serializeCookie,
-  SESSION_COOKIE,
   type CookieAttrs,
 } from './cookies'
 import { CSRF_HEADER, origemDoPedido } from './csrf'
@@ -45,16 +44,29 @@ interface Resposta {
   setHeader(nome: string, valor: string | string[]): void
 }
 
+/** Onde um cookie vale e por quanto tempo. */
+export interface OpcoesCookie {
+  httpOnly: boolean
+  /** Ausente = cookie de sessão do navegador (morre ao fechar). */
+  maxAgeMs?: number
+  /** Padrão `/`. O painel admin restringe o dele a `/api/admin`. */
+  path?: string
+}
+
 export interface AuthContext {
-  /** Valor bruto do cookie de sessão, se houver. */
-  cookieValue?: string
+  /**
+   * Valor de um cookie desta requisição, pelo nome base (o prefixo `__Host-` é
+   * resolvido aqui dentro). A sessão do advogado e a do painel admin são cookies
+   * diferentes, com caminhos diferentes — daí ser uma função e não um campo.
+   */
+  cookie(base: string): string | undefined
   method: string
   origin?: string
   csrfHeader?: string
-  /** Grava um cookie na resposta. `maxAgeMs` ausente = cookie de sessão. */
-  setCookie(base: string, valor: string, opts: { httpOnly: boolean; maxAgeMs?: number }): void
+  /** Grava um cookie na resposta. */
+  setCookie(base: string, valor: string, opts: OpcoesCookie): void
   /** Apaga um cookie (com os mesmos atributos com que foi gravado). */
-  clearCookie(base: string, opts: { httpOnly: boolean }): void
+  clearCookie(base: string, opts: OpcoesCookie): void
   /**
    * Memória da validação já feita nesta requisição. Duas rotas que perguntam
    * "quem é?" duas vezes fazem UMA leitura de sessão.
@@ -91,11 +103,14 @@ export function sessionContext(req: Requisicao, res: Resposta, next: () => void)
   const host = hostDaApi(req)
   const proto = TRUST_PROXY ? primeiro(req.headers['x-forwarded-proto']) : undefined
 
-  const atributos = (opts: { httpOnly: boolean; maxAgeMs?: number }): CookieAttrs =>
+  const atributos = (opts: OpcoesCookie): CookieAttrs =>
     cookieAttrs({ origin, host, proto, ...opts })
 
+  // Uma leitura só do cabeçalho `Cookie`, por requisição.
+  const cookies = parseCookies(primeiro(req.headers.cookie))
+
   req.auth = {
-    cookieValue: readCookie(primeiro(req.headers.cookie), SESSION_COOKIE),
+    cookie: (base) => cookies[`__Host-${base}`] ?? cookies[base],
     method: (req.method ?? 'GET').toUpperCase(),
     origin,
     csrfHeader: primeiro(req.headers[CSRF_HEADER]),
@@ -117,6 +132,7 @@ export function sessionContext(req: Requisicao, res: Resposta, next: () => void)
 export function authDe(req?: RequisicaoComAuth): AuthContext {
   return (
     req?.auth ?? {
+      cookie: () => undefined,
       method: 'GET',
       setCookie: () => undefined,
       clearCookie: () => undefined,

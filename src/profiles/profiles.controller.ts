@@ -1,7 +1,6 @@
 import {
   Body,
   Controller,
-  ForbiddenException,
   Get,
   Headers,
   Param,
@@ -9,13 +8,11 @@ import {
   Put,
   Query,
   Req,
-  UnauthorizedException,
 } from '@nestjs/common'
 import { ProfilesService } from './profiles.service'
-import { adminLabel, isAdminAuthenticated } from '../admin/admin-auth'
+import { adminLabel, assertAdmin } from '../admin/admin-auth'
 import { SessionService } from '../auth/session.service'
 import type { RequisicaoComAuth } from '../auth/session-context'
-import { logSecurityEvent } from '../security/audit-log'
 
 @Controller()
 export class ProfilesController {
@@ -33,15 +30,6 @@ export class ProfilesController {
    */
   private requireUser(req: RequisicaoComAuth): Promise<string> {
     return this.sessions.requireUser(req, 'Entre na sua conta para salvar o perfil.')
-  }
-
-  // Aceita a sessão de admin (Authorization: Bearer) ou o token estático legado
-  // (x-admin-token = ADMIN_TOKEN), unificando o acesso com o painel de denúncias.
-  private assertAdmin(token?: string, authorization?: string) {
-    if (!isAdminAuthenticated(authorization, token)) {
-      logSecurityEvent({ event: 'access_denied', resource: 'admin:profiles', result: 'negado' })
-      throw new ForbiddenException('Acesso de administrador inválido')
-    }
   }
 
   // GET /api/directory?q=&area=
@@ -96,11 +84,11 @@ export class ProfilesController {
   // GET /api/admin/profiles?q=  → busca de perfis pelo painel (qualquer status)
   @Get('admin/profiles')
   adminSearchProfiles(
+    @Req() req: RequisicaoComAuth,
     @Query('q') q?: string,
     @Headers('x-admin-token') token?: string,
-    @Headers('authorization') authorization?: string,
   ) {
-    this.assertAdmin(token, authorization)
+    assertAdmin(req, token, 'admin:profiles')
     return this.profiles.adminSearch(q)
   }
 }
