@@ -6,7 +6,6 @@ import { AuthModule } from './auth/auth.module'
 import { ProfilesModule } from './profiles/profiles.module'
 import { ModerationModule } from './moderation/moderation.module'
 import { FirmsModule } from './firms/firms.module'
-import { BookingsModule } from './bookings/bookings.module'
 import { SupportModule } from './support/support.module'
 
 @Module({
@@ -17,7 +16,6 @@ import { SupportModule } from './support/support.module'
     ProfilesModule,
     ModerationModule,
     FirmsModule,
-    BookingsModule,
     SupportModule,
   ],
   controllers: [HealthController],

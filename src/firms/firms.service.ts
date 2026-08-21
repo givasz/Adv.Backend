@@ -150,10 +150,18 @@ export class FirmsService {
   // não vem mais no corpo: membro entra por convite e cada um edita o próprio
   // perfil (ver invite/removeMember abaixo).
   async createOrUpdate(userId: string, data: any) {
-    const texts = [data.tagline, data.about]
-    if (texts.some((t: string) => t && hasBlockingIssue(t))) {
+    // O NOME da sociedade entra na checagem junto com os textos: ele é a linha mais
+    // visível da página institucional, e "Advocacia Vitória Certa" é publicidade
+    // irregular tanto quanto a mesma frase no corpo do texto.
+    const campos: [string, string][] = [
+      ['Nome da sociedade', data.name],
+      ['Frase institucional', data.tagline],
+      ['Sobre o escritório', data.about],
+    ]
+    const travados = campos.filter(([, t]) => t && hasBlockingIssue(t)).map(([label]) => label)
+    if (travados.length) {
       throw new BadRequestException(
-        'O texto do escritório contém termos vedados pela OAB (Prov. 205/2021). Ajuste antes de salvar.',
+        `Há termos vedados pela OAB (Prov. 205/2021) em: ${travados.join(', ')}. Ajuste antes de salvar.`,
       )
     }
     // O dono é a conta logada (o controller já exigiu sessão). Se o usuário sumiu

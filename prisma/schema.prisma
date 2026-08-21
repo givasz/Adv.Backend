@@ -62,18 +62,6 @@ enum FirmMemberStatus {
   active
 }
 
-// Situação de uma solicitação de agendamento na agenda nativa do advogado.
-//   pending   → cliente marcou; aguarda a decisão do advogado (SEGURA o horário)
-//   confirmed → advogado aceitou; horário reservado
-//   declined  → advogado recusou; horário liberado
-//   cancelled → cancelado (pelo advogado após confirmar)
-enum BookingStatus {
-  pending
-  confirmed
-  declined
-  cancelled
-}
-
 model User {
   id         String          @id @default(cuid())
   email      String          @unique
@@ -229,9 +217,14 @@ model Profile {
   scheduling           String?
   // ---- Agendamento ----
   // Modo do botão "Agendar": "off" (sem botão) | "external" (link Calendly/Google,
-  // usa `scheduling`) | "native" (agenda própria do advoc.me — model Booking abaixo).
+  // usa `scheduling`) | "assistant" (conversa guiada que monta a mensagem do WhatsApp).
+  // "native" é LEGADO: a agenda-calendário foi removida — ela guardava nome, WhatsApp
+  // e o assunto do VISITANTE no nosso banco, sem tela que a usasse e sem aviso de
+  // privacidade. Perfis antigos com "native" caem para "whatsapp" na leitura.
   schedulingMode       String           @default("external")
-  // Config da agenda nativa (só relevante quando schedulingMode == "native").
+  // Config da agenda-calendário removida. Colunas mantidas INERTES: são preferências
+  // do próprio advogado (não há dado de terceiro aqui) e derrubá-las custaria outra
+  // migração destrutiva sem ganho. Nada as lê hoje.
   bookingWeekdays      String           @default("[1,2,3,4,5]") // JSON de dias (0=dom … 6=sáb)
   bookingStartMin      Int              @default(540) // início do expediente em minutos (09:00)
   bookingEndMin        Int              @default(1080) // fim do expediente (18:00)
@@ -286,7 +279,6 @@ model Profile {
   events         LinkEvent[]
   auditLogs      AuditLog[]
   reports        Report[]
-  bookings       Booking[]
   // Vínculo com um escritório (opcional). Presente quando o advogado integra uma sociedade.
   firmMembership FirmMembership?
 
@@ -315,25 +307,6 @@ model Report {
   @@index([status, createdAt])
 }
 
-// Solicitação de consulta feita por um visitante na agenda nativa do advogado.
-// LGPD: guarda o mínimo (nome + WhatsApp + nota) para o advogado retornar o contato.
-// Retenção limitada — limpar registros antigos conforme a política de dados.
-model Booking {
-  id          String        @id @default(cuid())
-  profileId   String
-  profile     Profile       @relation(fields: [profileId], references: [id], onDelete: Cascade)
-  clientName  String
-  clientWhats String // só dígitos, formato internacional (ex.: 5511999999999)
-  note        String        @default("")
-  startAt     DateTime // início do horário escolhido
-  endAt       DateTime // startAt + duração do slot
-  status      BookingStatus @default(pending)
-  createdAt   DateTime      @default(now())
-  decidedAt   DateTime? // quando o advogado aceitou/recusou
-
-  @@index([profileId, status])
-  @@index([profileId, startAt])
-}
 
 model PracticeArea {
   id          String  @id @default(cuid())

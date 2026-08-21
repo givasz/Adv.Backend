@@ -139,6 +139,9 @@ Redirect SPA:        /*  →  /index.html  200   (React Router)
 - Abas: **Denúncias** (moderação), **Suporte** e **Advogados** (busca por nome/OAB,
   ver/moderar, conferir no CNA). Não há conferência de OAB — ver
   `docs/decisao-sem-verificacao-de-oab.md`.
+- Não há agenda-calendário: a plataforma não guarda contato de visitante. A tabela
+  `Booking` (nome, telefone e assunto do caso) foi removida em 21/08/2026 — mesmo
+  documento.
 
 ---
 
