@@ -135,6 +135,49 @@ modelos atrás do de produção — o efeito era o cadastro quebrar só no ambie
 local, que é onde se testa. Agora ele é GERADO do schema de produção
 (`npm run prisma:dev-schema`), então não tem como divergir.
 
+### 15. Sessão no `localStorage` — um XSS levava a conta embora
+
+O token de sessão ficava no `localStorage` e ia no cabeçalho `Authorization`.
+Qualquer script que conseguisse rodar na nossa origem (um XSS, uma extensão, uma
+dependência comprometida) lia o token e entrava como o advogado, de outra máquina,
+pelos dias que faltassem para vencer. Era o item 2 de "em aberto" desta auditoria.
+
+Agora a credencial é um **cookie `HttpOnly`**: o JavaScript da página não a lê —
+nem o nosso, nem o de um invasor. O que mudou por inteiro:
+
+- **A credencial é sorteada, não assinada.** 32 bytes aleatórios no cookie; o
+  banco guarda só o SHA-256 deles. Antes, o token era um HMAC sobre um id `cuid`
+  (que não é aleatório): quem obtivesse o segredo de assinatura poderia fabricar
+  sessões. E o valor guardado no banco *era* metade da credencial — um dump do
+  Postgres bastava. Hoje não: um dump traz hashes.
+- **`Secure` sempre em produção e `SameSite` decidido por requisição.** `Lax`
+  quando o front e a API são do mesmo site (advoc.me + api.advoc.me), `None` no
+  arranjo de hoje (front no Netlify, API na VPS), em que `Lax` impediria o login.
+  Prefixo `__Host-` quando os atributos permitem, o que fecha a injeção de cookie
+  por subdomínio (fixação de sessão). `backend/src/auth/cookies.ts`
+- **CSRF, que o cookie criou.** Cookie o navegador manda sozinho — então um
+  formulário em outro site chamaria `DELETE /api/account` com a sessão do advogado
+  anexada. Toda escrita autenticada agora exige o token da sessão no cabeçalho
+  `x-csrf-token` (derivado por HMAC do id da sessão: sem linha extra no banco, sem
+  leitura a mais) **e** uma `Origin` da lista do `FRONTEND_ORIGIN` — a mesma lista
+  do CORS. `backend/src/auth/csrf.ts`
+- **Validação num ponto só.** Nenhum controller lê cabeçalho de autenticação: todos
+  chamam `sessions.requireUser(req)`, e é lá dentro que a sessão é conferida, o
+  CSRF é exigido e o prazo é renovado. Não há como esquecer numa rota nova.
+- **Prazo com dois relógios.** Vencimento por inatividade (12 h sem "lembrar de
+  mim", 30 dias com) empurrado para a frente enquanto a pessoa usa, e um teto
+  absoluto (24 h / 180 dias) que renovação nenhuma ultrapassa — sem ele, uma
+  sessão usada todo dia viveria para sempre, e um cookie roubado junto com ela.
+- **"Lembrar de mim".** Marcado (padrão), o cookie tem `Max-Age` e sobrevive ao
+  fechar do navegador. Desmarcado, é cookie de sessão do navegador e a sessão
+  também vence antes no servidor — o certo num computador emprestado.
+
+Custo na VPS: a renovação só grava quando já passou metade do prazo (~1 escrita a
+cada 15 dias por pessoa ativa) e um cache curto em memória absorve a rajada de
+chamadas que uma tela do painel dispara. Onde as sessões moram é uma variável de
+ambiente (`SESSION_STORE=prisma|redis`), não uma refatoração.
+`backend/src/auth/`
+
 ---
 
 ## Verificado em execução
@@ -151,18 +194,25 @@ Com a API rodando (`node dist/main.js`):
 | 8 tentativas no painel admin | 6 passam, depois `429` |
 | `X-Forwarded-For` trocado a cada requisição | continua `429` |
 | Cabeçalhos de resposta | CSP, nosniff, DENY, no-referrer, Permissions-Policy |
-| Sair num aparelho | o token daquele aparelho vira `401`; o outro segue em `200` |
-| Encerrar todas | os 3 tokens abertos viram `401` de uma vez |
+| Sair num aparelho | o cookie daquele aparelho vira `401`; o outro segue em `200` |
+| Encerrar todas | as 3 sessões abertas viram `401` de uma vez |
 | Exportar dados | traz conta, perfil e chamados; **sem** o e-mail de quem denunciou |
 | Excluir com senha errada | `400`, conta intacta |
 | Excluir com a senha certa | perfil público vira `404` e o banco fica com 0 linhas em 9 tabelas |
+
+A sessão por cookie tem um teste de ponta a ponta por HTTP de verdade
+(`backend/src/auth/session.http.spec.ts`): um cliente com pote de cookies entra,
+volta numa requisição nova só com o cookie guardado, apanha `403` ao escrever sem
+o `x-csrf-token`, passa com ele, sai — e depois o cookie copiado antes do logout
+recebe `401`, assim como um pedido idêntico partido de outra `Origin`.
 
 O percurso da LGPD foi percorrido num navegador de verdade contra a API real:
 cadastro pela tela → baixar o arquivo → senha errada recusada → exclusão →
 sessão morta e perfil fora do ar, sem nenhum erro de JavaScript.
 
-Mais 82 testes automatizados no backend (44 deles de segurança) e 264 no
-frontend. `npm test` nos dois; `npm run smoke` abre as 22 rotas num navegador real.
+Mais 125 testes automatizados no backend (62 deles de autenticação e segurança) e
+289 no frontend. `npm test` nos dois; `npm run smoke` abre as 23 rotas num
+navegador real.
 
 ---
 
@@ -174,9 +224,11 @@ frontend. `npm test` nos dois; `npm run smoke` abre as 22 rotas num navegador re
    ficaria sem saber por que a conta não foi criada. Mitigado por hora com o teto de
    8 cadastros/hora por IP. *Resolver junto com o envio de e-mail.*
 
-2. **Sessão no `localStorage`.** Fica exposta a um XSS. Com o CSP e o saneamento de
-   links a superfície diminuiu bastante; a solução completa é cookie `HttpOnly` +
-   `SameSite`, que exige o backend em subdomínio do frontend.
+2. **Cookie de terceiros no arranjo atual.** Com o front no Netlify e a API na VPS,
+   o cookie da sessão é `SameSite=None` — e navegadores vêm apertando o cerco a
+   cookies de terceiros. Funciona hoje em todos eles; o desfecho limpo é pôr a API
+   num subdomínio do site (`api.advoc.me`), o que passa o cookie para `SameSite=Lax`
+   sozinho, sem mudar uma linha de código. *Fazer junto com o registro do domínio.*
 
 3. **Cobrança simulada.** `POST /profiles/me/plan` ativa plano sem pagamento. É
    assim de propósito (plataforma em teste) e está documentado no código — mas
@@ -235,21 +287,30 @@ No dia em que entrar SSE, upload de arquivo ou `_.template`, ele deixa de valer.
 
 ## Checklist de produção
 
-### Esta versão exige `prisma db push`
+### Esta versão exige `prisma db push` (e esvaziar `Session` antes)
 
-A tabela `Session` é nova (é ela que faz o "sair" valer). Sem o push, **toda rota
-autenticada responde 401** — o servidor procura uma tabela que não existe.
+A tabela `Session` ganhou três colunas obrigatórias — `tokenHash`,
+`absoluteExpiresAt` e `remember` —, e `id` deixou de ter valor automático. As
+linhas antigas não têm como preenchê-las, e o `db push` recusa criar uma coluna
+obrigatória numa tabela com dados. Como as sessões antigas já não valeriam de
+qualquer forma (a credencial mudou de formato E de lugar), o caminho é esvaziar a
+tabela:
 
 ```bash
 # na VPS, com o dist novo já enviado:
-pg_dump ... > backup-antes.sql        # nunca pule
-npx prisma db push                    # cria a tabela Session
+pg_dump ... > backup-antes.sql                              # nunca pule
+psql "$DATABASE_URL" -c 'TRUNCATE TABLE "Session";'          # sessões antigas
+npx prisma db push                                           # colunas novas
 pm2 restart advocme-backend
 ```
 
-Os tokens antigos não têm id de sessão e param de valer: **todo mundo é
-deslogado uma vez** neste deploy. É o comportamento correto (aqueles tokens eram
-justamente os irrevogáveis), mas avise, ou vai parecer defeito.
+**Todo mundo é deslogado uma vez** neste deploy — o token que estava no
+`localStorage` não é mais aceito e o navegador precisa receber o cookie novo.
+Avise, ou vai parecer defeito.
+
+Confira também, no `.env` da VPS, que `FRONTEND_ORIGIN` lista as origens reais do
+site: com cookie e `credentials`, essa lista deixou de ser conforto e virou a
+fronteira — é ela que o CORS e o anti-CSRF conferem.
 
 
 **A API não sobe** se qualquer item de segredo estiver com valor de exemplo. Antes

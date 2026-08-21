@@ -8,11 +8,13 @@ import {
   Post,
   Put,
   Query,
+  Req,
   UnauthorizedException,
 } from '@nestjs/common'
 import { ProfilesService } from './profiles.service'
 import { adminLabel, isAdminAuthenticated } from '../admin/admin-auth'
 import { SessionService } from '../auth/session.service'
+import type { RequisicaoComAuth } from '../auth/session-context'
 import { logSecurityEvent } from '../security/audit-log'
 
 @Controller()
@@ -29,8 +31,8 @@ export class ProfilesController {
    * anônimo abria e lia. Escrever exige sessão; sem conta, o rascunho é do
    * navegador (frontend/src/lib/api.ts), onde nenhum outro visitante alcança.
    */
-  private requireUser(authorization?: string): Promise<string> {
-    return this.sessions.requireUser(authorization, 'Entre na sua conta para salvar o perfil.')
+  private requireUser(req: RequisicaoComAuth): Promise<string> {
+    return this.sessions.requireUser(req, 'Entre na sua conta para salvar o perfil.')
   }
 
   // Aceita a sessão de admin (Authorization: Bearer) ou o token estático legado
@@ -50,15 +52,15 @@ export class ProfilesController {
 
   // GET /api/profiles/me — sem sessão devolve null (o editor usa o rascunho local).
   @Get('profiles/me')
-  async me(@Headers('authorization') authorization?: string) {
-    const userId = await this.sessions.userIdFrom(authorization)
+  async me(@Req() req: RequisicaoComAuth) {
+    const userId = await this.sessions.userIdFrom(req)
     return userId ? this.profiles.getMine(userId) : null
   }
 
   // PUT /api/profiles/me
   @Put('profiles/me')
-  async update(@Body() body: any, @Headers('authorization') authorization?: string) {
-    return this.profiles.update(await this.requireUser(authorization), body)
+  async update(@Body() body: any, @Req() req: RequisicaoComAuth) {
+    return this.profiles.update(await this.requireUser(req), body)
   }
 
   // POST /api/profiles/me/plan  → { plan: 'free' | 'pro' | 'premium' }
@@ -67,21 +69,21 @@ export class ProfilesController {
   // o PUT /profiles/me ignora `plan` no corpo. Quando entrar o billing real, o
   // webhook do provedor passa a ser quem chama.
   @Post('profiles/me/plan')
-  async setPlan(@Body() body: { plan?: string }, @Headers('authorization') authorization?: string) {
-    return this.profiles.setPlan(await this.requireUser(authorization), body?.plan)
+  async setPlan(@Body() body: { plan?: string }, @Req() req: RequisicaoComAuth) {
+    return this.profiles.setPlan(await this.requireUser(req), body?.plan)
   }
 
   // GET /api/profiles/slug-available?slug=&name=
   // ANTES da rota /profiles/:slug — senão o Nest casaria "slug-available" como slug.
   @Get('profiles/slug-available')
   async slugAvailable(
+    @Req() req: RequisicaoComAuth,
     @Query('slug') slug?: string,
     @Query('name') name?: string,
-    @Headers('authorization') authorization?: string,
   ) {
     // Consulta pública de disponibilidade: sem sessão não há "meu próprio slug",
     // então um id impossível faz a comparação de dono nunca casar.
-    const userId = (await this.sessions.userIdFrom(authorization)) ?? 'anonimo'
+    const userId = (await this.sessions.userIdFrom(req)) ?? 'anonimo'
     return this.profiles.slugAvailability(userId, slug ?? '', name)
   }
 

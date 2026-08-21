@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
+  credencialConfere,
+  duracaoSessao,
   hashPassword,
-  issueUserSession,
-  readSessionToken,
-  sessionFromHeader,
+  lerCookie,
+  montarCookie,
+  novaCredencial,
   verifyPassword,
 } from './user-auth'
 
@@ -29,46 +31,57 @@ describe('senha', () => {
   })
 })
 
-describe('token de sessão', () => {
-  const EXP = () => Date.now() + 60_000
-
-  it('token emitido é aceito e diz de quem é e de qual sessão', () => {
-    const { token } = issueUserSession('user-1', 'sess-1', EXP())
-    expect(readSessionToken(token)).toEqual({ userId: 'user-1', sessionId: 'sess-1' })
-    expect(sessionFromHeader(`Bearer ${token}`)).toEqual({ userId: 'user-1', sessionId: 'sess-1' })
+describe('credencial da sessão', () => {
+  it('o segredo confere com o hash guardado', () => {
+    const { secret, hash } = novaCredencial()
+    expect(credencialConfere(secret, hash)).toBe(true)
+    expect(credencialConfere('outro-segredo', hash)).toBe(false)
+    expect(credencialConfere('', hash)).toBe(false)
+    expect(credencialConfere(secret, '')).toBe(false)
   })
 
-  it('recusa token forjado, sem assinatura ou com o dono trocado', () => {
-    const { token } = issueUserSession('user-1', 'sess-1', EXP())
-    const [body, sig] = token.split('.')
-    const outroBody = Buffer.from(
-      JSON.stringify({ sub: 'user-2', sid: 'sess-1', exp: EXP() }),
-    ).toString('base64url')
-
-    expect(readSessionToken(`${outroBody}.${sig}`)).toBeNull() // troca de dono
-    expect(readSessionToken(body)).toBeNull() // sem assinatura
-    expect(readSessionToken(`${body}.`)).toBeNull()
-    expect(readSessionToken('')).toBeNull()
-    expect(readSessionToken(undefined)).toBeNull()
-    expect(readSessionToken('lixo.lixo')).toBeNull()
+  it('o hash não contém o segredo — um dump do banco não devolve sessão', () => {
+    const { secret, hash } = novaCredencial()
+    expect(hash).not.toContain(secret)
+    expect(hash).toHaveLength(64)
   })
 
-  it('recusa token expirado e token sem id de sessão', () => {
-    const vencido = Buffer.from(
-      JSON.stringify({ sub: 'u', sid: 's', exp: Date.now() - 1 }),
-    ).toString('base64url')
-    expect(readSessionToken(`${vencido}.qualquer`)).toBeNull()
-
-    // Token no formato antigo (sem `sid`) não vale mais: sem id de sessão não há
-    // linha no banco para conferir, e era exatamente esse o token irrevogável.
-    const antigo = Buffer.from(JSON.stringify({ sub: 'u', exp: EXP() })).toString('base64url')
-    expect(readSessionToken(`${antigo}.qualquer`)).toBeNull()
+  it('dois sorteios nunca coincidem', () => {
+    const a = novaCredencial()
+    const b = novaCredencial()
+    expect(a.secret).not.toBe(b.secret)
+    // 256 bits de entropia: adivinhar não é uma estratégia.
+    expect(Buffer.from(a.secret, 'base64url')).toHaveLength(32)
   })
 
-  it('só o esquema Bearer é aceito no header', () => {
-    const { token } = issueUserSession('user-1', 'sess-1', EXP())
-    expect(sessionFromHeader(token)).toBeNull()
-    expect(sessionFromHeader(`Basic ${token}`)).toBeNull()
-    expect(sessionFromHeader(undefined)).toBeNull()
+  it('o cookie leva id e segredo, e volta inteiro', () => {
+    const valor = montarCookie('abc123', 'segredo-bem-comprido-aqui')
+    expect(lerCookie(valor)).toEqual({ sessionId: 'abc123', secret: 'segredo-bem-comprido-aqui' })
+  })
+
+  it('cookie malformado vira null (falha fechada)', () => {
+    expect(lerCookie(undefined)).toBeNull()
+    expect(lerCookie('')).toBeNull()
+    expect(lerCookie('sem-ponto')).toBeNull()
+    expect(lerCookie('.so-segredo-comprido-aqui')).toBeNull()
+    expect(lerCookie('id.')).toBeNull()
+    expect(lerCookie('id.curto')).toBeNull() // segredo pequeno demais para ser nosso
+  })
+})
+
+describe('duração da sessão', () => {
+  it('"lembrar de mim" dura mais e sobrevive ao fechar do navegador', () => {
+    const lembrada = duracaoSessao(true)
+    const avulsa = duracaoSessao(false)
+    expect(lembrada.persistente).toBe(true)
+    expect(avulsa.persistente).toBe(false)
+    expect(lembrada.idleMs).toBeGreaterThan(avulsa.idleMs)
+  })
+
+  it('o teto absoluto nunca é menor que o prazo de inatividade', () => {
+    for (const lembrar of [true, false]) {
+      const d = duracaoSessao(lembrar)
+      expect(d.absolutoMs).toBeGreaterThanOrEqual(d.idleMs)
+    }
   })
 })
