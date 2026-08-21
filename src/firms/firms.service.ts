@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { FIRM_PRICING, firmMonthlyPrice, slugify } from '../plans'
 import { hasBlockingIssue } from '../oab/compliance'
@@ -71,12 +76,13 @@ export class FirmsService {
         'O texto do escritório contém termos vedados pela OAB (Prov. 205/2021). Ajuste antes de salvar.',
       )
     }
-    // Garante o usuário dono (protótipo: DEMO_USER, sem auth real).
-    await this.prisma.user.upsert({
+    // O dono é a conta logada (o controller já exigiu sessão). Se o usuário sumiu
+    // do banco com a sessão ainda válida, é 401 — nunca criar usuário aqui.
+    const owner = await this.prisma.user.findUnique({
       where: { id: ownerUserId },
-      update: {},
-      create: { id: ownerUserId, email: `${ownerUserId}@demo.local`, password: 'demo' },
+      select: { id: true },
     })
+    if (!owner) throw new UnauthorizedException('Sessão inválida: usuário não encontrado')
 
     const existing = await this.prisma.firm.findFirst({ where: { ownerUserId }, select: { id: true } })
     const slug = await this.resolveFirmSlug(data.name, existing?.id)
@@ -162,10 +168,12 @@ export class FirmsService {
         })
       }
     }
-    // Remove quem saiu (apaga o perfil → cascata na FirmMembership).
+    // Quem saiu da lista perde o VÍNCULO, nunca o perfil: o perfil é da pessoa, não
+    // do escritório. Antes isso era um profile.delete() — salvar com a lista vazia
+    // apagava o perfil de todos os sócios.
     for (const m of existing) {
       if (!keep.has(m.id)) {
-        await this.prisma.profile.delete({ where: { id: m.profile.id } }).catch(() => {})
+        await this.prisma.firmMembership.delete({ where: { id: m.id } }).catch(() => {})
       }
     }
   }
