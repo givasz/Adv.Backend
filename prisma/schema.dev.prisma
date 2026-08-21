@@ -49,10 +49,9 @@ model User {
   sessions   Session[]
 }
 
-// Sessão de login. O token continua assinado (HMAC) e carrega o id desta linha:
-// é a existência dela que faz a sessão valer. Sem isto, "sair" só apagava o token
-// do navegador — um token copiado antes seguia entrando por até 7 dias, porque o
-// servidor não tinha como saber que aquela sessão tinha acabado.
+// Sessão de login. O cookie HttpOnly leva um segredo aleatório; aqui fica o hash
+// dele. É a existência desta linha que faz a sessão valer — sem ela, "sair" só
+// apagava o navegador, e uma credencial copiada antes seguia entrando até vencer.
 //
 // Uma linha por APARELHO: sair no celular não derruba o computador. O painel da
 // conta também oferece encerrar todas de uma vez (senha trocada, aparelho perdido).
@@ -60,11 +59,23 @@ model User {
 // Não guardamos IP nem navegador aqui: seria dado pessoal a mais para proteger,
 // sem uso que justifique.
 model Session {
-  id        String   @id @default(cuid())
+  // Id sorteado pela aplicação (16 bytes), não um cuid: nada nele conta quantas
+  // sessões existem nem quando foram criadas.
+  id        String   @id
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // SHA-256 do segredo que viaja no cookie. O segredo em si NÃO é guardado — um
+  // dump do banco não devolve a sessão de ninguém.
+  tokenHash String
   createdAt DateTime @default(now())
+  // Vence por inatividade; empurrado para frente enquanto a pessoa usa.
   expiresAt DateTime
+  // Teto absoluto: nem renovando a sessão passa daqui. Sem ele, uma sessão usada
+  // todo dia viveria para sempre — e um cookie roubado junto com ela.
+  absoluteExpiresAt DateTime
+  // Veio de um login com "lembrar de mim"? Define a duração e se o cookie
+  // sobrevive ao fechar do navegador.
+  remember  Boolean  @default(true)
 
   @@index([userId])
   @@index([expiresAt])

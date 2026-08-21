@@ -6,14 +6,25 @@ import {
   HttpCode,
   Ip,
   Post,
+  Req,
   UnauthorizedException,
 } from '@nestjs/common'
 import { AuthService } from './auth.service'
 import { SessionService } from './session.service'
+import type { RequisicaoComAuth } from './session-context'
 import { AUTH_RATE_RULES, enforceRateLimit } from '../security/rate-limit'
 import { clientIp } from '../security/net'
 import { fingerprint, logSecurityEvent } from '../security/audit-log'
 
+/**
+ * Entrada e saída da conta.
+ *
+ * Nenhuma destas rotas devolve credencial no corpo. Quem entra recebe um cookie
+ * HttpOnly (ver auth/cookies.ts) que o navegador guarda e reapresenta sozinho —
+ * inclusive depois de fechar e reabrir a janela, quando o login pediu para ser
+ * lembrado. O corpo traz só o que a interface precisa desenhar: quem é a pessoa,
+ * até quando vale a sessão e o token anti-CSRF.
+ */
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -21,10 +32,19 @@ export class AuthController {
     private readonly sessions: SessionService,
   ) {}
 
-  // POST /api/auth/signup  → { email, password, name? }
+  // "Lembrar de mim" chega como booleano; qualquer outra coisa vira o padrão.
+  // O padrão é LEMBRAR: é o comportamento que as pessoas esperam de uma
+  // ferramenta de trabalho, e o oposto (deslogar ao fechar o navegador) precisa
+  // ser uma escolha explícita de quem está num computador emprestado.
+  private lembrar(valor: unknown): boolean {
+    return typeof valor === 'boolean' ? valor : true
+  }
+
+  // POST /api/auth/signup  → { email, password, name?, remember? }
   @Post('signup')
   async signup(
-    @Body() body: { email?: string; password?: string; name?: string },
+    @Req() req: RequisicaoComAuth,
+    @Body() body: { email?: string; password?: string; name?: string; remember?: boolean },
     @Ip() ip?: string,
     @Headers('x-forwarded-for') xff?: string,
     @Headers('user-agent') userAgent?: string,
@@ -36,7 +56,13 @@ export class AuthController {
     enforceRateLimit([[`signup:${endereco}`, AUTH_RATE_RULES.signupPerIp]])
     const subject = fingerprint(typeof body?.email === 'string' ? body.email : undefined)
     try {
-      const sessao = await this.auth.signup(body?.email, body?.password, body?.name)
+      const sessao = await this.auth.signup(
+        req,
+        body?.email,
+        body?.password,
+        body?.name,
+        this.lembrar(body?.remember),
+      )
       logSecurityEvent({
         event: 'signup_ok',
         ip: endereco,
@@ -52,10 +78,11 @@ export class AuthController {
     }
   }
 
-  // POST /api/auth/login  → { email, password }
+  // POST /api/auth/login  → { email, password, remember? }
   @Post('login')
   async login(
-    @Body() body: { email?: string; password?: string },
+    @Req() req: RequisicaoComAuth,
+    @Body() body: { email?: string; password?: string; remember?: boolean },
     @Ip() ip?: string,
     @Headers('x-forwarded-for') xff?: string,
     @Headers('user-agent') userAgent?: string,
@@ -73,7 +100,12 @@ export class AuthController {
       'Muitas tentativas de entrada. Aguarde alguns minutos e tente novamente.',
     )
     try {
-      const sessao = await this.auth.login(body?.email, body?.password)
+      const sessao = await this.auth.login(
+        req,
+        body?.email,
+        body?.password,
+        this.lembrar(body?.remember),
+      )
       logSecurityEvent({
         event: 'login_ok',
         ip: endereco,
@@ -89,30 +121,41 @@ export class AuthController {
     }
   }
 
-  // GET /api/auth/me  (Authorization: Bearer <token>)
+  /**
+   * GET /api/auth/me — quem está logado neste navegador.
+   *
+   * É por aqui que o front descobre que continua autenticado ao abrir o site: o
+   * cookie viaja sozinho, o servidor confere e devolve a pessoa. Como o cookie é
+   * HttpOnly, esta chamada é a ÚNICA forma de a página saber que há sessão — e é
+   * também onde a renovação deslizante acontece (dentro do SessionService).
+   */
   @Get('me')
-  async me(@Headers('authorization') authorization?: string) {
-    const userId = await this.sessions.userIdFrom(authorization)
-    if (!userId) throw new UnauthorizedException('Sessão inválida.')
-    return this.auth.me(userId)
+  async me(@Req() req: RequisicaoComAuth) {
+    const sessao = await this.sessions.sessaoAtual(req)
+    if (!sessao) throw new UnauthorizedException('Sessão inválida.')
+    return {
+      user: await this.auth.me(sessao.userId),
+      expiresAt: sessao.expiresAt,
+      csrfToken: this.sessions.csrfDe(sessao),
+      remember: sessao.remember,
+    }
   }
 
   /**
    * POST /api/auth/logout — encerra a sessão DESTE aparelho.
    *
-   * Apaga a linha da sessão: o token para de valer na hora, mesmo que alguém
-   * tenha uma cópia. Antes, sair só limpava o navegador — quem tivesse copiado o
-   * token continuava entrando pelos 7 dias restantes.
+   * Apaga a linha da sessão e manda o navegador descartar o cookie: a credencial
+   * para de valer na hora, mesmo que alguém tenha uma cópia.
    *
-   * Responde 204 mesmo com token inválido ou ausente: sair é uma intenção, não um
-   * pedido que possa falhar, e um erro aqui só serviria para dizer a um curioso se
-   * o token que ele tem ainda vale.
+   * Responde 204 mesmo sem sessão: sair é uma intenção, não um pedido que possa
+   * falhar, e um erro aqui só serviria para dizer a um curioso se o cookie que
+   * ele tem ainda vale. Pelo mesmo motivo o token anti-CSRF é dispensado — a
+   * origem ainda é conferida, e forçar alguém a sair é aborrecimento, não roubo.
    */
   @Post('logout')
   @HttpCode(204)
-  async logout(@Headers('authorization') authorization?: string) {
-    const userId = await this.sessions.userIdFrom(authorization)
-    await this.sessions.revoke(authorization)
+  async logout(@Req() req: RequisicaoComAuth) {
+    const userId = await this.sessions.encerrar(req)
     if (userId) logSecurityEvent({ event: 'logout', userId, result: 'ok' })
   }
 
@@ -120,13 +163,13 @@ export class AuthController {
    * POST /api/auth/logout-all — encerra TODAS as sessões da conta.
    *
    * É o botão para quando o aparelho some ou a senha vazou: derruba o celular, o
-   * computador do escritório e qualquer token copiado, de uma vez. Este exige
-   * sessão válida — é uma ação sobre a conta, não um simples descartar de token.
+   * computador do escritório e qualquer cookie copiado, de uma vez. Este exige
+   * sessão válida — é uma ação sobre a conta, não um simples descartar de cookie.
    */
   @Post('logout-all')
-  async logoutAll(@Headers('authorization') authorization?: string) {
-    const userId = await this.sessions.requireUser(authorization)
-    const encerradas = await this.sessions.revokeAll(userId)
+  async logoutAll(@Req() req: RequisicaoComAuth) {
+    const userId = await this.sessions.requireUser(req)
+    const encerradas = await this.sessions.encerrarTodas(userId, req)
     logSecurityEvent({ event: 'logout_all', userId, result: 'ok' })
     return { encerradas }
   }

@@ -9,6 +9,7 @@ import { POLICY_VERSION } from '../oab/compliance'
 import { slugify } from '../plans'
 import { burnPasswordTime, hashPassword, verifyPassword } from './user-auth'
 import { SessionService } from './session.service'
+import type { RequisicaoComAuth } from './session-context'
 import { passwordProblem } from '../password'
 import { clampText, EMAIL_MAX } from '../security/sanitize'
 import { NAME_MAX } from '../plans'
@@ -18,8 +19,11 @@ import { NAME_MAX } from '../plans'
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export interface AuthSession {
-  token: string
+  /** epoch ms do vencimento da sessão (informativo — quem manda é o cookie). */
   expiresAt: number
+  /** Token anti-CSRF desta sessão, devolvido no cabeçalho das escritas. */
+  csrfToken: string
+  remember: boolean
   user: { id: string; email: string; name?: string; plan: string }
 }
 
@@ -51,19 +55,30 @@ export class AuthService {
     }
   }
 
-  // Abrir sessão agora GRAVA uma linha (ver session.service.ts): é ela que o
-  // "sair" apaga. Um aparelho, uma linha.
+  // Abrir sessão GRAVA uma linha (ver session.service.ts) e escreve o cookie
+  // HttpOnly na resposta: é a linha que o "sair" apaga, e é o cookie que o
+  // navegador guarda sozinho. Nenhum token volta no corpo — se voltasse, o
+  // JavaScript da página teria de guardá-lo em algum lugar, e o lugar seria o
+  // localStorage, que é exatamente o que este desenho existe para evitar.
   private async sessionFor(
+    req: RequisicaoComAuth,
     id: string,
     email: string,
     name: string | undefined,
     plan: string,
+    lembrar: boolean,
   ): Promise<AuthSession> {
-    const { token, expiresAt } = await this.sessions.issue(id)
-    return { token, expiresAt, user: { id, email, name: name || undefined, plan } }
+    const { expiresAt, csrfToken, remember } = await this.sessions.abrir(req, id, lembrar)
+    return { expiresAt, csrfToken, remember, user: { id, email, name: name || undefined, plan } }
   }
 
-  async signup(email?: unknown, password?: unknown, name?: unknown): Promise<AuthSession> {
+  async signup(
+    req: RequisicaoComAuth,
+    email?: unknown,
+    password?: unknown,
+    name?: unknown,
+    lembrar = true,
+  ): Promise<AuthSession> {
     const mail = this.normalizeEmail(email)
     if (!EMAIL_RE.test(mail)) throw new BadRequestException('E-mail inválido.')
     // Regras de senha: ver src/password.ts. Valem só no CADASTRO — o login não
@@ -85,10 +100,12 @@ export class AuthService {
     })
     if (user.profile) await this.resolvePendingInvites(mail, user.profile.id)
     return this.sessionFor(
+      req,
       user.id,
       user.email,
       user.profile?.name || cleanName,
       user.profile?.plan ?? 'free',
+      lembrar,
     )
   }
 
@@ -113,7 +130,12 @@ export class AuthService {
     }
   }
 
-  async login(email?: unknown, password?: unknown): Promise<AuthSession> {
+  async login(
+    req: RequisicaoComAuth,
+    email?: unknown,
+    password?: unknown,
+    lembrar = true,
+  ): Promise<AuthSession> {
     const mail = this.normalizeEmail(email)
     const senha = typeof password === 'string' ? password : ''
     const user = await this.prisma.user.findUnique({
@@ -130,7 +152,14 @@ export class AuthService {
     if (!verifyPassword(senha, user.password)) {
       throw new UnauthorizedException('E-mail ou senha incorretos.')
     }
-    return this.sessionFor(user.id, user.email, user.profile?.name || undefined, user.profile?.plan ?? 'free')
+    return this.sessionFor(
+      req,
+      user.id,
+      user.email,
+      user.profile?.name || undefined,
+      user.profile?.plan ?? 'free',
+      lembrar,
+    )
   }
 
   async me(userId: string): Promise<AuthSession['user']> {

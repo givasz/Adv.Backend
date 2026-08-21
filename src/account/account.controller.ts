@@ -1,6 +1,7 @@
-import { Body, Controller, Delete, Get, Headers, Ip, Post } from '@nestjs/common'
+import { Body, Controller, Delete, Get, Headers, Ip, Post, Req } from '@nestjs/common'
 import { AccountService } from './account.service'
 import { SessionService } from '../auth/session.service'
+import type { RequisicaoComAuth } from '../auth/session-context'
 import { enforceRateLimit } from '../security/rate-limit'
 import { clientIp } from '../security/net'
 import { logSecurityEvent } from '../security/audit-log'
@@ -23,12 +24,12 @@ export class AccountController {
    */
   @Get('data')
   async exportData(
-    @Headers('authorization') authorization?: string,
+    @Req() req: RequisicaoComAuth,
     @Ip() ip?: string,
     @Headers('x-forwarded-for') xff?: string,
   ) {
     const userId = await this.sessions.requireUser(
-      authorization,
+      req,
       'Entre na sua conta para ver seus dados.',
     )
     enforceRateLimit([
@@ -41,9 +42,9 @@ export class AccountController {
 
   /** GET /api/account/sessions — quantos aparelhos estão logados agora. */
   @Get('sessions')
-  async sessionCount(@Headers('authorization') authorization?: string) {
-    const userId = await this.sessions.requireUser(authorization)
-    return { abertas: await this.sessions.countActive(userId) }
+  async sessionCount(@Req() req: RequisicaoComAuth) {
+    const userId = await this.sessions.requireUser(req)
+    return { abertas: await this.sessions.contarAtivas(userId) }
   }
 
   /**
@@ -57,12 +58,12 @@ export class AccountController {
   @Delete()
   async remove(
     @Body() body: { password?: string },
-    @Headers('authorization') authorization?: string,
+    @Req() req: RequisicaoComAuth,
     @Ip() ip?: string,
     @Headers('x-forwarded-for') xff?: string,
   ) {
     const userId = await this.sessions.requireUser(
-      authorization,
+      req,
       'Entre na sua conta para excluí-la.',
     )
     enforceRateLimit(
@@ -87,10 +88,10 @@ export class AccountController {
   @Post('anonymize')
   async anonymize(
     @Body() body: { password?: string },
-    @Headers('authorization') authorization?: string,
+    @Req() req: RequisicaoComAuth,
     @Ip() ip?: string,
     @Headers('x-forwarded-for') xff?: string,
   ) {
-    return this.remove(body, authorization, ip, xff)
+    return this.remove(body, req, ip, xff)
   }
 }

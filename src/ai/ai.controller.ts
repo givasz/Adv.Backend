@@ -1,7 +1,8 @@
-import { Body, Controller, ForbiddenException, Headers, Ip, Post } from '@nestjs/common'
+import { Body, Controller, ForbiddenException, Headers, Ip, Post, Req } from '@nestjs/common'
 import { AiService, type GenerateDto, type GenerateResult } from './ai.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { SessionService } from '../auth/session.service'
+import type { RequisicaoComAuth } from '../auth/session-context'
 import { AI_RATE_RULES, enforceRateLimit } from '../security/rate-limit'
 import { clientIp } from '../security/net'
 
@@ -30,11 +31,11 @@ export class AiController {
   @Post('generate')
   async generate(
     @Body() dto: GenerateDto,
-    @Headers('authorization') authorization?: string,
+    @Req() req: RequisicaoComAuth,
     @Ip() ip?: string,
     @Headers('x-forwarded-for') xff?: string,
   ): Promise<GenerateResult> {
-    const userId = await this.sessions.userIdFrom(authorization)
+    const userId = await this.sessions.userIdFrom(req)
 
     // Cada geração custa dinheiro num provedor pago. Sem teto, um laço de terminal
     // esvazia o orçamento da conta em minutos — e a rota é pública de propósito

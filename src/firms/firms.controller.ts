@@ -3,14 +3,15 @@ import {
   Controller,
   Delete,
   Get,
-  Headers,
   Param,
   Post,
   Put,
+  Req,
   UnauthorizedException,
 } from '@nestjs/common'
 import { FirmsService } from './firms.service'
 import { SessionService } from '../auth/session.service'
+import type { RequisicaoComAuth } from '../auth/session-context'
 
 @Controller()
 export class FirmsController {
@@ -22,33 +23,33 @@ export class FirmsController {
   // O escritório é sempre de alguém: diferente do perfil individual (que tem um
   // rascunho anônimo no Free), aqui não existe dono demo. Sem sessão válida, 401 —
   // senão qualquer visitante editaria o escritório do vizinho.
-  private resolveUser(authorization?: string): Promise<string> {
+  private resolveUser(req: RequisicaoComAuth): Promise<string> {
     return this.sessions.requireUser(
-      authorization,
+      req,
       'Entre na sua conta para gerenciar o escritório',
     )
   }
 
   // GET /api/firms/me  → escritório que o usuário administra (para o editor); null se não existe
   @Get('firms/me')
-  async getMine(@Headers('authorization') authorization?: string) {
-    return this.firms.getMine(await this.resolveUser(authorization))
+  async getMine(@Req() req: RequisicaoComAuth) {
+    return this.firms.getMine(await this.resolveUser(req))
   }
 
   // PUT /api/firms/me  → cria/atualiza os dados INSTITUCIONAIS do escritório.
   // A lista de advogados NÃO vem por aqui: membro entra por convite (POST members).
   @Put('firms/me')
-  async saveMine(@Body() body: any, @Headers('authorization') authorization?: string) {
-    return this.firms.createOrUpdate(await this.resolveUser(authorization), body)
+  async saveMine(@Body() body: any, @Req() req: RequisicaoComAuth) {
+    return this.firms.createOrUpdate(await this.resolveUser(req), body)
   }
 
   // POST /api/firms/me/members  → { email, role? } convida um advogado
   @Post('firms/me/members')
   async invite(
     @Body() body: { email?: string; role?: string },
-    @Headers('authorization') authorization?: string,
+    @Req() req: RequisicaoComAuth,
   ) {
-    return this.firms.invite(await this.resolveUser(authorization), body?.email, body?.role)
+    return this.firms.invite(await this.resolveUser(req), body?.email, body?.role)
   }
 
   // DELETE /api/firms/me/members/:kind/:id  → desfaz o vínculo (membership) ou
@@ -57,35 +58,35 @@ export class FirmsController {
   async removeMember(
     @Param('kind') kind: string,
     @Param('id') id: string,
-    @Headers('authorization') authorization?: string,
+    @Req() req: RequisicaoComAuth,
   ) {
-    return this.firms.removeMember(await this.resolveUser(authorization), kind, id)
+    return this.firms.removeMember(await this.resolveUser(req), kind, id)
   }
 
   // ---- Lado de quem foi convidado -------------------------------------------
 
   // GET /api/firms/me/invites → convites pendentes dirigidos a quem está logado
   @Get('firms/me/invites')
-  async myInvites(@Headers('authorization') authorization?: string) {
-    return this.firms.myInvites(await this.resolveUser(authorization))
+  async myInvites(@Req() req: RequisicaoComAuth) {
+    return this.firms.myInvites(await this.resolveUser(req))
   }
 
   // POST /api/firms/me/invites/:id/accept
   @Post('firms/me/invites/:id/accept')
-  async accept(@Param('id') id: string, @Headers('authorization') authorization?: string) {
-    return this.firms.acceptInvite(await this.resolveUser(authorization), id)
+  async accept(@Param('id') id: string, @Req() req: RequisicaoComAuth) {
+    return this.firms.acceptInvite(await this.resolveUser(req), id)
   }
 
   // POST /api/firms/me/invites/:id/decline
   @Post('firms/me/invites/:id/decline')
-  async decline(@Param('id') id: string, @Headers('authorization') authorization?: string) {
-    return this.firms.declineInvite(await this.resolveUser(authorization), id)
+  async decline(@Param('id') id: string, @Req() req: RequisicaoComAuth) {
+    return this.firms.declineInvite(await this.resolveUser(req), id)
   }
 
   // POST /api/firms/me/leave → o advogado sai do escritório por vontade própria
   @Post('firms/me/leave')
-  async leave(@Headers('authorization') authorization?: string) {
-    return this.firms.leave(await this.resolveUser(authorization))
+  async leave(@Req() req: RequisicaoComAuth) {
+    return this.firms.leave(await this.resolveUser(req))
   }
 
   // GET /api/firms/:slug  (público) — página institucional do escritório

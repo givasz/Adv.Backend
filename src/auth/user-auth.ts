@@ -1,38 +1,32 @@
 // Autenticação de usuário (advogado) — cadastro/login por e-mail + senha.
 //
 // Sem dependências novas: reutiliza `node:crypto` (mesmo espírito de admin-auth.ts).
-//   • Senha  → scrypt com salt aleatório, guardada como "scrypt$<salt>$<hash>".
-//   • Sessão → token JWT-like (payload base64url + assinatura HMAC-SHA256) com o
-//     userId no `sub`, o id da sessão no `sid` e a expiração.
+//   • Senha   → scrypt com salt aleatório, guardada como "scrypt$<salt>$<hash>".
+//   • Sessão  → segredo aleatório de 32 bytes entregue no cookie HttpOnly; o
+//     banco guarda apenas o SHA-256 dele.
 //
-// A assinatura prova que o token é nosso; quem decide se ele ainda VALE é a linha
-// Session no banco (ver auth/session.service.ts). Antes a sessão era só assinada, e
-// isso significava que "sair" não podia ser cumprido: o servidor não tinha como
-// saber que aquele token tinha sido descartado, e ele seguia entrando por 7 dias.
+// Por que o segredo aleatório substituiu o token assinado (HMAC): o token antigo
+// carregava o id da sessão e valia por ser nosso. Duas consequências ruins.
+// Primeira, o id de sessão é um cuid — não é aleatório de verdade —, então quem
+// obtivesse o segredo de assinatura poderia fabricar sessões plausíveis. Segunda,
+// o valor guardado no banco (o id) ERA metade da credencial. Agora não: o que
+// viaja no cookie é sorteado com 256 bits de entropia e o que fica no banco é um
+// hash — um dump do Postgres não devolve a sessão de ninguém.
 //
 // Configuração (env):
-//   AUTH_SESSION_SECRET  segredo p/ assinar a sessão (fallback: ADMIN_SESSION_SECRET)
-//
-// ⚠️ Em produção defina AUTH_SESSION_SECRET forte.
+//   AUTH_SESSION_HOURS          duração ociosa sem "lembrar de mim" (padrão 12)
+//   AUTH_SESSION_REMEMBER_DAYS  duração ociosa com "lembrar de mim" (padrão 30)
+//   AUTH_SESSION_MAX_DAYS       teto absoluto da sessão lembrada (padrão 180)
+//   AUTH_SESSION_SECRET         segredo do token anti-CSRF (ver csrf.ts)
 
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
-import { requireSecret } from '../security/config'
-
-const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7 // 7 dias
-
-function sessionSecret(): string {
-  // Em produção, requireSecret recusa valores conhecidos/vazios: melhor invalidar
-  // toda sessão do que assinar com um segredo que está no repositório.
-  return requireSecret(
-    [process.env.AUTH_SESSION_SECRET, process.env.ADMIN_SESSION_SECRET],
-    'dev-user-secret',
-  )
-}
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 
 /** Comparação resistente a timing (buffers de mesmo tamanho). */
 function safeEqualBuf(a: Buffer, b: Buffer): boolean {
   return a.length === b.length && timingSafeEqual(a, b)
 }
+
+// ---- Senha ------------------------------------------------------------------
 
 // Parâmetros do scrypt para hashes NOVOS. Os antigos continuam válidos: o hash
 // carrega os próprios parâmetros ("scrypt$N=..,r=..,p=..$salt$hash") e o formato
@@ -97,61 +91,101 @@ export function burnPasswordTime(password: string): boolean {
   return verifyPassword(password, DUMMY_HASH)
 }
 
-/** Duração de uma sessão. */
-export const SESSION_TTL = SESSION_TTL_MS
+// ---- Duração da sessão ------------------------------------------------------
 
-export interface SessionPayload {
-  userId: string
-  sessionId: string
+const HORA = 1000 * 60 * 60
+const DIA = HORA * 24
+
+function numeroEnv(nome: string, padrao: number, max: number): number {
+  const n = Number(process.env[nome])
+  return Number.isFinite(n) && n > 0 ? Math.min(n, max) : padrao
 }
 
-/** Emite o token assinado de uma sessão já criada no banco. */
-export function issueUserSession(
-  userId: string,
-  sessionId: string,
-  expiresAt: number,
-): { token: string; expiresAt: number } {
-  const payload = { sub: userId, sid: sessionId, exp: expiresAt }
-  const body = Buffer.from(JSON.stringify(payload)).toString('base64url')
-  const sig = createHmac('sha256', sessionSecret()).update(body).digest('base64url')
-  return { token: `${body}.${sig}`, expiresAt }
+export interface DuracaoSessao {
+  /** Quanto tempo de inatividade a sessão suporta antes de vencer. */
+  idleMs: number
+  /** Teto absoluto: nem renovando, a sessão passa daqui. */
+  absolutoMs: number
+  /**
+   * O cookie sobrevive ao fechar do navegador?
+   *
+   * Sem "lembrar de mim" ele é um cookie de sessão do navegador: sai junto com a
+   * janela. Com, ele tem Max-Age e volta amanhã — que é o comportamento que o
+   * Netlify e afins entregam por padrão.
+   */
+  persistente: boolean
 }
 
 /**
- * Confere assinatura e validade do token e devolve o que ele afirma.
+ * Quanto dura uma sessão, com e sem "lembrar de mim".
  *
- * Isto sozinho NÃO autentica ninguém: diz apenas que o token saiu daqui e ainda
- * não venceu. Quem confirma que a sessão continua aberta é o SessionService, que
- * procura o `sessionId` no banco.
+ * O teto absoluto existe porque só renovar não basta: uma sessão usada todo dia
+ * viveria para sempre, e um cookie roubado junto com ela. Passado o teto, é
+ * senha de novo — inclusive para o ladrão.
  */
-export function readSessionToken(token?: string): SessionPayload | null {
-  if (!token) return null
-  const [body, sig] = token.split('.')
-  if (!body || !sig) return null
-  let expected: string
-  try {
-    expected = createHmac('sha256', sessionSecret()).update(body).digest('base64url')
-  } catch {
-    return null // segredo ausente em produção → nenhuma sessão vale
+export function duracaoSessao(lembrar: boolean): DuracaoSessao {
+  if (lembrar) {
+    const idleMs = numeroEnv('AUTH_SESSION_REMEMBER_DAYS', 30, 365) * DIA
+    const absolutoMs = Math.max(idleMs, numeroEnv('AUTH_SESSION_MAX_DAYS', 180, 730) * DIA)
+    return { idleMs, absolutoMs, persistente: true }
   }
-  if (!safeEqualBuf(Buffer.from(sig), Buffer.from(expected))) return null
+  const idleMs = numeroEnv('AUTH_SESSION_HOURS', 12, 24 * 30) * HORA
+  return { idleMs, absolutoMs: Math.max(idleMs, 24 * HORA), persistente: false }
+}
+
+// ---- Credencial da sessão ---------------------------------------------------
+
+export interface CredencialSessao {
+  /** Vai no cookie. Nunca é guardado. */
+  secret: string
+  /** Vai para o banco/Redis. Não serve para entrar. */
+  hash: string
+}
+
+/** Sorteia a credencial de uma sessão nova. */
+export function novaCredencial(): CredencialSessao {
+  const secret = randomBytes(32).toString('base64url')
+  return { secret, hash: hashCredencial(secret) }
+}
+
+/** SHA-256 do segredo. Não é scrypt de propósito: o valor já é aleatório de
+ *  256 bits, não há dicionário a resistir, e isso roda a cada requisição. */
+export function hashCredencial(secret: string): string {
+  return createHash('sha256').update(secret).digest('hex')
+}
+
+/** O segredo apresentado corresponde ao hash guardado? */
+export function credencialConfere(secret: string, hashGuardado: string): boolean {
+  if (!secret || !hashGuardado) return false
   try {
-    const payload = JSON.parse(Buffer.from(body, 'base64url').toString()) as {
-      sub?: string
-      sid?: string
-      exp?: number
-    }
-    if (!payload.sub || !payload.sid) return null
-    if (typeof payload.exp !== 'number' || payload.exp <= Date.now()) return null
-    return { userId: payload.sub, sessionId: payload.sid }
+    return safeEqualBuf(Buffer.from(hashCredencial(secret), 'hex'), Buffer.from(hashGuardado, 'hex'))
   } catch {
-    return null
+    return false
   }
 }
 
-/** Lê o token do header `Authorization: Bearer <token>`. */
-export function sessionFromHeader(authorization?: string): SessionPayload | null {
-  if (!authorization) return null
-  const [scheme, value] = authorization.split(' ')
-  return scheme?.toLowerCase() === 'bearer' ? readSessionToken(value) : null
+export interface ValorCookie {
+  sessionId: string
+  secret: string
+}
+
+/**
+ * Valor do cookie: "<id da sessão>.<segredo>".
+ *
+ * O id anda junto para que a busca seja por chave primária — uma leitura, sem
+ * varredura de tabela. Quem autentica é o segredo.
+ */
+export function montarCookie(sessionId: string, secret: string): string {
+  return `${sessionId}.${secret}`
+}
+
+/** Lê o valor do cookie. Formato errado → null (falha fechada). */
+export function lerCookie(valor?: string): ValorCookie | null {
+  if (!valor) return null
+  const ponto = valor.indexOf('.')
+  if (ponto < 1) return null
+  const sessionId = valor.slice(0, ponto)
+  const secret = valor.slice(ponto + 1)
+  if (!sessionId || !secret || secret.length < 20) return null
+  return { sessionId, secret }
 }
