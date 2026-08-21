@@ -131,28 +131,9 @@ model Profile {
   events     LinkEvent[]
   auditLogs  AuditLog[]
   reports    Report[]
-  bookings   Booking[]
   firmMembership FirmMembership?
 
   @@index([city, state])
-}
-
-// Solicitação de consulta (agenda nativa). status: pending|confirmed|declined|cancelled
-model Booking {
-  id          String    @id @default(cuid())
-  profileId   String
-  profile     Profile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
-  clientName  String
-  clientWhats String
-  note        String    @default("")
-  startAt     DateTime
-  endAt       DateTime
-  status      String    @default("pending")
-  createdAt   DateTime  @default(now())
-  decidedAt   DateTime?
-
-  @@index([profileId, status])
-  @@index([profileId, startAt])
 }
 
 model Report {

@@ -13,14 +13,32 @@
 // Fontes normativas: Provimento 205/2021 (CFOAB, Art. 3º–6º) e Código de Ética e
 // Disciplina (Res. 02/2015). Ver REGRAS.md. Princípio: na dúvida, o mais restritivo.
 
-/** Versão da política de publicidade vigente aplicada às verificações. */
+/**
+ * Versão da política de publicidade vigente aplicada às verificações.
+ *
+ * CONFERIDO EM 21/08/2026 na fonte oficial (oab.org.br/leisnormas/legislacao/
+ * provimentos/205-2021): o Provimento 205/2021 é de 15/07/2021 e NÃO consta
+ * alterado nem revogado por provimento posterior. Fica registrado porque a dúvida
+ * "isso não mudou em 2023?" já custou uma investigação — se voltar a surgir,
+ * confira a mesma página e atualize esta data, não a memória de ninguém.
+ *
+ * Contexto que o Provimento traz e que vale ter em mente ao mexer nas regras: o
+ * Art. 2º separa publicidade ATIVA ("capaz de atingir número indeterminado de
+ * pessoas, mesmo que elas não tenham buscado informações acerca do anunciante")
+ * de PASSIVA ("capaz de atingir somente público certo que tenha buscado
+ * informações"). Um perfil em advoc.me/nome, alcançado por quem procurou aquele
+ * advogado, é publicidade PASSIVA — e o Art. 6º dirige à ativa suas vedações mais
+ * duras. Ainda assim NÃO afrouxamos nada por causa disso: o mesmo perfil pode ser
+ * impulsionado ou compartilhado e virar alcance indeterminado, e o princípio da
+ * casa continua sendo o mais restritivo na dúvida.
+ */
 export const POLICY_VERSION = 'Prov. 205/2021'
 
 /**
  * Revisão interna do conjunto de regras. INCREMENTAR a cada mudança em RULES.
  * Monitor normativo: perfis conferidos sob revisão anterior são reavaliados.
  */
-export const RULESET_REV = 3
+export const RULESET_REV = 4
 
 export type Severity = 'block' | 'warn'
 
@@ -92,7 +110,14 @@ export const RULES: Rule[] = [
     // "garantir/assegurar" só é promessa quando ligado a um RESULTADO do caso
     // (êxito, vitória, ganho, resultado…). Usos legítimos — "assegurar direitos",
     // "garantia da dignidade", "direitos garantidos por lei" — NÃO podem disparar.
-    test: /100\s?%|\bcertez[ao] de (êxito|exito|vitória|vitoria|ganho|sucesso|resultad\w+)\b|\b(êxito|exito|vitória|vitoria|ganho|sucesso|resultad\w+|desfecho|absolvi\w+)\b[\s\S]{0,15}\bgarantid\w+|\b(garant|assegur)\w+\s+(o|a|os|as|um|uma|seu|sua|total|pleno|plena|integral)?\s*(êxito|exito|vitória|vitoria|ganho|sucesso|resultad\w+|desfecho|absolvi\w+)\b/i,
+    //
+    // ⚠️ FRONTEIRAS UNICODE, não \b. O `\b` do JS é ASCII: entre um espaço e o "Ê"
+    // de "êxito" ele NÃO enxerga fronteira, então `\bêxito` nunca casava e a
+    // promessa mais canônica da profissão — "êxito garantido" — passava batido em
+    // qualquer posição. "Vitória garantida" disparava só porque o "V" é ASCII.
+    // Corrigido em 2026-08-21 com (?<![\p{L}]) / (?![\p{L}]) e flag `u`, o mesmo
+    // recurso que superlative-comparison e urgency-appeal já usavam.
+    test: /100\s?%|(?<![\p{L}])certez[ao] de (êxito|exito|vitória|vitoria|ganho|sucesso|resultad\w+)(?![\p{L}])|(?<![\p{L}])(êxito|exito|vitória|vitoria|ganho|sucesso|resultad\w+|desfecho|absolvi\w+)(?![\p{L}])[\s\S]{0,15}(?<![\p{L}])garantid\w+|(?<![\p{L}])(garant|assegur)\w+\s+(o|a|os|as|um|uma|seu|sua|total|pleno|plena|integral)?\s*(êxito|exito|vitória|vitoria|ganho|sucesso|resultad\w+|desfecho|absolvi\w+)(?![\p{L}])/iu,
     reason: 'Promessa/garantia de resultado é vedada (Prov. 205/2021 Art. 6º).',
     explanation:
       'O Provimento 205/2021 (Art. 6º) proíbe prometer ou garantir resultados. A advocacia é atividade-meio: nenhum profissional pode assegurar o desfecho de um caso, e fazê-lo configura captação e publicidade enganosa.',
@@ -102,6 +127,10 @@ export const RULES: Rule[] = [
       'Resultado 100% garantido no seu processo',
       'Sucesso garantido em ações trabalhistas',
       'Você tem a certeza de ganho da causa',
+      // Acentuadas: é por elas que a regra falhava (ver a nota sobre \b acima).
+      'Êxito garantido no seu processo',
+      'Trabalho com êxito garantido',
+      'Advocacia Êxito Garantido',
     ],
     examplesAllowed: [
       'Atuação em ações trabalhistas e previdenciárias',
@@ -162,7 +191,12 @@ export const RULES: Rule[] = [
     category: 'price',
     severity: 'block',
     version: POLICY_VERSION,
-    test: /\b(honorári\w+|r\$ ?\d+|valor da consulta|preç\w+|tabela de valores|menor preço)\b/i,
+    // Preço só é vedação quando há OFERTA. "Arbitramento de honorários", "execução
+    // de honorários de sucumbência" e "revisão de preços em contratos administrativos"
+    // são NOMES DE MATÉRIA JURÍDICA — bloqueá-los impedia o advogado de descrever o
+    // próprio trabalho. Por isso o termo isolado não basta: ou há valor explícito
+    // (R$, tabela de valores), ou há um qualificador comercial por perto.
+    test: /\bR\$ ?\d|\bvalor(?:es)? da consulta\b|\btabela de (?:valores|honorári|preç)|\bmenor preç|(?:honorári\w*|preç\w*)[\s\S]{0,25}(?:acessív|acessiv|barat|baix|módic|modic|reduzid|simbólic|simbolic|camarad|just[oa]|especia|promocion|a partir de|sob consulta|consulte|grátis|gratis|gratuit|desconto|parcel)|(?:acessív|acessiv|barat|baix|módic|modic|reduzid|a partir de|sob consulta)[\s\S]{0,25}(?:honorári|preç)/i,
     reason: 'Menção a preços/honorários é vedada (Prov. 205/2021 Art. 3º, I).',
     explanation:
       'O Art. 3º, I proíbe referência a valores, preços e honorários na publicidade. A definição de honorários é matéria reservada à relação contratual com o cliente, não à divulgação.',
@@ -172,10 +206,17 @@ export const RULES: Rule[] = [
       'Consulta a partir de R$ 200',
       'Honorários acessíveis para todos',
       'Confira nossa tabela de valores',
+      'Preço justo, honorários sob consulta',
+      'Honorários simbólicos na primeira conversa',
     ],
+    // Matéria jurídica que CONTÉM as palavras vedadas e não pode ser bloqueada: são
+    // áreas de atuação reais, e travar a publicação delas seria defeito nosso.
     examplesAllowed: [
       'Atendimento mediante agendamento',
       'Entre em contato para conhecer o trabalho',
+      'Arbitramento de honorários advocatícios',
+      'Execução de honorários de sucumbência',
+      'Revisão de preços em contratos administrativos',
     ],
   },
   {
@@ -183,7 +224,17 @@ export const RULES: Rule[] = [
     category: 'discount',
     severity: 'block',
     version: POLICY_VERSION,
-    test: /\b(desconto|promoç\w+|parcel\w+|liquidaç\w+|condições especiais|aceitamos (cartão|cartao|pix)|forma[s]? de pagamento)\b/i,
+    // Três correções em relação à versão anterior desta regra:
+    //   • `\bdesconto\b` não pegava o PLURAL — "descontos especiais para novos
+    //     clientes" passava batido.
+    //   • `promoç\w+` e `liquidaç\w+` nunca casavam de verdade: `\w` é ASCII, então
+    //     a regex morria no "ã" de "promoção"/"liquidação". Duas vedações reais
+    //     escapavam há três revisões.
+    //   • `parcel\w+` bloqueava "parcelamento tributário", que é matéria de direito
+    //     tributário, não forma de pagamento de honorários.
+    // "liquidação" saiu de vez: em texto de advogado é liquidação de sentença ou de
+    // sociedade, nunca queima de estoque.
+    test: /\bdescont\w*\b(?![\s\S]{0,30}(?:indevid|em folha|consignad|no contracheque|no benefício|no beneficio|salarial|salariais|previdenciári))|promo(?:ção|çao|cao|ções|coes|cional|cionais)(?![\s\S]{0,20}(?:funcional|na carreira|por merecimento|por antiguidade))|\bparcelamos\b|parcel\w*\s+(?:o|os|seu|seus|meu|meus)?\s*(?:honorári\w*|pagamento|valor)|\bem até \d+\s?x\b|\d+\s?x sem juros|condiç(?:ões|oes) especiais|aceitamos\s+(?:cart|pix|boleto|todos)|forma[s]? de pagamento/i,
     reason: 'Descontos/promoções/formas de pagamento são vedados (Prov. 205/2021 Art. 3º, I).',
     explanation:
       'Ainda no Art. 3º, I, são vedadas menções a descontos, promoções, parcelamento e formas de pagamento — configuram captação mercantil, tratando a advocacia como comércio.',
@@ -191,12 +242,18 @@ export const RULES: Rule[] = [
       'Retire promoções e condições de pagamento do perfil. Esses temas pertencem ao contrato privado com o cliente.',
     examplesForbidden: [
       'Desconto especial para novos clientes',
+      'Descontos especiais para novos clientes',
+      'Promoção especial de fim de ano',
       'Parcelamos seus honorários em até 12x',
       'Aceitamos cartão e pix; condições especiais',
     ],
     examplesAllowed: [
       'Atuação em direito do consumidor',
       'Fale comigo para agendar um atendimento',
+      'Descontos indevidos em benefício do INSS',
+      'Parcelamento tributário e transação fiscal',
+      'Promoção funcional de servidores públicos',
+      'Liquidação de sentença e cumprimento',
     ],
   },
   {
@@ -204,7 +261,13 @@ export const RULES: Rule[] = [
     category: 'free-bait',
     severity: 'block',
     version: POLICY_VERSION,
-    test: /\b(consulta (grátis|gratis|gratuita)|primeira consulta gratuita|de graça|sem custo|análise gratuita|avaliação gratuita)\b/i,
+    // Fronteiras unicode aqui são PREVENÇÃO, não conserto: esta regra não estava
+    // quebrada (todo ramo começa com letra ASCII, inclusive "análise" — o acento
+    // dela está na terceira letra). Ficam pelo mesmo motivo que em
+    // promise-result, para que um ramo acentuado acrescentado depois não morra em
+    // silêncio. O ganho real da revisão foi aceitar as formas SEM acento, que é
+    // como muita gente digita.
+    test: /(?<![\p{L}])(consulta (grátis|gratis|gratuita)|primeira consulta gratuita|de graça|sem custo|análise gratuita|analise gratuita|avaliação gratuita|avaliacao gratuita)(?![\p{L}])/iu,
     reason: 'Oferta de serviço gratuito como isca (captação de clientela) é vedada.',
     explanation:
       'Oferecer gratuidade como chamariz ("consulta grátis", "análise gratuita") é captação disfarçada. O trabalho pro bono é legítimo, mas voltado a quem necessita — não como isca para clientes pagantes (CED Art. 30).',
@@ -214,6 +277,7 @@ export const RULES: Rule[] = [
       'Primeira consulta gratuita, agende já',
       'Faço a análise do seu caso sem custo',
       'Avaliação gratuita do seu processo',
+      'Análise gratuita do seu caso',
     ],
     examplesAllowed: [
       'Atendo mediante agendamento prévio',

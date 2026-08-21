@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
-import { complianceStatus, POLICY_VERSION, RULESET_REV } from '../oab/compliance'
+import { blockingFields, POLICY_VERSION, publicStatus, RULESET_REV } from '../oab/compliance'
 import {
   AREA_LIMIT,
   canUseFaq,
@@ -432,22 +432,12 @@ export class ProfilesService {
     const slug = await this.resolveSlug(data.name, plan, data.slug, userId)
 
     // Fonte da verdade da conformidade: bloqueia publicação com texto irregular.
-    // Tudo que o VISITANTE lê passa pela conformidade — inclusive as respostas do
-    // FAQ. Um texto irregular escondido atrás de uma pergunta é publicidade
-    // irregular do mesmo jeito.
-    const texts = [
-      data.bio,
-      ...(data.areas ?? []).map((a: any) => a.description),
-      ...(data.faqs ?? []).flatMap((f: any) => [f?.question, f?.answer]),
-    ]
-    const worstStatus = texts
-      .filter((t: string) => t)
-      .reduce<'ok' | 'warn' | 'block'>((acc, t: string) => {
-        const s = complianceStatus(t)
-        if (s === 'block' || acc === 'block') return 'block'
-        if (s === 'warn' || acc === 'warn') return 'warn'
-        return 'ok'
-      }, 'ok')
+    // A lista do que é conferido vive em oab/compliance.ts (publicTexts) e cobre
+    // TUDO que o visitante lê — frase de apresentação, bio, áreas (nome e
+    // descrição), FAQ, legenda do vídeo, abertura do assistente e o nome no rodapé.
+    // Um texto irregular escondido atrás de uma pergunta, ou na linha logo abaixo
+    // do nome, é publicidade irregular do mesmo jeito.
+    const worstStatus = publicStatus(data)
 
     if (data.published && worstStatus === 'block') {
       // Registra a tentativa bloqueada na trilha de auditoria antes de recusar.
@@ -464,8 +454,13 @@ export class ProfilesService {
           },
         })
       }
+      // Dizer QUAL campo travou: com a checagem cobrindo o perfil inteiro, um erro
+      // genérico obrigaria o advogado a caçar o trecho no escuro.
+      const campos = blockingFields(data)
       throw new BadRequestException(
-        'O texto contém termos que violam as normas de publicidade da OAB. Ajuste antes de publicar.',
+        campos.length
+          ? `Há termos vedados pelas normas de publicidade da OAB em: ${campos.join(', ')}. Ajuste antes de publicar.`
+          : 'O texto contém termos que violam as normas de publicidade da OAB. Ajuste antes de publicar.',
       )
     }
 

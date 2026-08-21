@@ -85,3 +85,30 @@ uma verificação viável em escala, que não era.
 
 O schema perde colunas → `prisma db push` exige `--accept-data-loss`. **Dump antes**
 (ver `DEPLOY-VPS.md`).
+
+---
+
+# Adendo (21/08/2026): a agenda-calendário também saiu
+
+Na mesma leva de conformidade, a **agenda nativa** (`model Booking`, módulo
+`src/bookings/`) foi removida. Ela guardava `clientName`, `clientWhats` e `note` — o
+nome, o telefone e a **descrição do problema jurídico** de quem procurava um advogado —
+no Postgres da plataforma.
+
+O que decidiu a questão foi descobrir que **nenhuma tela a usava**: perfis com
+`schedulingMode = "native"` já caíam para `"whatsapp"` na leitura (`resolveSchedulingMode`).
+Os endpoints seguiam de pé e gravariam dado de terceiro sem aviso de privacidade, sem
+prazo de retenção e sem ninguém olhando. Risco puro, valor zero.
+
+Hoje o contato **não passa por nós**: o assistente e o formulário montam a mensagem e
+ela sai do aparelho do visitante direto para o WhatsApp do advogado. Isso deixou a
+Política de Privacidade mais simples *e* verdadeira — o que antes era "atuamos apenas
+como meio de contato" (falso para a agenda nativa) agora é literal.
+
+**Mantidas** as colunas `booking*` de `Profile` (grade, expediente, antecedência): são
+preferências do próprio advogado, não têm dado de terceiro, e derrubá-las custaria
+outra migração destrutiva sem ganho. Estão inertes e comentadas como tal.
+
+**Deploy:** mais uma perda de tabela — `prisma db push` precisa de `--accept-data-loss`.
+Se houver `Booking` gravado em produção, ele contém dado pessoal de terceiros: avalie
+**descartar** em vez de exportar.
