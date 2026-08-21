@@ -72,7 +72,31 @@ model User {
   firmsOwned Firm[]
   // Chamados de suporte abertos por este advogado (bug, dúvida, conta).
   tickets    SupportTicket[]
+  // Sessões abertas (uma por aparelho). Sair apaga a linha — ver model Session.
+  sessions   Session[]
 }
+
+// Sessão de login. O token continua assinado (HMAC) e carrega o id desta linha:
+// é a existência dela que faz a sessão valer. Sem isto, "sair" só apagava o token
+// do navegador — um token copiado antes seguia entrando por até 7 dias, porque o
+// servidor não tinha como saber que aquela sessão tinha acabado.
+//
+// Uma linha por APARELHO: sair no celular não derruba o computador. O painel da
+// conta também oferece encerrar todas de uma vez (senha trocada, aparelho perdido).
+//
+// Não guardamos IP nem navegador aqui: seria dado pessoal a mais para proteger,
+// sem uso que justifique.
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
 
 enum SupportKind {
   bug

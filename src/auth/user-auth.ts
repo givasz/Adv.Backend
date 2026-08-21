@@ -3,7 +3,12 @@
 // Sem dependências novas: reutiliza `node:crypto` (mesmo espírito de admin-auth.ts).
 //   • Senha  → scrypt com salt aleatório, guardada como "scrypt$<salt>$<hash>".
 //   • Sessão → token JWT-like (payload base64url + assinatura HMAC-SHA256) com o
-//     userId no `sub` e expiração. Verificável sem estado no servidor.
+//     userId no `sub`, o id da sessão no `sid` e a expiração.
+//
+// A assinatura prova que o token é nosso; quem decide se ele ainda VALE é a linha
+// Session no banco (ver auth/session.service.ts). Antes a sessão era só assinada, e
+// isso significava que "sair" não podia ser cumprido: o servidor não tinha como
+// saber que aquele token tinha sido descartado, e ele seguia entrando por 7 dias.
 //
 // Configuração (env):
 //   AUTH_SESSION_SECRET  segredo p/ assinar a sessão (fallback: ADMIN_SESSION_SECRET)
@@ -92,37 +97,61 @@ export function burnPasswordTime(password: string): boolean {
   return verifyPassword(password, DUMMY_HASH)
 }
 
-/** Emite um token de sessão assinado com o userId e expiração. */
-export function issueUserSession(userId: string): { token: string; expiresAt: number } {
-  const expiresAt = Date.now() + SESSION_TTL_MS
-  const payload = { sub: userId, exp: expiresAt, nonce: randomBytes(6).toString('hex') }
+/** Duração de uma sessão. */
+export const SESSION_TTL = SESSION_TTL_MS
+
+export interface SessionPayload {
+  userId: string
+  sessionId: string
+}
+
+/** Emite o token assinado de uma sessão já criada no banco. */
+export function issueUserSession(
+  userId: string,
+  sessionId: string,
+  expiresAt: number,
+): { token: string; expiresAt: number } {
+  const payload = { sub: userId, sid: sessionId, exp: expiresAt }
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url')
   const sig = createHmac('sha256', sessionSecret()).update(body).digest('base64url')
   return { token: `${body}.${sig}`, expiresAt }
 }
 
-/** Verifica assinatura + validade e devolve o userId (ou null). */
-export function verifyUserSession(token?: string): string | null {
+/**
+ * Confere assinatura e validade do token e devolve o que ele afirma.
+ *
+ * Isto sozinho NÃO autentica ninguém: diz apenas que o token saiu daqui e ainda
+ * não venceu. Quem confirma que a sessão continua aberta é o SessionService, que
+ * procura o `sessionId` no banco.
+ */
+export function readSessionToken(token?: string): SessionPayload | null {
   if (!token) return null
   const [body, sig] = token.split('.')
   if (!body || !sig) return null
-  const expected = createHmac('sha256', sessionSecret()).update(body).digest('base64url')
+  let expected: string
+  try {
+    expected = createHmac('sha256', sessionSecret()).update(body).digest('base64url')
+  } catch {
+    return null // segredo ausente em produção → nenhuma sessão vale
+  }
   if (!safeEqualBuf(Buffer.from(sig), Buffer.from(expected))) return null
   try {
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString()) as {
       sub?: string
+      sid?: string
       exp?: number
     }
-    if (!payload.sub || typeof payload.exp !== 'number' || payload.exp <= Date.now()) return null
-    return payload.sub
+    if (!payload.sub || !payload.sid) return null
+    if (typeof payload.exp !== 'number' || payload.exp <= Date.now()) return null
+    return { userId: payload.sub, sessionId: payload.sid }
   } catch {
     return null
   }
 }
 
-/** Extrai o userId do header `Authorization: Bearer <token>` (ou null). */
-export function userIdFromHeader(authorization?: string): string | null {
+/** Lê o token do header `Authorization: Bearer <token>`. */
+export function sessionFromHeader(authorization?: string): SessionPayload | null {
   if (!authorization) return null
   const [scheme, value] = authorization.split(' ')
-  return scheme?.toLowerCase() === 'bearer' ? verifyUserSession(value) : null
+  return scheme?.toLowerCase() === 'bearer' ? readSessionToken(value) : null
 }

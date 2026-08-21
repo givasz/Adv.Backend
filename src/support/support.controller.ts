@@ -12,21 +12,22 @@ import {
 } from '@nestjs/common'
 import { SupportService } from './support.service'
 import { isAdminAuthenticated } from '../admin/admin-auth'
-import { userIdFromHeader } from '../auth/user-auth'
+import { SessionService } from '../auth/session.service'
 import { logSecurityEvent } from '../security/audit-log'
 import { checkRateLimit } from '../security/rate-limit'
 import { clientIp } from '../security/net'
 
 @Controller()
 export class SupportController {
-  constructor(private readonly support: SupportService) {}
+  constructor(
+    private readonly support: SupportService,
+    private readonly sessions: SessionService,
+  ) {}
 
   // O canal é EXCLUSIVO de quem tem conta: sem sessão, não há chamado. É o que
   // separa suporte de formulário público de spam — e o que permite responder.
-  private requireUser(authorization?: string): string {
-    const userId = userIdFromHeader(authorization)
-    if (!userId) throw new UnauthorizedException('Entre na sua conta para falar com o suporte.')
-    return userId
+  private requireUser(authorization?: string): Promise<string> {
+    return this.sessions.requireUser(authorization, 'Entre na sua conta para falar com o suporte.')
   }
 
   private assertAdmin(authorization?: string, adminToken?: string) {
@@ -38,14 +39,14 @@ export class SupportController {
 
   // POST /api/support  { kind, subject, message, pageUrl?, userAgent? }
   @Post('support')
-  create(
+  async create(
     @Body()
     body: { kind?: string; subject?: string; message?: string; pageUrl?: string; userAgent?: string },
     @Headers('authorization') authorization?: string,
     @Ip() ip?: string,
     @Headers('x-forwarded-for') forwardedFor?: string,
   ) {
-    const userId = this.requireUser(authorization)
+    const userId = await this.requireUser(authorization)
     // Teto por usuário: chamado é conversa, não fila de mensagens. Segura tanto
     // o clique nervoso quanto uma conta comprometida despejando lixo.
     const ipKey = clientIp(ip, forwardedFor)
@@ -62,8 +63,8 @@ export class SupportController {
 
   // GET /api/support/mine → histórico do próprio advogado, com a resposta do admin
   @Get('support/mine')
-  mine(@Headers('authorization') authorization?: string) {
-    return this.support.listMine(this.requireUser(authorization))
+  async mine(@Headers('authorization') authorization?: string) {
+    return this.support.listMine(await this.requireUser(authorization))
   }
 
   // ---- Admin ----

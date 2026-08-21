@@ -1,11 +1,13 @@
-// ⚠️ SCHEMA DE DESENVOLVIMENTO LOCAL (SQLite) — não usar em produção.
-// Espelha prisma/schema.prisma (Postgres), com duas diferenças exigidas pelo SQLite:
-//   1) provider = "sqlite" + url de arquivo local (dev.db);
-//   2) SQLite não suporta enums → os campos Plan/SocialKind viram String.
-// O schema de produção continua em prisma/schema.prisma (Postgres, com enums).
+// ⚠️ ARQUIVO GERADO — não edite à mão.
+// Fonte: prisma/schema.prisma · Gerador: scripts/gen-dev-schema.mjs
+// Regenerar:  npm run prisma:dev-schema
 //
-// Uso:  npx prisma migrate dev --schema prisma/schema.dev.prisma
-//       npx prisma studio      --schema prisma/schema.dev.prisma
+// Schema de DESENVOLVIMENTO LOCAL (SQLite). É o schema de produção com duas
+// diferenças que o SQLite exige: o provider e a ausência de enums (os campos
+// tipados por enum viram String, com o default em texto).
+//
+// Uso:  npx prisma db push --schema prisma/schema.dev.prisma
+//       npx prisma studio  --schema prisma/schema.dev.prisma
 
 generator client {
   provider = "prisma-client-js"
@@ -16,40 +18,119 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Estado de moderação do perfil (resultado de denúncias avaliadas pelo admin).
+//   active   → sem restrição
+//   warned   → dono recebeu aviso, perfil segue no ar
+//   partial  → algumas seções foram censuradas (ver Profile.hiddenSections)
+//   restricted → perfil inteiro retirado do ar (não aparece no público/diretório)
+
+// Situação de uma denúncia na fila do admin.
+
+// Papel de um advogado dentro do escritório (sociedade de advogados).
+//   owner  → dono/faturamento (1 por escritório)
+//   admin  → edita a página institucional e convida membros
+//   member → advogado listado; edita apenas o próprio perfil
+
+// Estado do vínculo do advogado com o escritório.
+//   invited → convite enviado; NÃO consome assento nem aparece no grid público
+//   active  → consome assento e aparece no grid
+
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  password  String
-  createdAt DateTime @default(now())
-  profile   Profile?
+  id         String          @id @default(cuid())
+  email      String          @unique
+  password   String // hash (argon2)
+  createdAt  DateTime        @default(now())
+  profile    Profile?
+  // Escritórios dos quais este usuário é dono/faturamento (normalmente 0 ou 1).
   firmsOwned Firm[]
+  // Chamados de suporte abertos por este advogado (bug, dúvida, conta).
+  tickets    SupportTicket[]
+  // Sessões abertas (uma por aparelho). Sair apaga a linha — ver model Session.
+  sessions   Session[]
 }
 
-// Escritório (sociedade). Enums Plan/FirmRole/FirmMemberStatus viram String no SQLite.
+// Sessão de login. O token continua assinado (HMAC) e carrega o id desta linha:
+// é a existência dela que faz a sessão valer. Sem isto, "sair" só apagava o token
+// do navegador — um token copiado antes seguia entrando por até 7 dias, porque o
+// servidor não tinha como saber que aquela sessão tinha acabado.
+//
+// Uma linha por APARELHO: sair no celular não derruba o computador. O painel da
+// conta também oferece encerrar todas de uma vez (senha trocada, aparelho perdido).
+//
+// Não guardamos IP nem navegador aqui: seria dado pessoal a mais para proteger,
+// sem uso que justifique.
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// Canal de suporte EXCLUSIVO de quem tem conta. Diferente da denúncia (Report),
+// que é pública e trata de conteúdo de terceiros: aqui é o próprio advogado
+// falando com a plataforma sobre um problema dela.
+//
+// Guardamos o contexto técnico (URL e navegador) porque é justamente o que o
+// usuário não sabe informar e o que resolve metade dos bugs — e porque pedir
+// isso num formulário faria o chamado nunca ser aberto.
+model SupportTicket {
+  id        String        @id @default(cuid())
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String   @default("bug")
+  subject   String
+  message   String
+  pageUrl   String        @default("")
+  userAgent String        @default("")
+  status    String @default("open")
+  // Resposta/observação do admin, visível para o autor do chamado.
+  adminNote String        @default("")
+  createdAt DateTime      @default(now())
+  handledAt DateTime?
+
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
+}
+
+// Escritório (sociedade de advogados) — página institucional. Cada advogado listado
+// mantém seu Profile individual; o vínculo é feito por FirmMembership. O registro da
+// SOCIEDADE é auto-declarado — a plataforma não confere inscrições (ver Profile).
 model Firm {
-  id          String  @id @default(cuid())
-  slug        String  @unique
-  name        String
-  oabRegistry String
-  monogram    String  @default("")
-  logoUrl     String?
-  tagline     String  @default("")
-  about       String  @default("")
-  city        String  @default("")
-  state       String  @default("")
-  phone     String?
-  email     String?
-  whatsapp  String?
-  instagram String?
-  linkedin  String?
-  brandAccent  String?
-  customDomain String?
-  plan           String @default("premium")
-  seatsPurchased Int    @default(5)
+  id             String    @id @default(cuid())
+  slug           String    @unique // advoc.me/escritorio/<slug>
+  name           String
+  oabRegistry    String // registro da SOCIEDADE (≠ OAB individual dos advogados)
+  monogram       String    @default("")
+  logoUrl        String?
+  tagline        String    @default("")
+  about          String    @default("")
+  city           String    @default("")
+  state          String    @default("")
+  // Contato INSTITUCIONAL (separado das redes pessoais de cada advogado)
+  phone          String?
+  email          String?
+  whatsapp       String?
+  instagram      String?
+  linkedin       String?
+  // ---- White-label canônico do escritório (membros herdam a marca) ----
+  brandAccent    String? // cor de destaque (hex)
+  customDomain   String? // domínio próprio (informativo no protótipo)
+  // Destino do pedido montado pelo assistente virtual da página:
+  //   "institutional" (padrão) → WhatsApp do escritório
+  //   "lawyer"                 → WhatsApp do advogado escolhido na conversa
+  assistantRoute String    @default("institutional")
+  // ---- Plano / assentos (billing real entra depois; hoje é campo, como Profile.plan) ----
+  plan           String      @default("premium") // escritório opera no tier alto
+  seatsPurchased Int       @default(5) // base do plano Escritório inclui 5 assentos
 
   ownerUserId String
   ownerUser   User             @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
   members     FirmMembership[]
+  invites     FirmInvite[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -57,12 +138,20 @@ model Firm {
   @@index([city, state])
 }
 
+// Vínculo advogado ↔ escritório. Um advogado pertence a no máximo um escritório
+// (profileId @unique). O `order` é apenas para ordenação interna — NUNCA para ranking
+// público (Prov. 205/2021 veda destaque/hierarquia): o grid é sempre alfabético.
 model FirmMembership {
-  id        String   @id @default(cuid())
-  role      String   @default("member") // owner|admin|member
-  status    String   @default("invited") // invited|active
-  order     Int      @default(0)
-  createdAt DateTime @default(now())
+  id        String           @id @default(cuid())
+  role      String         @default("member")
+  status    String @default("invited")
+  order     Int              @default(0)
+  createdAt DateTime         @default(now())
+
+  // Plano individual do advogado no momento em que ele ACEITOU o convite. Enquanto
+  // ativo ele usa o tier do escritório; ao sair, volta para este plano — sem isso,
+  // quem entra num escritório perderia o plano que já pagava.
+  previousPlan String?
 
   firmId    String
   firm      Firm    @relation(fields: [firmId], references: [id], onDelete: Cascade)
@@ -72,80 +161,128 @@ model FirmMembership {
   @@index([firmId, status])
 }
 
+// Convite feito para um e-mail que AINDA NÃO tem conta. FirmMembership exige um
+// Profile; este modelo guarda o convite até a pessoa se cadastrar, e o cadastro
+// (auth.service) o converte em FirmMembership(invited).
+model FirmInvite {
+  id        String   @id @default(cuid())
+  email     String
+  role      String @default("member")
+  createdAt DateTime @default(now())
+
+  firmId String
+  firm   Firm   @relation(fields: [firmId], references: [id], onDelete: Cascade)
+
+  @@unique([firmId, email])
+  @@index([email])
+}
+
 model Profile {
-  id          String   @id @default(cuid())
-  slug        String   @unique
-  name        String
-  // Auto-declarado: a plataforma não confere inscrições (espelha schema.prisma).
-  oabNumber   String
-  headline    String   @default("")
-  bio         String   @default("")
-  avatarUrl   String?
-  city        String   @default("")
-  state       String   @default("")
-  regionNote  String?
-  inPerson    Boolean  @default(true)
-  online      Boolean  @default(true)
-  whatsapp    String?
-  email       String?
-  scheduling  String?
-  // ---- Agendamento ---- (schedulingMode: "off"|"external"|"native")
-  schedulingMode     String @default("external")
-  bookingWeekdays    String @default("[1,2,3,4,5]") // JSON de dias (0=dom … 6=sáb)
-  bookingStartMin    Int    @default(540)  // 09:00
-  bookingEndMin      Int    @default(1080) // 18:00
-  bookingSlotMin     Int    @default(30)
-  bookingLeadHours   Int    @default(12)
-  bookingHorizonDays Int    @default(30)
+  id                   String           @id @default(cuid())
+  slug                 String           @unique
+  name                 String
+  // Número AUTO-DECLARADO. A plataforma não confere, não valida e não exibe marca
+  // de verificação — o perfil público linka a consulta do CNA (base oficial da OAB),
+  // igual em todos os planos. Registro falso é tratado pela moderação (Report com
+  // motivo `oab_invalid`). Ver frontend/src/components/ui/CnaLink.tsx.
+  oabNumber            String
+  headline             String           @default("")
+  bio                  String           @default("")
+  avatarUrl            String?
+  city                 String           @default("")
+  state                String           @default("")
+  regionNote           String?
+  inPerson             Boolean          @default(true)
+  online               Boolean          @default(true)
+  whatsapp             String?
+  email                String?
+  scheduling           String?
+  // ---- Agendamento ----
+  // Modo do botão "Agendar": "off" (sem botão) | "external" (link Calendly/Google,
+  // usa `scheduling`) | "assistant" (conversa guiada que monta a mensagem do WhatsApp).
+  // "native" é LEGADO: a agenda-calendário foi removida — ela guardava nome, WhatsApp
+  // e o assunto do VISITANTE no nosso banco, sem tela que a usasse e sem aviso de
+  // privacidade. Perfis antigos com "native" caem para "whatsapp" na leitura.
+  schedulingMode       String           @default("external")
+  // Config da agenda-calendário removida. Colunas mantidas INERTES: são preferências
+  // do próprio advogado (não há dado de terceiro aqui) e derrubá-las custaria outra
+  // migração destrutiva sem ganho. Nada as lê hoje.
+  bookingWeekdays      String           @default("[1,2,3,4,5]") // JSON de dias (0=dom … 6=sáb)
+  bookingStartMin      Int              @default(540) // início do expediente em minutos (09:00)
+  bookingEndMin        Int              @default(1080) // fim do expediente (18:00)
+  bookingSlotMin       Int              @default(30) // duração de cada horário
+  bookingLeadHours     Int              @default(12) // antecedência mínima para marcar
+  bookingHorizonDays   Int              @default(30) // até quantos dias à frente é possível marcar
   // ---- Assistente virtual (schedulingMode == "assistant") ----
-  assistantDays        String @default("[]")
-  assistantDurationMin Int    @default(45)
-  assistantLeadHours   Int    @default(12)
-  assistantHorizonDays Int    @default(14)
-  assistantGreeting    String @default("")
-  plan        String   @default("free") // enum Plan no Postgres: free|pro|premium
-  theme       String   @default("papel")
-  views       Int      @default(0)
-  published   Boolean  @default(false)
-  policyVersion String @default("Prov. 205/2021")
-  // Revisão do conjunto de regras conferida na última verificação (monitor normativo).
-  policyRevChecked Int @default(0)
-  // ---- Identidade própria (white-label) — Premium ----
-  brandName          String?
-  brandAccent        String?
-  brandHideWatermark Boolean @default(false)
-  customDomain       String?
-  // ---- Moderação (denúncias) ---- (enums ModerationStatus/ReportStatus no Postgres viram String)
-  moderationStatus String @default("active") // active|warned|partial|restricted
-  moderationNote   String @default("")
-  hiddenSections   String @default("[]") // JSON de chaves de seções censuradas
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  // Conversa guiada no perfil: oferece só esta grade, coleta assunto/nome e monta a
+  // mensagem para o WhatsApp do advogado. Ver frontend/src/lib/assistant.ts.
+  assistantDays        String           @default("[]") // JSON: [{ "weekday": 1, "times": ["09:00"] }]
+  assistantDurationMin Int              @default(45) // duração indicativa da conversa
+  assistantLeadHours   Int              @default(12) // antecedência mínima para oferecer um horário
+  assistantHorizonDays Int              @default(14) // até quantos dias à frente sugerir datas
+  assistantGreeting    String           @default("") // frase de abertura (passa pela checagem OAB)
+  // ---- Vídeo de apresentação (plano Max) ----
+  // Guardamos só o LINK (YouTube/Vimeo) já normalizado — nunca o arquivo. A
+  // validação do provedor é do servidor: ver src/video.ts.
+  videoUrl             String?
+  videoCaption         String           @default("")
+  plan                 String             @default("free")
+  theme                String           @default("papel") // ThemeId — ver frontend/src/lib/themes.ts
+  views                Int              @default(0)
+  published            Boolean          @default(false)
+  // Versão da política de publicidade (Provimento) aplicada à última verificação.
+  policyVersion        String           @default("Prov. 205/2021")
+  // Revisão do conjunto de regras (RULESET_REV) conferida na última verificação.
+  // Monitor de mudanças normativas: se a revisão vigente for maior, o perfil é
+  // reavaliado e o advogado é avisado. Ver src/oab/compliance.ts (policyOutdated).
+  policyRevChecked     Int              @default(0)
+  // ---- Identidade própria (white-label) — plano Premium/Escritório ----
+  // Não afeta conformidade: o conteúdo segue sujeito ao Prov. 205/2021.
+  brandName            String?
+  brandAccent          String? // cor de destaque personalizada (hex)
+  brandHideWatermark   Boolean          @default(false)
+  customDomain         String? // domínio próprio (informativo; DNS fora do escopo do protótipo)
+  // ---- Moderação (denúncias) ----
+  moderationStatus     String @default("active")
+  // Aviso do admin visível ao dono do perfil (motivo do aviso/restrição).
+  moderationNote       String           @default("")
+  // Seções censuradas quando moderationStatus == partial. JSON de chaves,
+  // ex.: ["bio","socials","area:<id>"]. Aplicado no getBySlug (público).
+  hiddenSections       String           @default("[]")
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
 
   userId String @unique
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  areas      PracticeArea[]
-  socials    SocialLink[]
-  faqs       Faq[]
-  events     LinkEvent[]
-  auditLogs  AuditLog[]
-  reports    Report[]
+  areas          PracticeArea[]
+  faqs           Faq[]
+  socials        SocialLink[]
+  events         LinkEvent[]
+  auditLogs      AuditLog[]
+  reports        Report[]
+  // Vínculo com um escritório (opcional). Presente quando o advogado integra uma sociedade.
   firmMembership FirmMembership?
 
   @@index([city, state])
 }
 
+// Denúncia feita por qualquer visitante sobre um perfil (conteúdo que viola as
+// normas da OAB / REGRAS.md). Anônima por padrão; e-mail opcional para retorno.
 model Report {
-  id            String    @id @default(cuid())
+  id            String       @id @default(cuid())
   profileId     String
-  profile       Profile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  profile       Profile      @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  // Motivo pré-pronto (ver src/moderation/moderation.constants.ts) ou "other".
   reason        String
-  details       String    @default("")
+  // Descrição livre do denunciante (o que/onde viola).
+  details       String       @default("")
+  // Contato opcional do denunciante para retorno (pode ficar vazio).
   reporterEmail String?
-  status        String    @default("open") // enum ReportStatus no Postgres: open|resolved|dismissed
+  status        String @default("open")
+  // Decisão aplicada ao resolver: "warn" | "partial" | "restrict" | "dismiss".
   resolution    String?
-  createdAt     DateTime  @default(now())
+  createdAt     DateTime     @default(now())
   handledAt     DateTime?
 
   @@index([profileId, status])
@@ -163,7 +300,13 @@ model PracticeArea {
   @@index([profileId])
 }
 
-// Pergunta frequente respondida pelo advogado (espelha schema.prisma).
+// Pergunta frequente respondida pelo advogado no perfil (seção "Perguntas
+// frequentes"). Recurso dos planos pagos: 2 no Pro, 5 no Max.
+//
+// Prov. 205/2021: responder dúvidas de forma EDUCATIVA e geral é publicidade
+// informativa permitida — a resposta não pode virar captação, promessa de
+// resultado, oferta de honorários nem consulta sobre um caso concreto. O texto
+// passa pelo checkCompliance como qualquer outro campo do perfil.
 model Faq {
   id        String  @id @default(cuid())
   question  String
@@ -176,42 +319,48 @@ model Faq {
 }
 
 model SocialLink {
-  id        String  @id @default(cuid())
-  kind      String // enum SocialKind no Postgres: instagram|linkedin|website|...
+  id        String     @id @default(cuid())
+  kind      String
   url       String
   profileId String
-  profile   Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  profile   Profile    @relation(fields: [profileId], references: [id], onDelete: Cascade)
 
   @@unique([profileId, kind])
 }
 
+// Analytics de cliques/visitas
 model LinkEvent {
   id        String   @id @default(cuid())
   profileId String
   profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
-  kind      String
+  kind      String // "view" | "whatsapp" | "scheduling" | "social:instagram" ...
   createdAt DateTime @default(now())
 
   @@index([profileId, kind])
 }
 
+// Trilha de auditoria imutável das alterações de perfil e do resultado de conformidade.
+// Dados pessoais minimizados: guardamos apenas o snapshot da bio (conteúdo público),
+// status de compliance e a versão da política. Limpar registros antigos conforme LGPD.
 model AuditLog {
   id               String   @id @default(cuid())
   profileId        String
   profile          Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
-  action           String
-  complianceStatus String
+  action           String // "update" | "publish" | "unpublish" | "blocked" | "plan"
+  complianceStatus String // "ok" | "warn" | "block"
   policyVersion    String
-  bioSnapshot      String   @default("")
+  bioSnapshot      String   @default("") // conteúdo público da bio no momento
   createdAt        DateTime @default(now())
 
   @@index([profileId, createdAt])
 }
 
+// Camada de política versionada — permite atualizar as regras do Provimento sem
+// depender de deploy e manter histórico (ex.: revisão futura do Prov. 205/2021).
 model PolicyVersion {
   id          String   @id @default(cuid())
-  version     String   @unique
-  rulesetRev  Int      @default(1)
+  version     String   @unique // ex.: "Prov. 205/2021"
+  rulesetRev  Int      @default(1) // revisão interna do conjunto de regras
   description String   @default("")
   effectiveAt DateTime @default(now())
   active      Boolean  @default(true)

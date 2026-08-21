@@ -98,6 +98,43 @@ linha. Nunca com senha, token ou e-mail: o e-mail vira impressão digital curta,
 correlaciona tentativas contra a mesma conta sem guardar o endereço.
 `backend/src/security/audit-log.ts`
 
+### 12. Sair não encerrava a sessão no servidor
+
+O token era assinado e sem estado: apagar o navegador não dizia nada ao servidor,
+e uma cópia do token feita antes seguia entrando por até 7 dias.
+
+Agora cada login grava uma linha `Session`, e o token carrega o id dela — é a
+existência dessa linha que faz a sessão valer. Uma linha por APARELHO: sair no
+celular não derruba o computador. `POST /api/auth/logout` apaga a sessão daquele
+aparelho; `POST /api/auth/logout-all` derruba todas (aparelho perdido, senha
+vazada). Custo: uma leitura por chave primária nas rotas autenticadas, que já
+falavam com o banco de qualquer jeito. `backend/src/auth/session.service.ts`
+
+### 13. Direitos do titular (LGPD art. 18) sem porta de entrada
+
+Ver, levar e apagar os próprios dados dependia de escrever para o suporte e
+alguém mexer no banco à mão — o que não é um direito, é um favor.
+
+`GET /api/account/data` devolve tudo em JSON aberto; `DELETE /api/account` apaga
+a conta e o que depende dela. A tela fica em `/conta/dados`, no menu da conta.
+Duas decisões que valem registro:
+
+- **Exportar é só o que é dele.** Uma denúncia tem dois titulares: o advogado
+  denunciado e quem denunciou. O pacote leva motivo e data; o e-mail e o texto de
+  quem denunciou ficam de fora — exportá-los entregaria o denunciante ao
+  denunciado.
+- **Excluir é excluir**, e exige a senha. Nada de marcar "inativo" e seguir
+  guardando. Antes de apagar, os membros do escritório do usuário voltam ao plano
+  individual que tinham — senão a exclusão do dono rebaixaria terceiros em
+  silêncio. `backend/src/account/`
+
+### 14. Schema de desenvolvimento desandava em silêncio
+
+`prisma/schema.dev.prisma` (SQLite) era mantido à mão e chegou a estar três
+modelos atrás do de produção — o efeito era o cadastro quebrar só no ambiente
+local, que é onde se testa. Agora ele é GERADO do schema de produção
+(`npm run prisma:dev-schema`), então não tem como divergir.
+
 ---
 
 ## Verificado em execução
@@ -114,9 +151,18 @@ Com a API rodando (`node dist/main.js`):
 | 8 tentativas no painel admin | 6 passam, depois `429` |
 | `X-Forwarded-For` trocado a cada requisição | continua `429` |
 | Cabeçalhos de resposta | CSP, nosniff, DENY, no-referrer, Permissions-Policy |
+| Sair num aparelho | o token daquele aparelho vira `401`; o outro segue em `200` |
+| Encerrar todas | os 3 tokens abertos viram `401` de uma vez |
+| Exportar dados | traz conta, perfil e chamados; **sem** o e-mail de quem denunciou |
+| Excluir com senha errada | `400`, conta intacta |
+| Excluir com a senha certa | perfil público vira `404` e o banco fica com 0 linhas em 9 tabelas |
 
-Mais 64 testes automatizados no backend (incluindo 26 novos de segurança) e 262 no
-frontend. `npm test` nos dois; `npm run smoke` abre as 21 rotas num navegador real.
+O percurso da LGPD foi percorrido num navegador de verdade contra a API real:
+cadastro pela tela → baixar o arquivo → senha errada recusada → exclusão →
+sessão morta e perfil fora do ar, sem nenhum erro de JavaScript.
+
+Mais 82 testes automatizados no backend (44 deles de segurança) e 264 no
+frontend. `npm test` nos dois; `npm run smoke` abre as 22 rotas num navegador real.
 
 ---
 
@@ -128,34 +174,26 @@ frontend. `npm test` nos dois; `npm run smoke` abre as 21 rotas num navegador re
    ficaria sem saber por que a conta não foi criada. Mitigado por hora com o teto de
    8 cadastros/hora por IP. *Resolver junto com o envio de e-mail.*
 
-2. **Logout não invalida a sessão no servidor.** O token é assinado e sem estado
-   (7 dias). Sair apaga o token do navegador, mas um token copiado antes continua
-   valendo. Correção: coluna `tokenVersion` em `User`, incluída na assinatura e
-   incrementada no logout e na troca de senha. *Exige migração.*
-
-3. **Direitos do titular (LGPD).** Não há endpoint para exportar nem para apagar os
-   próprios dados. Hoje isso é feito à mão pelo suporte. *Próximo passo natural do
-   painel da conta.*
-
-4. **Sessão no `localStorage`.** Fica exposta a um XSS. Com o CSP e o saneamento de
+2. **Sessão no `localStorage`.** Fica exposta a um XSS. Com o CSP e o saneamento de
    links a superfície diminuiu bastante; a solução completa é cookie `HttpOnly` +
    `SameSite`, que exige o backend em subdomínio do frontend.
 
-5. **Cobrança simulada.** `POST /profiles/me/plan` ativa plano sem pagamento. É
+3. **Cobrança simulada.** `POST /profiles/me/plan` ativa plano sem pagamento. É
    assim de propósito (plataforma em teste) e está documentado no código — mas
    **antes de cobrar de verdade**, essa porta tem que passar a aceitar apenas o
    webhook do provedor, com assinatura conferida e chave de idempotência.
 
-6. **`connect-src https:` no CSP.** Aberto porque o host da API vem de variável de
+4. **`connect-src https:` no CSP.** Aberto porque o host da API vem de variável de
    ambiente. Ao fixar o domínio do backend, trocar pela origem exata.
 
-7. **Honeypots.** Não implementados: a varredura automatizada bate no host do
+5. **Honeypots.** Não implementados: a varredura automatizada bate no host do
    Netlify, não na API — uma rota falsa no Nest não veria esse tráfego. Se quiser o
    sinal, o lugar é uma função do Netlify.
 
-8. **`prisma/schema.dev.prisma` está atrás do schema de produção** (não tem
-   `FirmInvite`, entre outros). Rodar local com SQLite quebra no cadastro. Não é
-   falha de segurança, mas atrapalha justamente os testes que a exercitam.
+6. **Troca de senha não encerra as outras sessões.** A rota de trocar senha ainda
+   não existe; quando existir, ela precisa chamar `revokeAll` — senão quem entrou
+   com a senha antiga continua dentro. O mecanismo já está pronto
+   (`POST /api/auth/logout-all`).
 
 ---
 
@@ -196,6 +234,23 @@ No dia em que entrar SSE, upload de arquivo ou `_.template`, ele deixa de valer.
 ---
 
 ## Checklist de produção
+
+### Esta versão exige `prisma db push`
+
+A tabela `Session` é nova (é ela que faz o "sair" valer). Sem o push, **toda rota
+autenticada responde 401** — o servidor procura uma tabela que não existe.
+
+```bash
+# na VPS, com o dist novo já enviado:
+pg_dump ... > backup-antes.sql        # nunca pule
+npx prisma db push                    # cria a tabela Session
+pm2 restart advocme-backend
+```
+
+Os tokens antigos não têm id de sessão e param de valer: **todo mundo é
+deslogado uma vez** neste deploy. É o comportamento correto (aqueles tokens eram
+justamente os irrevogáveis), mas avise, ou vai parecer defeito.
+
 
 **A API não sobe** se qualquer item de segredo estiver com valor de exemplo. Antes
 do próximo `pm2 restart`, confira o `.env` da VPS. Para gerar cada segredo (um

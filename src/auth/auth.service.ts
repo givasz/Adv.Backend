@@ -7,7 +7,8 @@ import {
 import { PrismaService } from '../prisma/prisma.service'
 import { POLICY_VERSION } from '../oab/compliance'
 import { slugify } from '../plans'
-import { burnPasswordTime, hashPassword, issueUserSession, verifyPassword } from './user-auth'
+import { burnPasswordTime, hashPassword, verifyPassword } from './user-auth'
+import { SessionService } from './session.service'
 import { passwordProblem } from '../password'
 import { clampText, EMAIL_MAX } from '../security/sanitize'
 import { NAME_MAX } from '../plans'
@@ -24,7 +25,10 @@ export interface AuthSession {
 
 @Injectable()
 export class AuthService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly sessions: SessionService,
+  ) {}
 
   // Coerção antes de qualquer coisa: o corpo é JSON livre, e `email: 12345`
   // chegando num `.trim()` viraria 500 (erro interno vazado) em vez de 400.
@@ -47,8 +51,15 @@ export class AuthService {
     }
   }
 
-  private sessionFor(id: string, email: string, name: string | undefined, plan: string): AuthSession {
-    const { token, expiresAt } = issueUserSession(id)
+  // Abrir sessão agora GRAVA uma linha (ver session.service.ts): é ela que o
+  // "sair" apaga. Um aparelho, uma linha.
+  private async sessionFor(
+    id: string,
+    email: string,
+    name: string | undefined,
+    plan: string,
+  ): Promise<AuthSession> {
+    const { token, expiresAt } = await this.sessions.issue(id)
     return { token, expiresAt, user: { id, email, name: name || undefined, plan } }
   }
 
@@ -73,7 +84,12 @@ export class AuthService {
       select: { id: true, email: true, profile: { select: { id: true, name: true, plan: true } } },
     })
     if (user.profile) await this.resolvePendingInvites(mail, user.profile.id)
-    return this.sessionFor(user.id, user.email, user.profile?.name || cleanName, user.profile?.plan ?? 'free')
+    return this.sessionFor(
+      user.id,
+      user.email,
+      user.profile?.name || cleanName,
+      user.profile?.plan ?? 'free',
+    )
   }
 
   // Convites feitos para um e-mail SEM conta ficam guardados em FirmInvite (o
