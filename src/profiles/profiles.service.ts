@@ -23,6 +23,18 @@ import {
   type Plan,
 } from '../plans'
 import { canUseVideo, normalizeVideoUrl, VIDEO_CAPTION_MAX } from '../video'
+import {
+  clampList,
+  clampOrNull,
+  clampText,
+  oneOf,
+  safeEmail,
+  safeHexColor,
+  safeHostname,
+  safeImageSrc,
+  safePhone,
+  safeUrl,
+} from '../security/sanitize'
 
 const relations = {
   areas: { orderBy: { order: 'asc' as const } },
@@ -32,6 +44,19 @@ const relations = {
 
 // Planos aceitos na troca de assinatura (POST /profiles/me/plan).
 const PLANS: Plan[] = ['free', 'pro', 'premium']
+
+// Redes aceitas — ESPELHA socialMeta em frontend/src/components/ui/icons.tsx.
+// Allowlist, não blocklist: um `kind` desconhecido não tem ícone do outro lado e
+// derruba a página pública inteira ao tentar renderizar.
+const SOCIAL_KINDS = ['instagram', 'linkedin', 'website', 'facebook', 'youtube', 'tiktok'] as const
+
+// Tetos fixos de sanidade (não dependem do plano).
+const CITY_MAX = 80
+const STATE_MAX = 40
+const REGION_MAX = 200
+const AREA_LABEL_MAX = 60
+const BRAND_NAME_MAX = 60
+const SOCIAL_MAX = 8
 
 @Injectable()
 export class ProfilesService {
@@ -410,7 +435,73 @@ export class ProfilesService {
     return { slug: desired, available, suggested, reason: available ? 'free' : 'taken' }
   }
 
-  async update(userId: string, data: any) {
+  /**
+   * Fronteira de entrada do perfil. O corpo do PUT é JSON livre — tipo, tamanho e
+   * formato só passam a existir aqui. O que chega errado vira valor neutro em vez
+   * de derrubar a requisição; o que chega grande demais é cortado.
+   *
+   * Os links merecem nota: `href` com `javascript:` é execução de script na página
+   * pública do advogado, com acesso à sessão de quem estiver visitando. Por isso
+   * todo link passa por safeUrl (só http/https) — na gravação, e não só na tela.
+   */
+  private sanitizeInput(data: any) {
+    const d = data && typeof data === 'object' ? data : {}
+    const c = d.contact && typeof d.contact === 'object' ? d.contact : {}
+    const b = d.branding && typeof d.branding === 'object' ? d.branding : {}
+
+    return {
+      ...d,
+      name: clampText(d.name, NAME_MAX),
+      oabNumber: clampText(d.oabNumber, OAB_MAX),
+      // headline/bio mantêm o texto inteiro: o teto por plano é conferido depois
+      // (enforceCharLimits), que devolve um erro explicando o limite em vez de
+      // cortar o texto da pessoa em silêncio.
+      headline: clampText(d.headline, 4000),
+      bio: clampText(d.bio, 8000),
+      avatarUrl: safeImageSrc(d.avatarUrl),
+      city: clampText(d.city, CITY_MAX),
+      state: clampText(d.state, STATE_MAX),
+      regionNote: clampOrNull(d.regionNote, REGION_MAX),
+      serviceMode: {
+        inPerson: !!d.serviceMode?.inPerson,
+        online: !!d.serviceMode?.online,
+      },
+      areas: clampList<any>(d.areas, 40).map((a: any) => ({
+        label: clampText(a?.label, AREA_LABEL_MAX),
+        description: clampText(a?.description, 4000),
+      })),
+      faqs: clampList<any>(d.faqs, 20),
+      socials: clampList<any>(d.socials, SOCIAL_MAX)
+        .map((s: any) => ({
+          kind: oneOf(s?.kind, SOCIAL_KINDS, 'website'),
+          url: safeUrl(s?.url),
+        }))
+        // Link recusado (esquema estranho, texto solto) some da lista em vez de
+        // virar um <a> quebrado — ou pior, executável — na página pública.
+        .filter((s) => !!s.url)
+        .map((s) => ({ kind: s.kind as string, url: s.url as string })),
+      contact: {
+        whatsapp: safePhone(c.whatsapp),
+        email: safeEmail(c.email),
+        scheduling: safeUrl(c.scheduling),
+      },
+      videoUrl: typeof d.videoUrl === 'string' ? d.videoUrl : null,
+      videoCaption: clampText(d.videoCaption, VIDEO_CAPTION_MAX),
+      published: !!d.published,
+      branding: {
+        brandName: clampOrNull(b.brandName, BRAND_NAME_MAX),
+        // Cor livre viraria CSS injetado no tema do perfil — só hexadecimal entra.
+        accent: safeHexColor(b.accent),
+        hideWatermark: !!b.hideWatermark,
+        customDomain: safeHostname(b.customDomain),
+      },
+    }
+  }
+
+  async update(userId: string, raw: any) {
+    // Nada abaixo desta linha vê o corpo cru: tipo, tamanho e formato de link são
+    // decididos aqui, antes da checagem de conformidade e do banco.
+    const data = this.sanitizeInput(raw)
     // O PLANO É DO SERVIDOR: vem da assinatura gravada no banco, nunca do corpo da
     // requisição. Antes, um `plan: "premium"` no JSON liberava limites e recursos —
     // e, do outro lado, a assinatura simulada não sobrevivia ao recarregar a página

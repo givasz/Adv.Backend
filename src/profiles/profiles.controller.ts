@@ -8,28 +8,37 @@ import {
   Post,
   Put,
   Query,
+  UnauthorizedException,
 } from '@nestjs/common'
 import { ProfilesService } from './profiles.service'
 import { adminLabel, isAdminAuthenticated } from '../admin/admin-auth'
 import { userIdFromHeader } from '../auth/user-auth'
-
-// Usuário anônimo do protótipo (Free sem conta): compartilha o rascunho demo.
-// Quando há uma sessão válida (Authorization: Bearer), usamos o dono real.
-const DEMO_USER = 'demo-user-id'
+import { logSecurityEvent } from '../security/audit-log'
 
 @Controller()
 export class ProfilesController {
   constructor(private readonly profiles: ProfilesService) {}
 
-  // Resolve o dono da requisição: sessão do usuário (Bearer) ou o anônimo demo.
-  private resolveUser(authorization?: string): string {
-    return userIdFromHeader(authorization) ?? DEMO_USER
+  /**
+   * Dono da requisição. Antes, sem sessão a API caía num usuário fixo
+   * ("demo-user-id") COMPARTILHADO por todo mundo: quem preenchesse o editor sem
+   * conta gravava nome, WhatsApp e e-mail numa linha que o próximo visitante
+   * anônimo abria e lia. Escrever exige sessão; sem conta, o rascunho é do
+   * navegador (frontend/src/lib/api.ts), onde nenhum outro visitante alcança.
+   */
+  private requireUser(authorization?: string): string {
+    const userId = userIdFromHeader(authorization)
+    if (!userId) {
+      throw new UnauthorizedException('Entre na sua conta para salvar o perfil.')
+    }
+    return userId
   }
 
   // Aceita a sessão de admin (Authorization: Bearer) ou o token estático legado
   // (x-admin-token = ADMIN_TOKEN), unificando o acesso com o painel de denúncias.
   private assertAdmin(token?: string, authorization?: string) {
     if (!isAdminAuthenticated(authorization, token)) {
+      logSecurityEvent({ event: 'access_denied', resource: 'admin:profiles', result: 'negado' })
       throw new ForbiddenException('Acesso de administrador inválido')
     }
   }
@@ -40,16 +49,17 @@ export class ProfilesController {
     return this.profiles.search(q, area)
   }
 
-  // GET /api/profiles/me
+  // GET /api/profiles/me — sem sessão devolve null (o editor usa o rascunho local).
   @Get('profiles/me')
   me(@Headers('authorization') authorization?: string) {
-    return this.profiles.getMine(this.resolveUser(authorization))
+    const userId = userIdFromHeader(authorization)
+    return userId ? this.profiles.getMine(userId) : null
   }
 
   // PUT /api/profiles/me
   @Put('profiles/me')
   update(@Body() body: any, @Headers('authorization') authorization?: string) {
-    return this.profiles.update(this.resolveUser(authorization), body)
+    return this.profiles.update(this.requireUser(authorization), body)
   }
 
   // POST /api/profiles/me/plan  → { plan: 'free' | 'pro' | 'premium' }
@@ -59,7 +69,7 @@ export class ProfilesController {
   // webhook do provedor passa a ser quem chama.
   @Post('profiles/me/plan')
   setPlan(@Body() body: { plan?: string }, @Headers('authorization') authorization?: string) {
-    return this.profiles.setPlan(this.resolveUser(authorization), body?.plan)
+    return this.profiles.setPlan(this.requireUser(authorization), body?.plan)
   }
 
   // GET /api/profiles/slug-available?slug=&name=
@@ -70,7 +80,13 @@ export class ProfilesController {
     @Query('name') name?: string,
     @Headers('authorization') authorization?: string,
   ) {
-    return this.profiles.slugAvailability(this.resolveUser(authorization), slug ?? '', name)
+    // Consulta pública de disponibilidade: sem sessão não há "meu próprio slug",
+    // então um id impossível faz a comparação de dono nunca casar.
+    return this.profiles.slugAvailability(
+      userIdFromHeader(authorization) ?? 'anonimo',
+      slug ?? '',
+      name,
+    )
   }
 
   // GET /api/profiles/:slug  (público)
