@@ -25,7 +25,7 @@
 
 import { ForbiddenException } from '@nestjs/common'
 import { createHmac, timingSafeEqual } from 'node:crypto'
-import { requireSecret } from '../security/config'
+import { IS_PROD, requireSecret } from '../security/config'
 
 /** Cabeçalho onde o front devolve o token. */
 export const CSRF_HEADER = 'x-csrf-token'
@@ -72,6 +72,27 @@ export function origensPermitidas(): string[] {
     .split(',')
     .map((s) => s.trim().replace(/\/$/, ''))
     .filter(Boolean)
+}
+
+/** Máquina local, em qualquer porta — só vale fora de produção. */
+const LOCAL = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/
+
+/**
+ * Esta origem pode falar com a API?
+ *
+ * Uma função, e não a lista crua, porque o desenvolvimento precisa de uma folga
+ * que a produção não pode ter: o Vite sobe em 5173 quando a porta está livre e
+ * em 5174, 5175… quando não está. Com a lista fixa, o app abria, o login
+ * funcionava (essas rotas não têm sessão para proteger) e TODA gravação seguinte
+ * voltava 403 — o perfil não salvava nada e nada na tela explicava por quê.
+ *
+ * Em produção nada muda: vale exatamente o que estiver em FRONTEND_ORIGIN.
+ */
+export function origemPermitida(origem?: string): boolean {
+  if (!origem) return true // sem Origin (navegação direta, curl): não é ataque de outro site
+  const limpa = origem.replace(/\/$/, '')
+  if (origensPermitidas().includes(limpa)) return true
+  return !IS_PROD && LOCAL.test(limpa)
 }
 
 function origemDe(url?: string): string | undefined {
@@ -122,8 +143,10 @@ export function assertCsrf(
   if (SEGUROS.has(pedido.method.toUpperCase())) return
 
   // 1. Origem: quando o navegador diz de onde veio, tem que ser de casa.
-  if (pedido.origin && !origensPermitidas().includes(pedido.origin)) {
-    throw new ForbiddenException('Pedido bloqueado por segurança (origem não autorizada).')
+  if (!origemPermitida(pedido.origin)) {
+    throw new ForbiddenException(
+      `Pedido bloqueado por segurança: a origem ${pedido.origin} não está em FRONTEND_ORIGIN.`,
+    )
   }
 
   // 2. Token: um formulário de outro site não consegue escrever este cabeçalho.

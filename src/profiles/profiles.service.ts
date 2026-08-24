@@ -333,6 +333,46 @@ export class ProfilesService {
     return p ? this.toApi(p) : null
   }
 
+  /**
+   * Garante que a conta tem uma linha de perfil.
+   *
+   * O cadastro já cria uma (ver auth.service), mas contas anteriores a essa
+   * regra — e qualquer linha perdida numa migração — chegavam aqui sem perfil, e
+   * o `profile.update` estourava um erro interno do Prisma. Do lado de quem usa,
+   * isso era um "não foi possível salvar" que nunca passava, por mais que
+   * tentasse: o editor não tinha o que consertar.
+   */
+  private async garantirPerfil(userId: string, nome?: string) {
+    const base = slugify(nome || 'advogado')
+    // Duas tentativas bastam: o sufixo é aleatório em 9 mil valores e a corrida
+    // é entre duas abas da MESMA pessoa. Se ainda assim colidir, o erro sobe.
+    for (let tentativa = 0; tentativa < 3; tentativa++) {
+      try {
+        return await this.prisma.profile.create({
+          data: {
+            userId,
+            slug: `${base}-${Math.floor(1000 + Math.random() * 9000)}`,
+            name: nome ?? '',
+            oabNumber: '',
+            plan: 'free',
+            published: false,
+            policyVersion: POLICY_VERSION,
+          },
+          select: { id: true, moderationStatus: true, plan: true, oabNumber: true },
+        })
+      } catch (err) {
+        // Outra aba criou o perfil no meio do caminho: use o que existe.
+        const existente = await this.prisma.profile.findUnique({
+          where: { userId },
+          select: { id: true, moderationStatus: true, plan: true, oabNumber: true },
+        })
+        if (existente) return existente
+        if (tentativa === 2) throw err
+      }
+    }
+    throw new NotFoundException('Perfil não encontrado')
+  }
+
   // Valida os limites de caracteres do plano (fonte da verdade). Lança 400 se exceder.
   // O `plan` vem SEMPRE do banco (assinatura vigente) — nunca do corpo da requisição.
   private enforceCharLimits(data: any, plan: Plan) {
@@ -542,10 +582,11 @@ export class ProfilesService {
     // e, do outro lado, a assinatura simulada não sobrevivia ao recarregar a página
     // (o update não gravava o plano). A troca de plano agora tem porta própria:
     // POST /api/profiles/me/plan → setPlan().
-    const current = await this.prisma.profile.findUnique({
-      where: { userId },
-      select: { id: true, moderationStatus: true, plan: true, oabNumber: true },
-    })
+    const current =
+      (await this.prisma.profile.findUnique({
+        where: { userId },
+        select: { id: true, moderationStatus: true, plan: true, oabNumber: true },
+      })) ?? (await this.garantirPerfil(userId, data.name))
     // Perfil restrito pela moderação não pode ser republicado pelo dono.
     if (data.published && current?.moderationStatus === 'restricted') {
       throw new ForbiddenException(
