@@ -38,11 +38,19 @@ export class ProfilesController {
     return this.profiles.search(q, area)
   }
 
-  // GET /api/profiles/me — sem sessão devolve null (o editor usa o rascunho local).
+  /**
+   * GET /api/profiles/me — o perfil de quem está logado.
+   *
+   * Sem sessão responde 401, e não `null`. A diferença não é de estilo: `null`
+   * também é a resposta de "conta sem perfil ainda", e o front tratava os dois
+   * casos como o mesmo — quem tinha o cookie vencido (ou bloqueado pelo
+   * navegador) caía no assistente de criação, em branco, com o próprio nome no
+   * cabeçalho, como se o perfil tivesse sumido. Um 401 diz o que houve.
+   */
   @Get('profiles/me')
   async me(@Req() req: RequisicaoComAuth) {
-    const userId = await this.sessions.userIdFrom(req)
-    return userId ? this.profiles.getMine(userId) : null
+    const userId = await this.sessions.requireUser(req, 'Entre na sua conta para ver seu perfil.')
+    return this.profiles.getMine(userId)
   }
 
   // PUT /api/profiles/me

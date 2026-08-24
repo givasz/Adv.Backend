@@ -1,5 +1,4 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
-import type { SupportKind, SupportStatus } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 
 // Suporte ao cliente — canal EXCLUSIVO de quem tem conta.
@@ -11,8 +10,18 @@ import { PrismaService } from '../prisma/prisma.service'
 // O corte do texto é generoso mas existe: um relato de bug bom é longo, e um
 // campo sem limite é convite a abuso de armazenamento.
 
-const KINDS: SupportKind[] = ['bug', 'duvida', 'conta', 'sugestao', 'outro']
-const STATUSES: SupportStatus[] = ['open', 'in_progress', 'resolved']
+// Os tipos vêm daqui, e NÃO de `@prisma/client`.
+//
+// O motivo é o schema de desenvolvimento: o SQLite não tem enum, então
+// gen-dev-schema.mjs os converte em texto — e o cliente gerado localmente deixa
+// de exportar `SupportKind`/`SupportStatus`. Importar de lá quebrava o build no
+// ambiente local (e SÓ nele), que é justamente onde se testa. Os valores já
+// estavam escritos abaixo; agora eles são a fonte do tipo.
+const KINDS = ['bug', 'duvida', 'conta', 'sugestao', 'outro'] as const
+const STATUSES = ['open', 'in_progress', 'resolved'] as const
+
+type SupportKind = (typeof KINDS)[number]
+type SupportStatus = (typeof STATUSES)[number]
 
 const SUBJECT_MAX = 120
 const MESSAGE_MAX = 4000
@@ -35,7 +44,7 @@ export class SupportService {
     if (message.length < 10) {
       throw new BadRequestException('Descreva o que aconteceu com um pouco mais de detalhe.')
     }
-    const kind = (KINDS as string[]).includes(input.kind ?? '')
+    const kind = (KINDS as readonly string[]).includes(input.kind ?? '')
       ? (input.kind as SupportKind)
       : 'outro'
 
@@ -77,7 +86,7 @@ export class SupportService {
    * chamado, o admin não consegue reproduzir nem responder.
    */
   listAll(status?: string) {
-    const filtro = (STATUSES as string[]).includes(status ?? '')
+    const filtro = (STATUSES as readonly string[]).includes(status ?? '')
       ? { status: status as SupportStatus }
       : {}
     return this.prisma.supportTicket.findMany({
@@ -99,7 +108,7 @@ export class SupportService {
 
   /** Admin muda o estado e/ou deixa uma resposta ao autor. */
   async setStatus(id: string, status?: string, note?: string) {
-    if (!(STATUSES as string[]).includes(status ?? '')) {
+    if (!(STATUSES as readonly string[]).includes(status ?? '')) {
       throw new BadRequestException('Situação inválida.')
     }
     const exists = await this.prisma.supportTicket.findUnique({ where: { id }, select: { id: true } })

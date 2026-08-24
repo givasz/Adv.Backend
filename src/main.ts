@@ -6,7 +6,7 @@ import { AppModule } from './app.module'
 import { assertSecureConfig } from './security/config'
 import { securityHeaders } from './security/headers'
 import { sessionContext } from './auth/session-context'
-import { CSRF_HEADER, origensPermitidas } from './auth/csrf'
+import { CSRF_HEADER, origemPermitida } from './auth/csrf'
 
 // Teto do corpo da requisição. O maior payload legítimo é o perfil com a foto
 // embutida (data URI ~300 KB, ver security/sanitize.ts) — 1 MB dá folga sem
@@ -47,7 +47,11 @@ async function bootstrap() {
   // lista de origens deixa de ser conforto e passa a ser a fronteira: um `*`
   // aqui entregaria a sessão de quem está logado a qualquer página da internet.
   app.enableCors({
-    origin: origensPermitidas(),
+    // A MESMA função do anti-CSRF decide — uma lista e uma regra só. Enquanto
+    // eram dois lugares, o CORS liberava e o CSRF barrava (ou o contrário), e o
+    // sintoma era um app que carregava mas não salvava.
+    origin: (origem: string | undefined, cb: (erro: Error | null, ok?: boolean) => void) =>
+      cb(null, origemPermitida(origem)),
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     // Sem `Authorization`: nenhuma rota lê esse cabeçalho desde que a sessão do
