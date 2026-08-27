@@ -196,12 +196,68 @@ diferenças deliberadas:
 - **O cookie vale só em `/api/admin`.** Todas as rotas do painel moram lá, então
   o cookie do admin não viaja junto de nenhuma visita a perfil público.
 
-A porta virou uma função só, `assertAdmin(req, token)`, em vez de três cópias em
-três controllers — uma rota nova do painel não tem como esquecer metade da
-verificação. O token estático legado (`x-admin-token`) segue aceito para script e
-curl, e continua dispensado de CSRF: ele é escrito à mão por quem chama, e nenhum
-site consegue forjá-lo a partir do navegador de outra pessoa.
+A porta virou uma função só, em vez de três cópias em três controllers — uma rota
+nova do painel não tem como esquecer metade da verificação.
 `backend/src/admin/admin-auth.ts`
+
+> **Atualização (27/08/2026).** As duas ressalvas acima caíram no item 17: as
+> sessões do painel saíram da memória para o banco, e o token estático legado
+> deixou de valer em produção.
+
+### 17. O painel não tinha identidade, papéis nem rastro
+
+O item 16 fechou *como* alguém entra no painel. Ficou aberto o que existe do lado
+de dentro — e ali havia três buracos que só apareciam juntos:
+
+**Um usuário e uma senha, no `.env`.** Não havia papéis: quem entrava para
+responder um chamado de suporte podia tirar qualquer perfil do ar. Não havia
+autoria: `adminLabel()` devolvia o nome do `.env`, e nenhuma decisão registrava
+quem a tomou, porque só existia "o admin". Não havia como desligar o acesso de
+uma pessoa sem trocar a senha de todas.
+
+**Nenhuma ação deixava rastro consultável.** `AuditLog` é a trilha do *perfil* (o
+que o advogado mudou) e `logSecurityEvent` escreve JSON no `console`, que some com
+a rotação do pm2. Restringir um perfil não gravava quem, quando nem por quê — ruim
+para o advogado, que não tinha como contestar, e pior para quem administra, que não
+tinha como se defender de uma acusação de censura arbitrária.
+
+**O `x-admin-token` era um portão lateral.** Um bearer sem expiração que, por
+desenho, pulava a checagem de CSRF. E, pior do que isso: ao ser aceito, ele
+**retornava antes da conferência de permissão** — ou seja, com o token na mão, todo
+o trabalho de papéis seria contornável. Isso foi encontrado pelo teste que exige
+que o token de serviço não decida nada, e corrigido antes de sair daqui.
+
+O que existe agora:
+
+- **`AdminUser` com papel** — `owner`, `moderator`, `support`, `readonly`. A
+  tabela do que cada um abre é um arquivo só (`admin/admin-roles.ts`), no espírito
+  do `planFeatures.ts` do front. O corte é entre **decidir** e **consultar**: quem
+  responde suporte vê a fila de denúncias e não tira nada do ar.
+- **Segundo fator (TOTP, RFC 6238)** obrigatório para quem decide. Implementado com
+  `node:crypto`, sem pacote novo, e testado contra os vetores da norma — um TOTP
+  "quase certo" não falha em lugar nenhum, apenas nunca deixa ninguém entrar.
+  Enquanto o segundo fator estiver pendente a pessoa entra e consulta, mas nenhuma
+  decisão é aplicada.
+- **Sessões no banco** (`AdminSession`), com prazo ocioso e teto absoluto, como a
+  do advogado. Reiniciar a API não desloga mais ninguém, e derrubar o aparelho de
+  alguém virou um botão. Desativar um acesso encerra as sessões no mesmo ato.
+- **`AdminAction`: quem, quando, sobre quem, e por quê.** O motivo é obrigatório em
+  toda decisão que afeta alguém — e é o MESMO texto que a pessoa afetada lê. O IP
+  entra como impressão digital, nunca o endereço.
+- **O token estático não vale em produção.** Fora dela ainda entra, para `curl` na
+  máquina de quem desenvolve, e mesmo lá apenas como `readonly`.
+- **A porta de emergência se fecha sozinha.** A credencial do `.env` só entra
+  enquanto a tabela `AdminUser` estiver vazia — é por ela que o primeiro
+  administrador nasce, e ela para de valer no instante em que ele existe, sem
+  deploy e sem variável para lembrar de tirar. Se o banco estiver fora, a resposta
+  é "já existe administrador": um banco intermitente não pode virar o caminho mais
+  fácil para o painel.
+
+Duas travas leem o próprio código-fonte e falham sozinhas
+(`admin/admin-rotas.spec.ts`), porque nenhuma revisão humana pega isto de forma
+confiável na rota número quinze: **toda rota do painel pede uma permissão que
+existe na tabela**, e **toda escrita do painel deixa registro**.
+`backend/src/admin/`
 
 ---
 
@@ -268,10 +324,23 @@ perguntar ao servidor quem está logado antes de decidir o que desenhar.
    Netlify, não na API — uma rota falsa no Nest não veria esse tráfego. Se quiser o
    sinal, o lugar é uma função do Netlify.
 
-6. **Troca de senha não encerra as outras sessões.** A rota de trocar senha ainda
-   não existe; quando existir, ela precisa chamar `revokeAll` — senão quem entrou
-   com a senha antiga continua dentro. O mecanismo já está pronto
-   (`POST /api/auth/logout-all`).
+6. ~~**Troca de senha do ADVOGADO não existe.**~~ **Resolvido em 27/08/2026.**
+   `POST /api/auth/senha` pede a senha atual e a nova (mesma regra de força do
+   cadastro), encerra TODAS as sessões e reabre só a de quem está trocando. Pedir
+   a senha atual é o que impede um cookie roubado de virar posse da conta: sem
+   essa etapa, quem tivesse a sessão trocaria a senha e trancaria o dono do lado
+   de fora. Teto de 10 tentativas por hora, por IP e por conta — a senha atual é
+   conferida aqui, e sem teto a rota seria um oráculo para adivinhá-la a partir de
+   uma sessão sequestrada, sem passar pelo limite do login.
+
+   Estava marcado como "resolver junto com o envio de e-mail" e não precisava:
+   e-mail só faz falta no *esqueci minha senha*, que continua em aberto. A tela
+   fica em `/conta/dados`.
+
+7. **O painel não tem recuperação de senha.** De propósito, por enquanto: sem
+   envio de e-mail, um "esqueci a senha" seria um caminho a mais para entrar sem
+   ser convidado. Hoje a saída é `npm run admin:create --reset` no servidor, que
+   também derruba as sessões da conta.
 
 ---
 
@@ -312,6 +381,41 @@ No dia em que entrar SSE, upload de arquivo ou `_.template`, ele deixa de valer.
 ---
 
 ## Checklist de produção
+
+### Esta versão exige `prisma db push` e criar o primeiro administrador — ✅ aplicado
+
+> `db push` feito na VPS em 27/08/2026, 15h54, com dump em
+> `/root/backups/advocme-2026-08-27-painel-identidade.sql.gz`. Conferido contra a
+> API de produção: token estático recusado com 403, escrita sem `x-csrf-token`
+> recusada com 403, decisão sem motivo recusada com 400, entrada registrada em
+> `AdminAction` e logout derrubando a sessão no servidor.
+> Primeiro administrador criado no mesmo dia (`admingiva`, papel `owner`): com
+> ele a porta de emergência do `.env` fechou sozinha — entrar por ela passou a
+> devolver 401. A conta abre com o segundo fator pendente, e nesse estado só as
+> permissões de leitura vêm no `/api/admin/me`.
+
+Três tabelas novas (`AdminUser`, `AdminSession`, `AdminAction`) e um enum
+(`AdminRole`). Nada é destrutivo — são tabelas novas, e nenhuma coluna existente
+mudou —, mas o dump antes continua valendo como regra da casa.
+
+```bash
+# na VPS, com o dist novo já enviado:
+pg_dump ... > backup-antes.sql                    # nunca pule
+npx prisma db push                                # tabelas do painel
+pm2 restart advocme-backend
+
+# primeiro administrador (a credencial do .env para de valer depois deste passo):
+node dist/admin/admin-cli.js --email voce@dominio --name "Seu Nome" --role owner
+# anote a senha sorteada: ela não é mostrada de novo
+```
+
+No primeiro acesso o painel pede o segundo fator. Enquanto ele não existir,
+nenhuma decisão é aplicada — dá para consultar a fila, e é isso.
+
+`ADMIN_USERNAME`/`ADMIN_PASSWORD` continuam no `.env` como porta de emergência
+(elas voltam a valer se a tabela `AdminUser` ficar vazia). `ADMIN_TOKEN` pode
+sair: em produção ele não é mais aceito.
+
 
 ### Esta versão exige `prisma db push` (e esvaziar `Session` antes) — ✅ aplicado
 
