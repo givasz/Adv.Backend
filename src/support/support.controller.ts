@@ -11,7 +11,7 @@ import {
   Req,
 } from '@nestjs/common'
 import { SupportService } from './support.service'
-import { assertAdmin } from '../admin/admin-auth'
+import { AdminService } from '../admin/admin.service'
 import { SessionService } from '../auth/session.service'
 import type { RequisicaoComAuth } from '../auth/session-context'
 import { checkRateLimit } from '../security/rate-limit'
@@ -22,6 +22,7 @@ export class SupportController {
   constructor(
     private readonly support: SupportService,
     private readonly sessions: SessionService,
+    private readonly admin: AdminService,
   ) {}
 
   // O canal é EXCLUSIVO de quem tem conta: sem sessão, não há chamado. É o que
@@ -61,34 +62,58 @@ export class SupportController {
   }
 
   // ---- Admin ----
+  //
+  // Ler chamado é `suporte:ler` (todo papel tem, inclusive o de só leitura);
+  // mudar a situação e responder é `suporte:responder` — e essa, sim, é uma
+  // decisão que chega ao advogado, então pede motivo e vai para o histórico.
 
   // GET /api/admin/support?status=open|in_progress|resolved
   @Get('admin/support')
-  list(
+  async list(
     @Req() req: RequisicaoComAuth,
     @Query('status') status?: string,
     @Headers('x-admin-token') token?: string,
   ) {
-    assertAdmin(req, token, 'admin:support')
+    await this.admin.exigir(req, 'suporte:ler', token)
     return this.support.listAll(status)
   }
 
   // GET /api/admin/support/counts → { open, in_progress, resolved }
   @Get('admin/support/counts')
-  counts(@Req() req: RequisicaoComAuth, @Headers('x-admin-token') token?: string) {
-    assertAdmin(req, token, 'admin:support')
+  async counts(@Req() req: RequisicaoComAuth, @Headers('x-admin-token') token?: string) {
+    await this.admin.exigir(req, 'suporte:ler', token)
     return this.support.counts()
   }
 
-  // POST /api/admin/support/:id/status  { status, note? }
+  /**
+   * POST /api/admin/support/:id/status  { status, note? }
+   *
+   * A nota é o que o advogado lê em /suporte — por isso ela vale como motivo.
+   * Fechar um chamado sem uma linha de resposta é fechá-lo na cara de quem
+   * escreveu, e o histórico ficaria com "resolvido" e nada mais.
+   */
   @Post('admin/support/:id/status')
-  setStatus(
+  async setStatus(
     @Param('id') id: string,
     @Body() body: { status?: string; note?: string },
     @Req() req?: RequisicaoComAuth,
     @Headers('x-admin-token') token?: string,
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') forwardedFor?: string,
   ) {
-    assertAdmin(req, token, 'admin:support')
-    return this.support.setStatus(id, body?.status, body?.note)
+    const quem = await this.admin.exigir(req, 'suporte:responder', token)
+    const motivo = this.admin.exigirMotivo(body?.note, 'esta resposta')
+    const antes = await this.support.situacao(id)
+    const resultado = await this.support.setStatus(id, body?.status, motivo)
+    await this.admin.registrar(quem, {
+      action: `suporte.${body?.status ?? 'status'}`,
+      targetType: 'ticket',
+      targetId: id,
+      reason: motivo,
+      before: antes,
+      after: { status: resultado.status },
+      ip: clientIp(ip, forwardedFor),
+    })
+    return resultado
   }
 }

@@ -10,7 +10,7 @@ import {
   Req,
 } from '@nestjs/common'
 import { ProfilesService } from './profiles.service'
-import { adminLabel, assertAdmin } from '../admin/admin-auth'
+import { AdminService } from '../admin/admin.service'
 import { SessionService } from '../auth/session.service'
 import type { RequisicaoComAuth } from '../auth/session-context'
 
@@ -19,6 +19,7 @@ export class ProfilesController {
   constructor(
     private readonly profiles: ProfilesService,
     private readonly sessions: SessionService,
+    private readonly admin: AdminService,
   ) {}
 
   /**
@@ -91,12 +92,12 @@ export class ProfilesController {
 
   // GET /api/admin/profiles?q=  → busca de perfis pelo painel (qualquer status)
   @Get('admin/profiles')
-  adminSearchProfiles(
+  async adminSearchProfiles(
     @Req() req: RequisicaoComAuth,
     @Query('q') q?: string,
     @Headers('x-admin-token') token?: string,
   ) {
-    assertAdmin(req, token, 'admin:profiles')
+    await this.admin.exigir(req, 'contas:ler', token)
     return this.profiles.adminSearch(q)
   }
 }

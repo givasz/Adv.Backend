@@ -1,33 +1,15 @@
-import {
-  Body,
-  Controller,
-  Get,
-  HttpCode,
-  Headers,
-  Ip,
-  Param,
-  Post,
-  Query,
-  Req,
-  UnauthorizedException,
-} from '@nestjs/common'
+import { Body, Controller, Get, Headers, Ip, Param, Post, Query, Req } from '@nestjs/common'
 import { ModerationService } from './moderation.service'
-import {
-  abrirSessaoAdmin,
-  assertAdmin,
-  csrfDoAdmin,
-  encerrarSessaoAdmin,
-  sessaoAdmin,
-  verifyCredentials,
-} from '../admin/admin-auth'
+import { AdminService } from '../admin/admin.service'
 import type { RequisicaoComAuth } from '../auth/session-context'
-import { AUTH_RATE_RULES, enforceRateLimit } from '../security/rate-limit'
 import { clientIp } from '../security/net'
-import { logSecurityEvent } from '../security/audit-log'
 
 @Controller()
 export class ModerationController {
-  constructor(private readonly moderation: ModerationService) {}
+  constructor(
+    private readonly moderation: ModerationService,
+    private readonly admin: AdminService,
+  ) {}
 
   // ---- Denúncia pública ----
 
@@ -44,115 +26,105 @@ export class ModerationController {
     return this.moderation.createReport(slug, { ...body, ip: clientIp(ip, forwardedFor) })
   }
 
-  // ---- Admin: login ----
-
-  /**
-   * POST /api/admin/login  { username, password } → { expiresAt, csrfToken }
-   *
-   * A sessão sai num cookie HttpOnly restrito a `/api/admin` — nenhum token volta
-   * no corpo, e o painel não guarda credencial nenhuma. O `csrfToken` que volta
-   * não autentica sozinho: sem o cookie, não serve para nada.
-   */
-  @Post('admin/login')
-  login(
-    @Req() req: RequisicaoComAuth,
-    @Body() body: { username?: string; password?: string },
-    @Ip() ip?: string,
-    @Headers('x-forwarded-for') forwardedFor?: string,
-  ) {
-    // Uma senha só protege o painel inteiro: sem teto de tentativas, é só questão
-    // de tempo. O limite global segura a mesma varredura vinda de muitos IPs.
-    enforceRateLimit(
-      [
-        [`admin-login:${clientIp(ip, forwardedFor)}`, AUTH_RATE_RULES.adminLoginPerIp],
-        ['admin-login:global', AUTH_RATE_RULES.adminLoginGlobal],
-      ],
-      'Muitas tentativas. Aguarde alguns minutos.',
-    )
-    const endereco = clientIp(ip, forwardedFor)
-    if (!verifyCredentials(body?.username, body?.password)) {
-      // O painel de moderação decide o que some do ar: cada tentativa contra ele
-      // é registrada, acertando ou não.
-      logSecurityEvent({ event: 'admin_login_fail', ip: endereco, result: 'negado' })
-      throw new UnauthorizedException('Usuário ou senha inválidos')
-    }
-    logSecurityEvent({ event: 'admin_login_ok', ip: endereco, result: 'ok' })
-    return abrirSessaoAdmin(req)
-  }
-
-  /**
-   * GET /api/admin/me — o painel continua aberto neste navegador?
-   *
-   * O cookie é HttpOnly, então esta é a única forma de a tela saber se ainda há
-   * sessão ao ser recarregada. Devolve também o token anti-CSRF, que o painel
-   * precisa para qualquer ação que decide alguma coisa.
-   */
-  @Get('admin/me')
-  me(@Req() req: RequisicaoComAuth) {
-    const sessionId = sessaoAdmin(req)
-    if (!sessionId) throw new UnauthorizedException('Sessão do painel encerrada.')
-    return { csrfToken: csrfDoAdmin(sessionId) }
-  }
-
-  /**
-   * POST /api/admin/logout — encerra a sessão do painel.
-   *
-   * 204 sempre, como o logout do advogado: sair é uma intenção, e um erro aqui só
-   * diria a um curioso se o cookie que ele tem ainda vale.
-   */
-  @Post('admin/logout')
-  @HttpCode(204)
-  logout(@Req() req: RequisicaoComAuth) {
-    if (sessaoAdmin(req)) logSecurityEvent({ event: 'admin_logout', result: 'ok' })
-    encerrarSessaoAdmin(req)
-  }
-
   // ---- Admin: denúncias / moderação ----
+  //
+  // Entrar, sair e "quem sou eu" moram em admin/admin.controller.ts. Aqui ficam
+  // só as rotas que decidem sobre perfis — cada uma pedindo a permissão que lhe
+  // cabe: consultar a fila é `moderacao:ler`, tirar algo do ar é
+  // `moderacao:decidir`, e quem responde suporte não tem a segunda.
 
   // GET /api/admin/reports?status=open|resolved|dismissed|all
   @Get('admin/reports')
-  listReports(
+  async listReports(
     @Query('status') status: 'open' | 'resolved' | 'dismissed' | 'all' = 'open',
     @Req() req?: RequisicaoComAuth,
     @Headers('x-admin-token') adminToken?: string,
   ) {
-    assertAdmin(req, adminToken)
+    await this.admin.exigir(req, 'moderacao:ler', adminToken)
     return this.moderation.listReports(status)
   }
 
   // GET /api/admin/profiles/:id/moderation  → perfil completo + denúncias
   @Get('admin/profiles/:id/moderation')
-  profileDetail(
+  async profileDetail(
     @Param('id') id: string,
     @Req() req?: RequisicaoComAuth,
     @Headers('x-admin-token') adminToken?: string,
   ) {
-    assertAdmin(req, adminToken)
+    await this.admin.exigir(req, 'moderacao:ler', adminToken)
     return this.moderation.getProfileForModeration(id)
   }
 
-  // POST /api/admin/profiles/:id/moderate
-  //   { action: 'warn'|'partial'|'restrict'|'clear', note?, hiddenSections?, reportIds? }
+  /**
+   * POST /api/admin/profiles/:id/moderate
+   *   { action: 'warn'|'partial'|'restrict'|'clear', note?, reason?, hiddenSections?, reportIds? }
+   *
+   * O motivo é obrigatório, e não é burocracia: nas três ações que restringem
+   * alguma coisa ele É o texto que o advogado lê no editor (`moderationNote`) —
+   * uma decisão sem motivo escrito é uma decisão que a pessoa não tem como
+   * contestar. Ao liberar, o aviso sai do perfil, então o motivo vai só para o
+   * histórico, e por isso vem em `reason`.
+   */
   @Post('admin/profiles/:id/moderate')
-  moderate(
+  async moderate(
     @Param('id') id: string,
     @Body()
-    body: { action: string; note?: string; hiddenSections?: string[]; reportIds?: string[] },
+    body: {
+      action: string
+      note?: string
+      reason?: string
+      hiddenSections?: string[]
+      reportIds?: string[]
+    },
     @Req() req?: RequisicaoComAuth,
     @Headers('x-admin-token') adminToken?: string,
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') forwardedFor?: string,
   ) {
-    assertAdmin(req, adminToken)
-    return this.moderation.moderateProfile(id, body)
+    const quem = await this.admin.exigir(req, 'moderacao:decidir', adminToken)
+    const motivo =
+      body?.action === 'clear'
+        ? this.admin.exigirMotivo(body?.reason ?? body?.note, 'liberar o perfil')
+        : this.admin.exigirMotivo(body?.note, 'esta decisão')
+
+    const antes = await this.moderation.estadoDeModeracao(id)
+    const perfil = await this.moderation.moderateProfile(id, { ...body, note: body?.note ?? motivo })
+    await this.admin.registrar(quem, {
+      action: `moderacao.${body.action}`,
+      targetType: 'profile',
+      targetId: id,
+      reason: motivo,
+      before: antes,
+      after: {
+        moderationStatus: perfil.moderationStatus,
+        hiddenSections: perfil.hiddenSections,
+        slug: perfil.slug,
+      },
+      ip: clientIp(ip, forwardedFor),
+    })
+    return perfil
   }
 
-  // POST /api/admin/reports/:id/dismiss
+  // POST /api/admin/reports/:id/dismiss  { reason }
   @Post('admin/reports/:id/dismiss')
-  dismiss(
+  async dismiss(
     @Param('id') id: string,
+    @Body() body: { reason?: string },
     @Req() req?: RequisicaoComAuth,
     @Headers('x-admin-token') adminToken?: string,
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') forwardedFor?: string,
   ) {
-    assertAdmin(req, adminToken)
-    return this.moderation.dismissReport(id)
+    const quem = await this.admin.exigir(req, 'moderacao:decidir', adminToken)
+    const motivo = this.admin.exigirMotivo(body?.reason, 'arquivar esta denúncia')
+    const resultado = await this.moderation.dismissReport(id)
+    await this.admin.registrar(quem, {
+      action: 'moderacao.arquivar-denuncia',
+      targetType: 'report',
+      targetId: id,
+      reason: motivo,
+      ip: clientIp(ip, forwardedFor),
+    })
+    return resultado
   }
 }
