@@ -9,6 +9,8 @@ import { ModerationModule } from './moderation/moderation.module'
 import { FirmsModule } from './firms/firms.module'
 import { SupportModule } from './support/support.module'
 import { AccountModule } from './account/account.module'
+import { AnalyticsModule } from './analytics/analytics.module'
+import { RetencaoModule } from './retencao/retencao.module'
 
 @Module({
   imports: [
@@ -21,6 +23,8 @@ import { AccountModule } from './account/account.module'
     FirmsModule,
     SupportModule,
     AccountModule,
+    AnalyticsModule,
+    RetencaoModule,
   ],
   controllers: [HealthController],
 })

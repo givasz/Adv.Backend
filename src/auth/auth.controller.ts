@@ -160,6 +160,37 @@ export class AuthController {
   }
 
   /**
+   * POST /api/auth/senha  { atual, nova } — troca a própria senha.
+   *
+   * Exige sessão E a senha atual: um cookie roubado não basta para tomar a conta.
+   * Derruba as OUTRAS sessões e mantém esta — ver AuthService.trocarSenha.
+   *
+   * Não confundir com "esqueci minha senha", que precisa de e-mail e ainda não
+   * existe. Esta rota fecha o item 6 de "Em aberto" do SEGURANCA.md, que não
+   * dependia de correio nenhum e por isso pôde vir antes.
+   *
+   * Limite por IP e por conta porque a senha atual é conferida aqui: sem teto,
+   * esta rota viraria um oráculo para adivinhar a senha a partir de uma sessão
+   * sequestrada, sem passar pelo limite do login.
+   */
+  @Post('senha')
+  async trocarSenha(
+    @Body() body: { atual?: string; nova?: string },
+    @Req() req: RequisicaoComAuth,
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') forwardedFor?: string,
+  ) {
+    const userId = await this.sessions.requireUser(req)
+    enforceRateLimit([
+      ['senha:ip:' + clientIp(ip, forwardedFor), { windowMs: 3_600_000, max: 10 }],
+      ['senha:user:' + userId, { windowMs: 3_600_000, max: 10 }],
+    ])
+    const resultado = await this.auth.trocarSenha(req, userId, body?.atual, body?.nova)
+    logSecurityEvent({ event: 'password_changed', userId, result: 'ok' })
+    return resultado
+  }
+
+  /**
    * POST /api/auth/logout-all — encerra TODAS as sessões da conta.
    *
    * É o botão para quando o aparelho some ou a senha vazou: derruba o celular, o

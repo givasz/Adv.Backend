@@ -14,7 +14,22 @@ import { readFileSync, writeFileSync } from 'node:fs'
 const ORIGEM = 'prisma/schema.prisma'
 const DESTINO = 'prisma/schema.dev.prisma'
 
-const prod = readFileSync(ORIGEM, 'utf8')
+// Quebra de linha normalizada ANTES de qualquer expressão regular.
+//
+// Sem isto o gerador se destruía em silêncio no Windows. Em arquivo com quebra
+// de linha CRLF, toda linha termina em retorno de carro — e o ponto, no
+// JavaScript, NÃO casa retorno de carro (é terminador de linha, como o avanço de
+// linha). A expressão que converte os campos termina em `(.*)$`, então ela nunca
+// casava: nenhum campo tipado por enum virava String, enquanto as declarações
+// dos enums eram removidas do mesmo jeito (passo 2). O schema saía referenciando
+// tipos que não existem mais, o Prisma lê tipo desconhecido como RELAÇÃO, e o
+// resultado eram 14 erros de validação.
+//
+// O pior não era o erro, era o silêncio: o script imprimia "9 enums viraram
+// String" e saía com código 0. Quem clonasse o projeto no Windows não conseguia
+// subir o banco local, e a mensagem de erro apontava para os índices do schema —
+// nunca para este arquivo.
+const prod = readFileSync(ORIGEM, 'utf8').replace(/\r\n/g, '\n')
 
 // 1. Quais são os enums e quais valores cada um aceita (o valor vira texto no default).
 const enums = new Map()
@@ -65,6 +80,28 @@ const cabecalho = `// ⚠️ ARQUIVO GERADO — não edite à mão.
 //       npx prisma studio  --schema prisma/schema.dev.prisma
 `
 out = cabecalho + out.replace(/^\/\/[^\n]*\n(\/\/[^\n]*\n)*/, '')
+
+// 6. Conferência: nenhum nome de enum pode ter sobrado no arquivo.
+//
+// Esta trava é a lição do bug de CRLF. O problema não foi a expressão regular
+// errada — foi ela falhar CALADA, gerando um arquivo inválido com mensagem de
+// sucesso. Aqui o script prova que fez o que disse: se um `FirmMemberStatus`
+// escapou, ele para com código 1 e diz o nome do campo, em vez de deixar o
+// Prisma reclamar de um índice três telas depois.
+const sobraram = []
+for (const nome of enums.keys()) {
+  const usoComoTipo = new RegExp(`^\\s+\\w+\\s+${nome}\\b`, 'm')
+  if (usoComoTipo.test(out)) sobraram.push(nome)
+}
+if (sobraram.length > 0) {
+  console.error(
+    `ERRO: o schema gerado ainda referencia ${sobraram.length} enum(s) cuja declaração foi removida:\n` +
+      sobraram.map((n) => `  • ${n}`).join('\n') +
+      `\n\nO Prisma leria cada um como uma RELAÇÃO para um modelo inexistente.` +
+      `\n${DESTINO} NÃO foi gravado.`,
+  )
+  process.exit(1)
+}
 
 writeFileSync(DESTINO, out.replace(/\n{3,}/g, '\n\n'), 'utf8')
 console.log(`${DESTINO} gerado a partir de ${ORIGEM} (${enums.size} enums viraram String).`)

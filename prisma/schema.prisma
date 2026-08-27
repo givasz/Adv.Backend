@@ -305,6 +305,16 @@ model Profile {
   card                 String           @default("")
   plan                 Plan             @default(free)
   theme                String           @default("papel") // ThemeId — ver frontend/src/lib/themes.ts
+  // LEGADO, inerte. Nada lê e nada escreve — e nada nunca escreveu: a coluna
+  // existia desde o começo e NENHUMA linha do código a incrementava, então a tela
+  // "Quem visita você" mostrava 0 para todo mundo, sempre, enquanto a visita real
+  // já era gravada em LinkEvent e nunca lida. Quem conta agora é
+  // analytics/analytics.service.ts, a partir de LinkEvent.
+  //
+  // Mantida (em vez de derrubada) pelo mesmo motivo das colunas de booking: uma
+  // migração destrutiva a mais, sem ganho. Não volte a usá-la — um contador e uma
+  // tabela de eventos contando a mesma coisa divergem no primeiro erro de
+  // transação, e aí não há como saber qual dos dois está certo.
   views                Int              @default(0)
   published            Boolean          @default(false)
   // Versão da política de publicidade (Provimento) aplicada à última verificação.

@@ -13,7 +13,8 @@
     "prisma:deploy": "prisma db push",
     "prisma:studio": "prisma studio",
     "prisma:dev-schema": "node scripts/gen-dev-schema.mjs",
-    "admin:create": "node dist/admin/admin-cli.js"
+    "admin:create": "node dist/admin/admin-cli.js",
+    "retencao": "node dist/retencao/retencao-cli.js"
   },
   "engines": {
     "node": ">=20"
