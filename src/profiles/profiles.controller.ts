@@ -8,7 +8,21 @@ import {
   Put,
   Query,
   Req,
+  Res,
 } from '@nestjs/common'
+
+/**
+ * O mínimo de uma resposta HTTP para servir bytes de imagem.
+ *
+ * Interface local, e não `@types/express`, pela mesma razão de
+ * `auth/session-context.ts`: o projeto não instala os tipos do express, e uma
+ * dependência nova para descrever três métodos não se paga.
+ */
+interface RespostaHttp {
+  setHeader(nome: string, valor: string): void
+  redirect(status: number, url: string): void
+  end(corpo?: Buffer): void
+}
 import { ProfilesService } from './profiles.service'
 import { AdminService } from '../admin/admin.service'
 import { SessionService } from '../auth/session.service'
@@ -88,6 +102,36 @@ export class ProfilesController {
   @Get('profiles/:slug')
   getBySlug(@Param('slug') slug: string) {
     return this.profiles.getBySlug(slug)
+  }
+
+  /**
+   * GET /api/profiles/:slug/avatar  (público) — a foto como imagem servível.
+   *
+   * É o que faz a prévia do link ter rosto: `og:image` precisa de uma URL que o
+   * robô do WhatsApp consiga buscar por HTTP, e a foto está guardada como data
+   * URI. Ver ProfilesService.avatarBySlug.
+   *
+   * `immutable` não cabe (a pessoa troca a foto), mas uma hora de cache é o certo
+   * aqui: os mensageiros buscam esta URL uma vez por compartilhamento, e sem
+   * cache um perfil que circula vira uma consulta ao banco por leitor.
+   */
+  @Get('profiles/:slug/avatar')
+  async avatar(@Param('slug') slug: string, @Res() res: RespostaHttp) {
+    const foto = await this.profiles.avatarBySlug(slug)
+    if (foto.kind === 'redirect') return res.redirect(302, foto.url)
+    res.setHeader('Content-Type', foto.contentType)
+    res.setHeader('Cache-Control', 'public, max-age=3600')
+    // A foto é imagem, e só. Sem isto, um arquivo forjado que passasse pelo
+    // saneamento poderia ser servido como outra coisa pelo palpite do navegador.
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    return res.end(foto.bytes)
+  }
+
+  // GET /api/sitemap  (público) → [{ slug, updatedAt }] dos perfis publicados.
+  // Alimenta o /sitemap.xml servido pelo Netlify (frontend/netlify/edge-functions).
+  @Get('sitemap')
+  sitemap() {
+    return this.profiles.sitemap()
   }
 
   // GET /api/admin/profiles?q=&limite=&offset=  → busca do painel (qualquer status)
