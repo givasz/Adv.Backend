@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common'
 import { ConfigModule } from '@nestjs/config'
 import { HealthController } from './health.controller'
 import { AiModule } from './ai/ai.module'
+import { AdminModule } from './admin/admin.module'
 import { AuthModule } from './auth/auth.module'
 import { ProfilesModule } from './profiles/profiles.module'
 import { ModerationModule } from './moderation/moderation.module'
@@ -13,6 +14,7 @@ import { AccountModule } from './account/account.module'
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     AiModule,
+    AdminModule,
     AuthModule,
     ProfilesModule,
     ModerationModule,

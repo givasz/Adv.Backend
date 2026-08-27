@@ -127,6 +127,22 @@ export class ModerationService {
     return profile
   }
 
+  /**
+   * O estado de moderação de um perfil, antes de mexer nele.
+   *
+   * Serve ao registro do painel: sem o "antes", o histórico diz que alguém
+   * restringiu um perfil, mas não diz se ele já estava restrito — e a diferença
+   * entre uma decisão nova e a repetição de uma antiga é justamente o que se
+   * quer ler meses depois. Perfil inexistente devolve null em vez de lançar: a
+   * rota seguinte é que decide o 404.
+   */
+  async estadoDeModeracao(profileId: string) {
+    return this.prisma.profile.findUnique({
+      where: { id: profileId },
+      select: { moderationStatus: true, hiddenSections: true, published: true, slug: true },
+    })
+  }
+
   // ---- Admin: decisão ----
 
   /**

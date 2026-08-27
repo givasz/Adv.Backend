@@ -382,3 +382,104 @@ model PolicyVersion {
   active      Boolean  @default(true)
   createdAt   DateTime @default(now())
 }
+
+// ---------------------------------------------------------------------------
+// Painel de administração
+// ---------------------------------------------------------------------------
+
+// Papel de quem entra no painel. As permissões de cada um vivem em
+// src/admin/admin-roles.ts — fonte única, com teste que barra rota usando
+// permissão que não existe lá.
+//
+//   owner     → tudo, inclusive criar e desativar administradores
+//   moderator → decide moderação e lê a auditoria; não mexe em administradores
+//   support   → responde chamados e consulta; NÃO tira perfil do ar
+//   readonly  → só lê (script, integração, auditoria externa)
+
+// Quem administra a plataforma. Antes era UM usuário e UMA senha no .env: sem
+// papéis, sem autoria e sem como revogar. Cada decisão do painel agora tem nome
+// (ver AdminAction), e quem responde suporte não consegue restringir um perfil.
+//
+// A credencial do .env continua valendo APENAS enquanto esta tabela estiver
+// vazia — é a porta de entrada do primeiro administrador (npm run admin:create).
+// Criado o primeiro, ela para de funcionar sozinha, sem precisar de deploy.
+model AdminUser {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String
+  // Mesmo formato e custo do hash do advogado (scrypt) — ver src/auth/user-auth.ts.
+  passwordHash String
+  role         String @default("support")
+  // Segundo fator (TOTP, RFC 6238). Obrigatório para quem decide: owner e
+  // moderator entram, mas o painel só libera as ações depois de configurado.
+  totpSecret   String?
+  totpEnabled  Boolean   @default(false)
+  active       Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  lastLoginAt  DateTime?
+
+  sessions AdminSession[]
+  actions  AdminAction[]
+
+  @@index([active])
+}
+
+// Sessão do painel. Antes vivia num Map em memória: reiniciar a API deslogava
+// todo mundo e não havia como derrubar o aparelho de alguém antes do prazo.
+//
+// O cookie leva um segredo sorteado e vale só em /api/admin — assim ele não
+// viaja junto de nenhuma visita a perfil público.
+model AdminSession {
+  // Sorteado (16 bytes), não cuid: nada nele conta quantas sessões existem.
+  id                String    @id
+  adminId           String
+  admin             AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  // SHA-256 do segredo que viaja no cookie. O segredo não é guardado.
+  tokenHash         String
+  createdAt         DateTime  @default(now())
+  // Vence por inatividade; empurrado enquanto a pessoa usa o painel.
+  expiresAt         DateTime
+  // Teto absoluto: nem renovando passa daqui.
+  absoluteExpiresAt DateTime
+  // Impressão digital curta do IP (não o IP): serve para reconhecer "entrou de
+  // um lugar novo" sem guardar endereço de ninguém.
+  ipFingerprint     String    @default("")
+
+  @@index([adminId])
+  @@index([expiresAt])
+}
+
+// Trilha do que o ADMIN fez. Diferente de AuditLog, que é a trilha do perfil
+// (o que o advogado mudou): aqui é a plataforma agindo sobre alguém.
+//
+// Existe para os dois lados: sem ela o advogado não tem como contestar uma
+// decisão, e o administrador não tem como se defender de uma acusação de
+// censura arbitrária. Nenhuma rota da aplicação atualiza ou apaga estas linhas.
+model AdminAction {
+  id         String     @id @default(cuid())
+  // Nulo quando a ação veio da credencial de emergência do .env (antes de existir
+  // o primeiro AdminUser) — mesmo aí, adminLabel diz quem foi.
+  adminId    String?
+  admin      AdminUser? @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  // Nome no MOMENTO da ação: renomear ou desativar alguém não reescreve a história.
+  adminLabel String     @default("")
+  adminRole  String     @default("")
+  // "moderacao.restringir", "conta.suspender", "admin.criar", "sessao.abrir"…
+  action     String
+  targetType String     @default("") // profile | user | firm | ticket | admin | policy | sessao
+  targetId   String     @default("")
+  // Obrigatório nas decisões que afetam alguém — é o texto que o usuário recebe.
+  reason     String     @default("")
+  // JSON minimizado do que mudou. Só os campos alterados, nada de conteúdo
+  // pessoal além do que já é público.
+  before     String     @default("")
+  after      String     @default("")
+  // Impressão digital do IP, nunca o endereço.
+  ip         String     @default("")
+  createdAt  DateTime   @default(now())
+
+  @@index([targetType, targetId, createdAt])
+  @@index([adminId, createdAt])
+  @@index([action, createdAt])
+  @@index([createdAt])
+}

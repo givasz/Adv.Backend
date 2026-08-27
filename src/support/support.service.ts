@@ -107,6 +107,14 @@ export class SupportService {
   }
 
   /** Admin muda o estado e/ou deixa uma resposta ao autor. */
+  /** Situação atual do chamado, para o "antes" do histórico do painel. */
+  async situacao(id: string) {
+    return this.prisma.supportTicket.findUnique({
+      where: { id },
+      select: { status: true, handledAt: true },
+    })
+  }
+
   async setStatus(id: string, status?: string, note?: string) {
     if (!(STATUSES as readonly string[]).includes(status ?? '')) {
       throw new BadRequestException('Situação inválida.')
