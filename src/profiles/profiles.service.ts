@@ -67,9 +67,20 @@ export class ProfilesService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getBySlug(slug: string) {
-    // Perfil restrito pela moderação some do público (equiparado a não publicado).
+    // Perfil restrito pela moderação some do público (equiparado a não publicado)
+    // — mas só enquanto a medida VALER. O prazo é conferido na leitura, e não
+    // por uma varredura agendada: sem cron para esquecer de rodar, e sem uma
+    // restrição vencida continuar de pé porque o servidor reiniciou na hora
+    // errada. Ver admin/sancoes.ts.
     const profile = await this.prisma.profile.findFirst({
-      where: { slug, published: true, moderationStatus: { not: 'restricted' } },
+      where: {
+        slug,
+        published: true,
+        OR: [
+          { moderationStatus: { not: 'restricted' } },
+          { moderationUntil: { lte: new Date() } },
+        ],
+      },
       include: relations,
     })
     if (!profile) throw new NotFoundException('Perfil não encontrado')
@@ -83,6 +94,7 @@ export class ProfilesService {
   private toPublic<
     T extends {
       moderationStatus: string
+      moderationUntil?: Date | null
       hiddenSections: string
       avatarUrl?: string | null
       headline?: string
@@ -97,7 +109,10 @@ export class ProfilesService {
     const { hiddenSections, moderationNote, moderationStatus, ...rest } = profile as T & {
       moderationNote?: string
     }
+    // Censura parcial vencida devolve as seções sozinha, pelo mesmo motivo.
     if (moderationStatus !== 'partial') return rest
+    const ate = (profile as { moderationUntil?: Date | null }).moderationUntil
+    if (ate && ate.getTime() <= Date.now()) return rest
 
     let hidden: string[] = []
     try {

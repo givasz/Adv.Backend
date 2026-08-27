@@ -53,6 +53,7 @@ import {
 } from './admin-roles'
 import { novoSegredoTotp, otpauthUrl, segredoLegivel, totpConfere } from './totp'
 import { faixaTrilha, trilha } from './paginacao'
+import { venceEm } from './sancoes'
 
 /** Quem está usando o painel nesta requisição. */
 export interface AdminAtual {
@@ -547,6 +548,267 @@ export class AdminService {
       ...(filtros.cursor ? { cursor: { id: filtros.cursor }, skip: 1 } : {}),
     })
     return trilha(linhas, take)
+  }
+
+  // ---- Sanções que alcançam a conta ------------------------------------------
+  //
+  // Degraus 4 e 5 de docs/politica-de-sancoes.md. Até aqui o painel só alcançava
+  // o perfil: dava para tirar a página do ar e não dava para impedir que a mesma
+  // pessoa publicasse outra no dia seguinte com a inscrição de um terceiro.
+
+  /** A ficha da conta: o que o administrador precisa ver ANTES de decidir. */
+  async fichaDaConta(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        createdAt: true,
+        suspendedAt: true,
+        suspendedUntil: true,
+        suspendedReason: true,
+        closedAt: true,
+        closedReason: true,
+        profile: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            plan: true,
+            published: true,
+            moderationStatus: true,
+            moderationUntil: true,
+            billingPausedAt: true,
+            oabNumber: true,
+            // Reincidência é o que justifica subir um degrau — e ela precisa
+            // estar à vista na hora de decidir, não a duas telas de distância.
+            _count: { select: { reports: true } },
+          },
+        },
+        _count: { select: { sessions: true, tickets: true } },
+      },
+    })
+    if (!user) throw new BadRequestException('Conta não encontrada.')
+
+    // O histórico do painel sobre esta conta e sobre o perfil dela.
+    const alvos = [userId, user.profile?.id].filter(Boolean) as string[]
+    const historico = await this.prisma.adminAction.findMany({
+      where: { targetId: { in: alvos } },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    })
+
+    const { _count, profile, ...conta } = user
+    return {
+      ...conta,
+      sessoes: _count.sessions,
+      chamados: _count.tickets,
+      perfil: profile
+        ? { ...profile, denuncias: profile._count.reports, _count: undefined }
+        : null,
+      historico,
+    }
+  }
+
+  /**
+   * Degrau 4 — suspende o login por um prazo.
+   *
+   * O perfil sai do ar junto: manter a página no ar enquanto o dono não consegue
+   * entrar para corrigi-la seria puni-lo duas vezes e deixar no público o
+   * conteúdo que motivou a medida.
+   */
+  async suspenderConta(quem: AdminAtual, userId: string, reason: string, dias?: unknown, ip?: string) {
+    const motivo = this.exigirMotivo(reason, 'suspender esta conta')
+    const alvo = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, closedAt: true, suspendedUntil: true, profile: { select: { id: true, plan: true } } },
+    })
+    if (!alvo) throw new BadRequestException('Conta não encontrada.')
+    if (alvo.closedAt) throw new BadRequestException('Esta conta já foi encerrada.')
+
+    const ate = venceEm('suspend', dias)
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: userId },
+        data: { suspendedAt: new Date(), suspendedUntil: ate, suspendedReason: motivo },
+      })
+      // Suspender sem derrubar as sessões abertas seria suspender só no papel.
+      await tx.session.deleteMany({ where: { userId } })
+      if (alvo.profile) {
+        await tx.profile.update({
+          where: { id: alvo.profile.id },
+          data: {
+            moderationStatus: 'restricted',
+            moderationNote: motivo,
+            moderationUntil: ate,
+            // Serviço pago e indisponível não segue sendo cobrado (CDC).
+            ...(alvo.profile.plan !== 'free' ? { billingPausedAt: new Date() } : {}),
+          },
+        })
+      }
+    })
+
+    await this.registrar(quem, {
+      action: 'conta.suspender',
+      targetType: 'user',
+      targetId: userId,
+      reason: motivo,
+      after: { ate: ate?.toISOString() ?? null, perfilRestrito: !!alvo.profile },
+      ip,
+    })
+    return { ok: true, ate }
+  }
+
+  /** Levanta a suspensão. O perfil volta, mas não republica sozinho: quem
+   *  decide voltar ao ar é o dono. */
+  async reativarConta(quem: AdminAtual, userId: string, reason: string, ip?: string) {
+    const motivo = this.exigirMotivo(reason, 'reativar esta conta')
+    const alvo = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, closedAt: true, profile: { select: { id: true } } },
+    })
+    if (!alvo) throw new BadRequestException('Conta não encontrada.')
+    if (alvo.closedAt) {
+      throw new BadRequestException('Conta encerrada não é reativada por aqui — o caminho é o suporte.')
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: userId },
+        data: { suspendedAt: null, suspendedUntil: null, suspendedReason: '' },
+      })
+      if (alvo.profile) {
+        await tx.profile.update({
+          where: { id: alvo.profile.id },
+          data: {
+            moderationStatus: 'active',
+            moderationNote: '',
+            moderationUntil: null,
+            hiddenSections: '[]',
+            billingPausedAt: null,
+          },
+        })
+      }
+    })
+
+    await this.registrar(quem, {
+      action: 'conta.reativar',
+      targetType: 'user',
+      targetId: userId,
+      reason: motivo,
+      ip,
+    })
+    return { ok: true }
+  }
+
+  /**
+   * Degrau 5 — encerra a conta. Definitivo.
+   *
+   * Três travas, e nenhuma é decorativa:
+   *
+   *   • **A conta precisa estar suspensa antes.** Ninguém encerra em um clique.
+   *     É a escada do § 4 da política virada em código: sobe-se um degrau por
+   *     vez. A exceção é a ordem judicial, que pula a escada e fica registrada
+   *     como tal.
+   *   • **Confirmação digitada** — o e-mail da conta, escrito à mão. Atrito
+   *     deliberado numa ação que destrói o endereço público que o advogado
+   *     divulgou no Instagram e imprimiu num cartão.
+   *   • **Motivo escrito**, que é o que a pessoa lê ao tentar entrar.
+   *
+   * O endereço público é liberado: o slug vira `conta-encerrada-<id>`, e o nome
+   * original volta a estar disponível. É o ponto: se alguém publicou um perfil
+   * com a inscrição de um terceiro, é o terceiro que deve poder usar o próprio
+   * nome depois.
+   *
+   * A linha NÃO é apagada. O registro da sanção é a defesa dos dois lados, e a
+   * LGPD (art. 18) convive com a guarda para defesa de direito em processo — a
+   * exclusão dos dados pessoais, quando pedida, tem caminho próprio em
+   * /conta/dados.
+   */
+  async encerrarConta(
+    quem: AdminAtual,
+    userId: string,
+    corpo: { reason?: string; confirmacao?: string; ordemJudicial?: boolean },
+    ip?: string,
+  ) {
+    const motivo = this.exigirMotivo(corpo?.reason, 'encerrar esta conta')
+    const alvo = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        closedAt: true,
+        suspendedUntil: true,
+        profile: { select: { id: true, slug: true } },
+      },
+    })
+    if (!alvo) throw new BadRequestException('Conta não encontrada.')
+    if (alvo.closedAt) throw new BadRequestException('Esta conta já está encerrada.')
+
+    const suspensa = !!alvo.suspendedUntil && alvo.suspendedUntil.getTime() > Date.now()
+    if (!suspensa && !corpo?.ordemJudicial) {
+      throw new BadRequestException(
+        'Suspenda a conta antes de encerrá-la. Encerrar é definitivo e a escada existe para ' +
+          'que ninguém chegue lá sem um passo consciente — a exceção é ordem judicial.',
+      )
+    }
+    if ((corpo?.confirmacao ?? '').trim().toLowerCase() !== alvo.email.toLowerCase()) {
+      throw new BadRequestException(
+        `Para confirmar, digite o e-mail da conta: ${alvo.email}`,
+      )
+    }
+
+    const slugLiberado = alvo.profile
+      ? `conta-encerrada-${randomBytes(4).toString('hex')}`
+      : null
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          closedAt: new Date(),
+          closedReason: motivo,
+          suspendedAt: null,
+          suspendedUntil: null,
+          suspendedReason: '',
+        },
+      })
+      await tx.session.deleteMany({ where: { userId } })
+      if (alvo.profile && slugLiberado) {
+        await tx.profile.update({
+          where: { id: alvo.profile.id },
+          data: {
+            published: false,
+            slug: slugLiberado,
+            moderationStatus: 'restricted',
+            moderationNote: motivo,
+            moderationUntil: null,
+            billingPausedAt: new Date(),
+          },
+        })
+      }
+    })
+
+    await this.registrar(quem, {
+      action: 'conta.encerrar',
+      targetType: 'user',
+      targetId: userId,
+      reason: motivo,
+      before: { slug: alvo.profile?.slug ?? null },
+      after: {
+        slugLiberado: alvo.profile?.slug ?? null,
+        ordemJudicial: !!corpo?.ordemJudicial,
+      },
+      ip,
+    })
+    logSecurityEvent({
+      event: 'account_delete',
+      userId,
+      subject: fingerprint(alvo.email),
+      resource: 'admin:encerrar',
+      result: 'ok',
+    })
+    return { ok: true, enderecoLiberado: alvo.profile?.slug ?? null }
   }
 
   // ---- Gestão de administradores --------------------------------------------

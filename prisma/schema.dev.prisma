@@ -18,28 +18,53 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+
+
+
+
 // Estado de moderação do perfil (resultado de denúncias avaliadas pelo admin).
 //   active   → sem restrição
 //   warned   → dono recebeu aviso, perfil segue no ar
 //   partial  → algumas seções foram censuradas (ver Profile.hiddenSections)
 //   restricted → perfil inteiro retirado do ar (não aparece no público/diretório)
 
+
 // Situação de uma denúncia na fila do admin.
+
 
 // Papel de um advogado dentro do escritório (sociedade de advogados).
 //   owner  → dono/faturamento (1 por escritório)
 //   admin  → edita a página institucional e convida membros
 //   member → advogado listado; edita apenas o próprio perfil
 
+
 // Estado do vínculo do advogado com o escritório.
 //   invited → convite enviado; NÃO consome assento nem aparece no grid público
 //   active  → consome assento e aparece no grid
+
 
 model User {
   id         String          @id @default(cuid())
   email      String          @unique
   password   String // hash (argon2)
   createdAt  DateTime        @default(now())
+  // ---- Sanções que alcançam a CONTA, não só o perfil ----
+  // Ver docs/politica-de-sancoes.md, degraus 4 e 5. Até aqui o painel só
+  // alcançava o perfil: dava para tirar a página do ar e não dava para impedir
+  // que a mesma pessoa publicasse outra no dia seguinte.
+  //
+  // Suspensão: o login para de funcionar até `suspendedUntil`. Prazo que vence
+  // sozinho é o que separa sanção de punição perpétua — uma conta suspensa e
+  // esquecida na fila é uma conta morta que ninguém decidiu matar.
+  suspendedAt     DateTime?
+  suspendedUntil  DateTime?
+  // O motivo é o texto que a pessoa lê. Sem ele a rota recusa.
+  suspendedReason String    @default("")
+  // Encerramento (degrau 5): definitivo, exige duas mãos e libera o endereço
+  // público. Não apaga a linha — o registro da sanção é a defesa dos dois lados
+  // (LGPD art. 18 convive com a defesa de direito em processo).
+  closedAt        DateTime?
+  closedReason    String    @default("")
   profile    Profile?
   // Escritórios dos quais este usuário é dono/faturamento (normalmente 0 ou 1).
   firmsOwned Firm[]
@@ -81,6 +106,11 @@ model Session {
   @@index([expiresAt])
 }
 
+
+
+
+
+
 // Canal de suporte EXCLUSIVO de quem tem conta. Diferente da denúncia (Report),
 // que é pública e trata de conteúdo de terceiros: aqui é o próprio advogado
 // falando com a plataforma sobre um problema dela.
@@ -92,12 +122,12 @@ model SupportTicket {
   id        String        @id @default(cuid())
   userId    String
   user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  kind      String   @default("bug")
+  kind      SupportKind   @default(bug)
   subject   String
   message   String
   pageUrl   String        @default("")
   userAgent String        @default("")
-  status    String @default("open")
+  status    SupportStatus @default(open)
   // Resposta/observação do admin, visível para o autor do chamado.
   adminNote String        @default("")
   createdAt DateTime      @default(now())
@@ -135,7 +165,7 @@ model Firm {
   //   "lawyer"                 → WhatsApp do advogado escolhido na conversa
   assistantRoute String    @default("institutional")
   // ---- Plano / assentos (billing real entra depois; hoje é campo, como Profile.plan) ----
-  plan           String      @default("premium") // escritório opera no tier alto
+  plan           Plan      @default(premium) // escritório opera no tier alto
   seatsPurchased Int       @default(5) // base do plano Escritório inclui 5 assentos
 
   ownerUserId String
@@ -154,8 +184,8 @@ model Firm {
 // público (Prov. 205/2021 veda destaque/hierarquia): o grid é sempre alfabético.
 model FirmMembership {
   id        String           @id @default(cuid())
-  role      String         @default("member")
-  status    String @default("invited")
+  role      FirmRole         @default(member)
+  status    FirmMemberStatus @default(invited)
   order     Int              @default(0)
   createdAt DateTime         @default(now())
 
@@ -178,7 +208,7 @@ model FirmMembership {
 model FirmInvite {
   id        String   @id @default(cuid())
   email     String
-  role      String @default("member")
+  role      FirmRole @default(member)
   createdAt DateTime @default(now())
 
   firmId String
@@ -242,7 +272,7 @@ model Profile {
   // cartão sai sempre do perfil, para o papel nunca contradizer a página.
   // Ver frontend/src/lib/cardArt.ts. Vazio = cartão ainda não montado.
   card                 String           @default("")
-  plan                 String             @default("free")
+  plan                 Plan             @default(free)
   theme                String           @default("papel") // ThemeId — ver frontend/src/lib/themes.ts
   views                Int              @default(0)
   published            Boolean          @default(false)
@@ -259,7 +289,14 @@ model Profile {
   brandHideWatermark   Boolean          @default(false)
   customDomain         String? // domínio próprio (informativo; DNS fora do escopo do protótipo)
   // ---- Moderação (denúncias) ----
-  moderationStatus     String @default("active")
+  moderationStatus     ModerationStatus @default(active)
+  // Até quando a medida vale. Nulo = sem prazo (só as antigas; toda medida nova
+  // tem um). Vencido, o perfil volta sozinho — ver moderacaoVigente().
+  moderationUntil      DateTime?
+  // Quando a cobrança foi pausada por causa de uma sanção. Serviço pago e
+  // indisponível não pode seguir sendo cobrado (CDC art. 51, IV) — e isso é
+  // indefensável mesmo quando a restrição é justa.
+  billingPausedAt      DateTime?
   // Aviso do admin visível ao dono do perfil (motivo do aviso/restrição).
   moderationNote       String           @default("")
   // Seções censuradas quando moderationStatus == partial. JSON de chaves,
@@ -295,7 +332,7 @@ model Report {
   details       String       @default("")
   // Contato opcional do denunciante para retorno (pode ficar vazio).
   reporterEmail String?
-  status        String @default("open")
+  status        ReportStatus @default(open)
   // Decisão aplicada ao resolver: "warn" | "partial" | "restrict" | "dismiss".
   resolution    String?
   createdAt     DateTime     @default(now())
@@ -304,6 +341,7 @@ model Report {
   @@index([profileId, status])
   @@index([status, createdAt])
 }
+
 
 model PracticeArea {
   id          String  @id @default(cuid())
@@ -396,6 +434,7 @@ model PolicyVersion {
 //   support   → responde chamados e consulta; NÃO tira perfil do ar
 //   readonly  → só lê (script, integração, auditoria externa)
 
+
 // Quem administra a plataforma. Antes era UM usuário e UMA senha no .env: sem
 // papéis, sem autoria e sem como revogar. Cada decisão do painel agora tem nome
 // (ver AdminAction), e quem responde suporte não consegue restringir um perfil.
@@ -409,7 +448,7 @@ model AdminUser {
   name         String
   // Mesmo formato e custo do hash do advogado (scrypt) — ver src/auth/user-auth.ts.
   passwordHash String
-  role         String @default("support")
+  role         AdminRole @default(support)
   // Segundo fator (TOTP, RFC 6238). Obrigatório para quem decide: owner e
   // moderator entram, mas o painel só libera as ações depois de configurado.
   totpSecret   String?

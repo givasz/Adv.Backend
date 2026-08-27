@@ -164,6 +164,71 @@ export class AdminController {
     return this.admin.derrubarSessoes(quem, id, body?.reason, clientIp(ip, forwardedFor))
   }
 
+  // ---- Contas de advogados ---------------------------------------------------
+  //
+  // Degraus 4 e 5 da escada (docs/politica-de-sancoes.md). Até aqui o painel só
+  // alcançava o perfil: dava para tirar a página do ar e não dava para impedir
+  // que a mesma pessoa publicasse outra no dia seguinte.
+
+  /** GET /api/admin/users/:id → a ficha que o administrador lê ANTES de decidir. */
+  @Get('users/:id')
+  async ficha(
+    @Param('id') id: string,
+    @Req() req: RequisicaoComAuth,
+    @Headers('x-admin-token') token?: string,
+  ) {
+    await this.admin.exigir(req, 'contas:ler', token)
+    return this.admin.fichaDaConta(id)
+  }
+
+  // POST /api/admin/users/:id/suspender  { reason, dias? }
+  @Post('users/:id/suspender')
+  async suspender(
+    @Param('id') id: string,
+    @Req() req: RequisicaoComAuth,
+    @Body() body: { reason?: string; dias?: number },
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') forwardedFor?: string,
+    @Headers('x-admin-token') token?: string,
+  ) {
+    const quem = await this.admin.exigir(req, 'contas:sancionar', token)
+    return this.admin.suspenderConta(quem, id, body?.reason ?? '', body?.dias, clientIp(ip, forwardedFor))
+  }
+
+  // POST /api/admin/users/:id/reativar  { reason }
+  @Post('users/:id/reativar')
+  async reativar(
+    @Param('id') id: string,
+    @Req() req: RequisicaoComAuth,
+    @Body() body: { reason?: string },
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') forwardedFor?: string,
+    @Headers('x-admin-token') token?: string,
+  ) {
+    const quem = await this.admin.exigir(req, 'contas:sancionar', token)
+    return this.admin.reativarConta(quem, id, body?.reason ?? '', clientIp(ip, forwardedFor))
+  }
+
+  /**
+   * POST /api/admin/users/:id/encerrar  { reason, confirmacao, ordemJudicial? }
+   *
+   * Definitivo. Exige que a conta já esteja suspensa (a escada, um degrau por
+   * vez) e o e-mail digitado à mão — atrito deliberado numa ação que destrói o
+   * endereço público que o advogado divulgou.
+   */
+  @Post('users/:id/encerrar')
+  async encerrar(
+    @Param('id') id: string,
+    @Req() req: RequisicaoComAuth,
+    @Body() body: { reason?: string; confirmacao?: string; ordemJudicial?: boolean },
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') forwardedFor?: string,
+    @Headers('x-admin-token') token?: string,
+  ) {
+    const quem = await this.admin.exigir(req, 'contas:sancionar', token)
+    return this.admin.encerrarConta(quem, id, body, clientIp(ip, forwardedFor))
+  }
+
   // ---- Histórico ------------------------------------------------------------
 
   /**
