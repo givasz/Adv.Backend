@@ -196,6 +196,63 @@ export class AuthService {
     )
   }
 
+  /**
+   * Troca a senha de quem JÁ está dentro — exige a senha atual.
+   *
+   * Isto NÃO é "esqueci minha senha": aquele fluxo precisa de e-mail, que a
+   * plataforma ainda não envia. Este não precisa de nada além do que a pessoa já
+   * tem, e por isso pôde vir antes: era o item 6 de "Em aberto" do SEGURANCA.md,
+   * e sem ele quem desconfiava da própria senha não tinha o que fazer.
+   *
+   * Pedir a senha atual é o que impede que um cookie roubado vire posse da conta:
+   * sem essa etapa, quem tivesse a sessão trocaria a senha e trancaria o dono do
+   * lado de fora. Com ela, o invasor com o cookie precisa ANTES saber a senha —
+   * e se soubesse, não precisaria do cookie.
+   *
+   * Devolve quantas OUTRAS sessões caíram. Derrubar é o ponto: trocar a senha por
+   * desconfiança e deixar o intruso conectado no aparelho dele seria trocar a
+   * fechadura deixando a porta dos fundos aberta.
+   */
+  async trocarSenha(
+    req: RequisicaoComAuth,
+    userId: string,
+    atual?: unknown,
+    nova?: unknown,
+  ): Promise<{ outrasSessoesEncerradas: number }> {
+    const senhaAtual = typeof atual === 'string' ? atual : ''
+    const senhaNova = typeof nova === 'string' ? nova : ''
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, password: true },
+    })
+    if (!user) throw new UnauthorizedException('Entre na sua conta.')
+    if (!verifyPassword(senhaAtual, user.password)) {
+      throw new UnauthorizedException('A senha atual não confere.')
+    }
+
+    // A regra de força vale aqui como no cadastro: é senha nova sendo escolhida
+    // agora, e não uma antiga que já existe e não pode ser trancada do lado de fora.
+    const problema = passwordProblem(senhaNova, user.email)
+    if (problema) throw new BadRequestException(problema)
+    if (verifyPassword(senhaNova, user.password)) {
+      throw new BadRequestException('A senha nova precisa ser diferente da atual.')
+    }
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { password: hashPassword(senhaNova) },
+    })
+
+    // Derruba TUDO e reabre a sessão de quem está trocando. A ordem importa:
+    // encerrar primeiro (inclusive a atual, que some junto) e abrir depois deixa
+    // esta aba funcionando e todas as outras, não. Se abríssemos antes, a
+    // varredura levaria a nova junto e a pessoa seria expulsa da própria troca.
+    const encerradas = await this.sessions.encerrarTodas(userId, req)
+    await this.sessions.abrir(req, userId, true)
+
+    return { outrasSessoesEncerradas: Math.max(0, encerradas - 1) }
+  }
   async me(userId: string): Promise<AuthSession['user']> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },

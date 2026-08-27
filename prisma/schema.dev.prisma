@@ -18,30 +18,22 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-
-
-
-
 // Estado de moderação do perfil (resultado de denúncias avaliadas pelo admin).
 //   active   → sem restrição
 //   warned   → dono recebeu aviso, perfil segue no ar
 //   partial  → algumas seções foram censuradas (ver Profile.hiddenSections)
 //   restricted → perfil inteiro retirado do ar (não aparece no público/diretório)
 
-
 // Situação de uma denúncia na fila do admin.
-
 
 // Papel de um advogado dentro do escritório (sociedade de advogados).
 //   owner  → dono/faturamento (1 por escritório)
 //   admin  → edita a página institucional e convida membros
 //   member → advogado listado; edita apenas o próprio perfil
 
-
 // Estado do vínculo do advogado com o escritório.
 //   invited → convite enviado; NÃO consome assento nem aparece no grid público
 //   active  → consome assento e aparece no grid
-
 
 model User {
   id         String          @id @default(cuid())
@@ -108,11 +100,6 @@ model Session {
   @@index([expiresAt])
 }
 
-
-
-
-
-
 // Canal de suporte EXCLUSIVO de quem tem conta. Diferente da denúncia (Report),
 // que é pública e trata de conteúdo de terceiros: aqui é o próprio advogado
 // falando com a plataforma sobre um problema dela.
@@ -124,12 +111,12 @@ model SupportTicket {
   id        String        @id @default(cuid())
   userId    String
   user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  kind      SupportKind   @default(bug)
+  kind      String   @default("bug")
   subject   String
   message   String
   pageUrl   String        @default("")
   userAgent String        @default("")
-  status    SupportStatus @default(open)
+  status    String @default("open")
   // Resposta/observação do admin, visível para o autor do chamado.
   adminNote String        @default("")
   createdAt DateTime      @default(now())
@@ -167,7 +154,7 @@ model Firm {
   //   "lawyer"                 → WhatsApp do advogado escolhido na conversa
   assistantRoute String    @default("institutional")
   // ---- Plano / assentos (billing real entra depois; hoje é campo, como Profile.plan) ----
-  plan           Plan      @default(premium) // escritório opera no tier alto
+  plan           String      @default("premium") // escritório opera no tier alto
   seatsPurchased Int       @default(5) // base do plano Escritório inclui 5 assentos
 
   ownerUserId String
@@ -186,8 +173,8 @@ model Firm {
 // público (Prov. 205/2021 veda destaque/hierarquia): o grid é sempre alfabético.
 model FirmMembership {
   id        String           @id @default(cuid())
-  role      FirmRole         @default(member)
-  status    FirmMemberStatus @default(invited)
+  role      String         @default("member")
+  status    String @default("invited")
   order     Int              @default(0)
   createdAt DateTime         @default(now())
 
@@ -210,7 +197,7 @@ model FirmMembership {
 model FirmInvite {
   id        String   @id @default(cuid())
   email     String
-  role      FirmRole @default(member)
+  role      String @default("member")
   createdAt DateTime @default(now())
 
   firmId String
@@ -274,8 +261,18 @@ model Profile {
   // cartão sai sempre do perfil, para o papel nunca contradizer a página.
   // Ver frontend/src/lib/cardArt.ts. Vazio = cartão ainda não montado.
   card                 String           @default("")
-  plan                 Plan             @default(free)
+  plan                 String             @default("free")
   theme                String           @default("papel") // ThemeId — ver frontend/src/lib/themes.ts
+  // LEGADO, inerte. Nada lê e nada escreve — e nada nunca escreveu: a coluna
+  // existia desde o começo e NENHUMA linha do código a incrementava, então a tela
+  // "Quem visita você" mostrava 0 para todo mundo, sempre, enquanto a visita real
+  // já era gravada em LinkEvent e nunca lida. Quem conta agora é
+  // analytics/analytics.service.ts, a partir de LinkEvent.
+  //
+  // Mantida (em vez de derrubada) pelo mesmo motivo das colunas de booking: uma
+  // migração destrutiva a mais, sem ganho. Não volte a usá-la — um contador e uma
+  // tabela de eventos contando a mesma coisa divergem no primeiro erro de
+  // transação, e aí não há como saber qual dos dois está certo.
   views                Int              @default(0)
   published            Boolean          @default(false)
   // Versão da política de publicidade (Provimento) aplicada à última verificação.
@@ -291,7 +288,7 @@ model Profile {
   brandHideWatermark   Boolean          @default(false)
   customDomain         String? // domínio próprio (informativo; DNS fora do escopo do protótipo)
   // ---- Moderação (denúncias) ----
-  moderationStatus     ModerationStatus @default(active)
+  moderationStatus     String @default("active")
   // Até quando a medida vale. Nulo = sem prazo (só as antigas; toda medida nova
   // tem um). Vencido, o perfil volta sozinho — ver moderacaoVigente().
   moderationUntil      DateTime?
@@ -334,7 +331,7 @@ model Report {
   details       String       @default("")
   // Contato opcional do denunciante para retorno (pode ficar vazio).
   reporterEmail String?
-  status        ReportStatus @default(open)
+  status        String @default("open")
   // Decisão aplicada ao resolver: "warn" | "partial" | "restrict" | "dismiss".
   resolution    String?
   createdAt     DateTime     @default(now())
@@ -343,7 +340,6 @@ model Report {
   @@index([profileId, status])
   @@index([status, createdAt])
 }
-
 
 model PracticeArea {
   id          String  @id @default(cuid())
@@ -482,7 +478,6 @@ model Appeal {
 //   support   → responde chamados e consulta; NÃO tira perfil do ar
 //   readonly  → só lê (script, integração, auditoria externa)
 
-
 // Quem administra a plataforma. Antes era UM usuário e UMA senha no .env: sem
 // papéis, sem autoria e sem como revogar. Cada decisão do painel agora tem nome
 // (ver AdminAction), e quem responde suporte não consegue restringir um perfil.
@@ -496,7 +491,7 @@ model AdminUser {
   name         String
   // Mesmo formato e custo do hash do advogado (scrypt) — ver src/auth/user-auth.ts.
   passwordHash String
-  role         AdminRole @default(support)
+  role         String @default("support")
   // Segundo fator (TOTP, RFC 6238). Obrigatório para quem decide: owner e
   // moderator entram, mas o painel só libera as ações depois de configurado.
   totpSecret   String?

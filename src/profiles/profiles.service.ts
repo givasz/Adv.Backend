@@ -97,8 +97,28 @@ export class ProfilesService {
       include: relations,
     })
     if (!profile) throw new NotFoundException('Perfil não encontrado')
-    // registra a visita de forma assíncrona (não bloqueia a resposta)
-    void this.prisma.linkEvent.create({ data: { profileId: profile.id, kind: 'view' } })
+    // A visita entra pela MESMA porta de todo acontecimento do perfil (o clique
+    // no WhatsApp, o agendamento, a rede social) — ver analytics/eventos.ts.
+    // Não esperamos por ela: a página não fica devendo à métrica.
+    //
+    // ⚠️ O `.catch()` NÃO é só higiene — é o que faz a consulta ACONTECER.
+    //
+    // Esta linha era `void this.prisma.linkEvent.create(...)` e não gravava nada.
+    // `PrismaPromise` é preguiçoso: ele só dispara quando alguém chama `.then()`,
+    // `.catch()` ou o aguarda. É de propósito — é isso que permite passar um
+    // array de consultas ainda não executadas para `$transaction([...])`. O
+    // `void` descarta a promessa sem nunca tocá-la, então a consulta jamais saía
+    // daqui.
+    //
+    // Foi a causa real de "a tela Quem visita você mostra 0 para todo mundo".
+    // A investigação parava antes: a coluna `Profile.views` também não era
+    // incrementada, o que explicava o zero — mas mesmo depois de trocar a leitura
+    // para LinkEvent o número continuava zero, porque não havia UMA linha de
+    // visita no banco. Desde sempre. O mesmo zero silencioso aparecia na
+    // exportação LGPD, que conta esta tabela (account.service.ts).
+    this.prisma.linkEvent
+      .create({ data: { profileId: profile.id, kind: 'view' } })
+      .catch(() => undefined)
     return this.toApi(this.toPublic(profile))
   }
 
@@ -398,7 +418,6 @@ export class ProfilesService {
       assistant: this.buildAssistant(p),
       plan: p.plan,
       theme: p.theme,
-      views: p.views,
       published: p.published,
       policyRevChecked: p.policyRevChecked,
       branding: this.buildBranding(p),

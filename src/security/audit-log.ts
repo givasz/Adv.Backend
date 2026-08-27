@@ -17,6 +17,7 @@ export type SecurityEvent =
   | 'signup_fail'
   | 'logout'
   | 'logout_all'
+  | 'password_changed'
   | 'account_export'
   | 'account_delete'
   | 'admin_login_ok'
