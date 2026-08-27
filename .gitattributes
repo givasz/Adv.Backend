@@ -1,0 +1,12 @@
+# Quebra de linha por tipo de arquivo.
+#
+# Os .sh rodam no Linux (VPS) e são editados no Windows. Sem esta regra, o Git
+# entrega o arquivo com CRLF no checkout, e o Linux tenta executar o interpretador
+# "/usr/bin/env bash\r" — que não existe. O erro é "bad interpreter", e ele não
+# diz uma palavra sobre quebra de linha.
+*.sh text eol=lf
+
+# O schema de desenvolvimento é GERADO (scripts/gen-dev-schema.mjs) e o gerador
+# normaliza a quebra de linha ao ler. Fixar LF aqui evita que o arquivo apareça
+# como modificado só por causa disso.
+*.prisma text eol=lf
