@@ -36,7 +36,10 @@ MANTER_DIAS="${ADVOCME_BACKUP_KEEP:-14}"
 
 # A URL do banco sai do .env da aplicação — um lugar só para o segredo, em vez de
 # uma segunda cópia dentro do cron que ninguém lembra de atualizar.
-ENV_APP="${ADVOCME_ENV:-/root/advocme/backend/.env}"
+#
+# O caminho é o da VPS de produção (ver DEPLOY-VPS.md §2). Sobrescreva com
+# ADVOCME_ENV se a aplicação estiver em outro lugar.
+ENV_APP="${ADVOCME_ENV:-/root/advocme-backend/.env}"
 if [ -z "${DATABASE_URL:-}" ] && [ -f "$ENV_APP" ]; then
   DATABASE_URL="$(grep -E '^DATABASE_URL=' "$ENV_APP" | head -1 | cut -d= -f2- | tr -d '"'"'"'')"
 fi
