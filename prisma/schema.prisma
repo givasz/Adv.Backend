@@ -91,6 +91,8 @@ model User {
   tickets    SupportTicket[]
   // Sessões abertas (uma por aparelho). Sair apaga a linha — ver model Session.
   sessions   Session[]
+  // Contestações que este advogado abriu contra medidas de moderação.
+  appeals    Appeal[]
 }
 
 // Sessão de login. O cookie HttpOnly leva um segredo aleatório; aqui fica o hash
@@ -448,6 +450,52 @@ model PolicyVersion {
   effectiveAt DateTime @default(now())
   active      Boolean  @default(true)
   createdAt   DateTime @default(now())
+}
+
+// Contestação de uma medida de moderação.
+//
+// É o que torna o prazo real. Sem ela a política prometia contraditório e o
+// produto não tinha onde recebê-lo — e uma sanção que a pessoa não consegue
+// contestar é uma sanção indefensável.
+//
+// O relógio: contestar ENCURTA o `moderationUntil` da medida para 10 dias.
+// Passado o prazo sem resposta da plataforma, a medida cai pelo mesmo
+// vencimento preguiçoso que já existia — sem máquina nova, sem cron. Se a
+// contestação é rejeitada, `prazoOriginal` devolve o prazo que havia antes.
+//
+// O relógio só corre DEPOIS de alguém contestar. Medida não contestada não cai
+// por silêncio: senão um perfil irregular voltaria ao ar porque ninguém olhou a
+// fila numa semana.
+model Appeal {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Sobre o que se contesta: a medida no perfil ou a que alcançou a conta.
+  alvo   String // "profile" | "account"
+  // O degrau contestado, como estava no momento (warn|partial|restrict|suspend|close).
+  medida String
+  // O que o advogado escreveu. É o que o revisor lê.
+  texto  String
+
+  // Quando a plataforma precisa ter respondido. 10 dias a partir da abertura.
+  respondeAte DateTime
+  // O prazo que a medida tinha antes de ser encurtada. Devolvido se a
+  // contestação for rejeitada. Nulo = a medida não tinha prazo.
+  prazoOriginal DateTime?
+
+  // open → em aberto; accepted → medida derrubada; rejected → mantida;
+  // expired → a plataforma não respondeu no prazo e a medida caiu.
+  status    String    @default("open")
+  resposta  String    @default("")
+  decidedAt DateTime?
+  // Quem respondeu. Nunca deve ser quem aplicou a medida — o painel avisa.
+  decidedBy String?
+
+  createdAt DateTime @default(now())
+
+  @@index([status, respondeAte])
+  @@index([userId, createdAt])
 }
 
 // ---------------------------------------------------------------------------
