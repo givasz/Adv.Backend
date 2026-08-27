@@ -67,15 +67,17 @@ export class SupportController {
   // mudar a situação e responder é `suporte:responder` — e essa, sim, é uma
   // decisão que chega ao advogado, então pede motivo e vai para o histórico.
 
-  // GET /api/admin/support?status=open|in_progress|resolved
+  // GET /api/admin/support?status=open|in_progress|resolved&limite=&offset=
   @Get('admin/support')
   async list(
     @Req() req: RequisicaoComAuth,
     @Query('status') status?: string,
+    @Query('limite') limite?: string,
+    @Query('offset') offset?: string,
     @Headers('x-admin-token') token?: string,
   ) {
     await this.admin.exigir(req, 'suporte:ler', token)
-    return this.support.listAll(status)
+    return this.support.listAll(status, limite, offset)
   }
 
   // GET /api/admin/support/counts → { open, in_progress, resolved }

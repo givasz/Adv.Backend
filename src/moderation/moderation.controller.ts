@@ -33,15 +33,18 @@ export class ModerationController {
   // cabe: consultar a fila é `moderacao:ler`, tirar algo do ar é
   // `moderacao:decidir`, e quem responde suporte não tem a segunda.
 
-  // GET /api/admin/reports?status=open|resolved|dismissed|all
+  // GET /api/admin/reports?status=open|resolved|dismissed|all&limite=&offset=
+  // Paginada por PERFIL (um perfil com quarenta denúncias é uma linha da fila).
   @Get('admin/reports')
   async listReports(
     @Query('status') status: 'open' | 'resolved' | 'dismissed' | 'all' = 'open',
+    @Query('limite') limite?: string,
+    @Query('offset') offset?: string,
     @Req() req?: RequisicaoComAuth,
     @Headers('x-admin-token') adminToken?: string,
   ) {
     await this.admin.exigir(req, 'moderacao:ler', adminToken)
-    return this.moderation.listReports(status)
+    return this.moderation.listReports(status, limite, offset)
   }
 
   // GET /api/admin/profiles/:id/moderation  → perfil completo + denúncias

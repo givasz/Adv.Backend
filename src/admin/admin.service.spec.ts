@@ -435,6 +435,31 @@ describe('segundo fator pendente', () => {
     await expect(admin.exigir(req, 'moderacao:decidir')).resolves.toBeTruthy()
   })
 
+  it('recomeçar a configuração NÃO invalida o que o celular já leu', async () => {
+    // Enquanto cada chamada sorteava um segredo novo, recarregar a página
+    // substituía em silêncio o que o aplicativo acabara de ler — e a partir dali
+    // nenhum código funcionava, para sempre, sem nada na tela explicando.
+    const { cookies } = await entrar('moderator')
+    const quem = (await admin.atual(pedido({ cookies }).req))!
+    const primeiro = await admin.iniciarTotp(quem)
+    const segundo = await admin.iniciarTotp(quem)
+    expect(segundo.segredo).toBe(primeiro.segredo)
+
+    // E o código gerado a partir do QR lido na PRIMEIRA vez continua valendo.
+    const limpo = primeiro.segredo.replace(/\s/g, '')
+    await expect(
+      admin.ligarTotp(quem, codigoTotp(limpo, Math.floor(Date.now() / 1000 / 30))),
+    ).resolves.toEqual({ ok: true })
+  })
+
+  it('com o segundo fator já ligado, não dá para recomeçar', async () => {
+    const segredo = novoSegredoTotp()
+    await criarConta('owner', { totpEnabled: true, totpSecret: segredo })
+    const { cookies } = await entrar('owner', codigoTotp(segredo, Math.floor(Date.now() / 1000 / 30)))
+    const quem = (await admin.atual(pedido({ cookies }).req))!
+    await expect(admin.iniciarTotp(quem)).rejects.toThrow(/já está ligado/)
+  })
+
   it('quem só atende suporte não é obrigado a configurar', async () => {
     const { aberta, cookies } = await entrar('support')
     expect(aberta.totpPendente).toBe(false)

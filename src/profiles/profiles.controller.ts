@@ -90,14 +90,16 @@ export class ProfilesController {
     return this.profiles.getBySlug(slug)
   }
 
-  // GET /api/admin/profiles?q=  → busca de perfis pelo painel (qualquer status)
+  // GET /api/admin/profiles?q=&limite=&offset=  → busca do painel (qualquer status)
   @Get('admin/profiles')
   async adminSearchProfiles(
     @Req() req: RequisicaoComAuth,
     @Query('q') q?: string,
+    @Query('limite') limite?: string,
+    @Query('offset') offset?: string,
     @Headers('x-admin-token') token?: string,
   ) {
     await this.admin.exigir(req, 'contas:ler', token)
-    return this.profiles.adminSearch(q)
+    return this.profiles.adminSearch(q, limite, offset)
   }
 }

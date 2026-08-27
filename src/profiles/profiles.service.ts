@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
+import { faixa, pagina } from '../admin/paginacao'
 import { blockingFields, POLICY_VERSION, publicStatus, RULESET_REV } from '../oab/compliance'
 import {
   AREA_LIMIT,
@@ -776,33 +777,50 @@ export class ProfilesService {
 
   // Busca do PAINEL ADMIN: ao contrário do diretório público, retorna perfis de
   // qualquer status (não publicados, restritos etc.) para o moderador localizar e agir.
-  adminSearch(q?: string) {
+  /**
+   * Busca do painel. Antes devolvia 50 e calava sobre o resto: quem procurasse
+   * um nome comum via meia lista sem nada dizendo que havia mais.
+   */
+  async adminSearch(q?: string, limite?: unknown, offset?: unknown) {
     const query = (q ?? '').trim()
-    return this.prisma.profile.findMany({
-      where: query
-        ? {
-            OR: [
-              { name: { contains: query } },
-              { slug: { contains: query } },
-              { oabNumber: { contains: query } },
-              { city: { contains: query } },
-            ],
-          }
-        : {},
-      orderBy: [{ name: 'asc' }],
-      take: 50,
-      select: {
-        id: true,
-        name: true,
-        slug: true,
-        oabNumber: true,
-        city: true,
-        state: true,
-        plan: true,
-        published: true,
-        moderationStatus: true,
-      },
-    })
+    const { take, skip } = faixa(limite, offset)
+    const where = query
+      ? {
+          OR: [
+            { name: { contains: query } },
+            { slug: { contains: query } },
+            { oabNumber: { contains: query } },
+            { city: { contains: query } },
+          ],
+        }
+      : {}
+
+    // Uma ida ao banco só: a contagem e a fatia saem da mesma transação, senão
+    // o total podia descrever uma lista diferente da que foi devolvida.
+    const [itens, total] = await this.prisma.$transaction([
+      this.prisma.profile.findMany({
+        where,
+        // O nome não é único: sem o desempate por id, duas pessoas homônimas
+        // podem trocar de lugar entre uma página e a seguinte, e uma delas
+        // sumir da listagem.
+        orderBy: [{ name: 'asc' }, { id: 'asc' }],
+        take,
+        skip,
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          oabNumber: true,
+          city: true,
+          state: true,
+          plan: true,
+          published: true,
+          moderationStatus: true,
+        },
+      }),
+      this.prisma.profile.count({ where }),
+    ])
+    return pagina(itens, total, take, skip)
   }
 
   async search(q?: string, area?: string) {
