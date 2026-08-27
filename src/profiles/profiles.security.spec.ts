@@ -92,6 +92,10 @@ describe('tamanho e tipo', () => {
     expect(gravado[0].name.length).toBeLessThanOrEqual(70)
   })
 
+  // Sem publicar: aqui o que se prova é que tipo errado vira valor saneado, e não
+  // erro de runtime. O caso COM `published` mudou de lugar (logo abaixo), porque
+  // publicar passou a exigir nome e OAB — e um rascunho com `name: 12345` fica
+  // exatamente sem nome depois do saneamento.
   it('tipo trocado não derruba a rota', async () => {
     const { svc, gravado } = service()
     await svc.update('u1', {
@@ -101,13 +105,20 @@ describe('tamanho e tipo', () => {
       socials: 'não é lista',
       contact: 'nem isso',
       branding: 7,
-      published: 'sim',
+      published: 0,
     })
     const d = gravado[0]
     expect(d.name).toBe('')
     expect(d.socials.create).toEqual([])
-    expect(d.published).toBe(true) // "sim" é verdadeiro; o importante é ser booleano
     expect(typeof d.published).toBe('boolean')
+    expect(d.published).toBe(false)
+  })
+
+  it('published aceita qualquer coisa e grava booleano', async () => {
+    const { svc, gravado } = service()
+    await svc.update('u1', { ...base, published: 'sim' })
+    expect(gravado[0].published).toBe(true) // "sim" é verdadeiro
+    expect(typeof gravado[0].published).toBe('boolean')
   })
 
   it('cor da marca só entra em hexadecimal (senão seria CSS injetado)', async () => {
@@ -134,5 +145,50 @@ describe('plano', () => {
     const { svc } = service()
     await expect(svc.setPlan('u1', 'deus')).rejects.toThrow(/inválido/i)
     await expect(svc.setPlan('u1', { plan: 'premium' })).rejects.toThrow(/inválido/i)
+  })
+})
+
+// Publicar exige nome e número de OAB.
+//
+// Antes não exigia nada: o perfil ia ao ar com o cabeçalho vazio, o endereço
+// `perfil-4821` e o link do CNA sem nome para consultar — e a requisição
+// respondia 200, então ninguém era avisado. O advogado descobria abrindo o
+// próprio link, se descobrisse.
+describe('campos obrigatórios para publicar', () => {
+  const semNome = { name: '   ', oabNumber: 'OAB/SP 123', published: true }
+  const semOab = { name: 'Marina Sales', oabNumber: '', published: true }
+  const semNada = { name: '', oabNumber: '', published: true }
+
+  it('recusa e DIZ o que falta', async () => {
+    const { svc } = service()
+    await expect(svc.update('u1', semNome)).rejects.toThrow(/falta preencher: seu nome\./)
+    await expect(svc.update('u1', semOab)).rejects.toThrow(/falta preencher: seu número da OAB\./)
+  })
+
+  it('lista tudo que falta de uma vez, não um por vez', async () => {
+    const { svc } = service()
+    // Recusar um campo por vez faria a pessoa descobrir o segundo problema só
+    // depois de resolver o primeiro — duas viagens para o mesmo destino.
+    await expect(svc.update('u1', semNada)).rejects.toThrow(
+      /seu nome e seu número da OAB/,
+    )
+  })
+
+  it('avisa que o rascunho não se perdeu', async () => {
+    const { svc } = service()
+    // Quem vê "não foi possível publicar" assume que perdeu o que escreveu.
+    await expect(svc.update('u1', semNada)).rejects.toThrow(/rascunho continua salvo/)
+  })
+
+  it('não impede SALVAR rascunho incompleto — só publicar', async () => {
+    const { svc, gravado } = service()
+    await svc.update('u1', { name: '', oabNumber: '', published: false })
+    expect(gravado[0].published).toBe(false)
+  })
+
+  it('deixa publicar quando os dois estão preenchidos', async () => {
+    const { svc, gravado } = service()
+    await svc.update('u1', { name: 'Marina Sales', oabNumber: 'OAB/SP 123', published: true })
+    expect(gravado[0].published).toBe(true)
   })
 })
