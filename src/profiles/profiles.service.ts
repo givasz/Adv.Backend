@@ -66,27 +66,94 @@ const SOCIAL_MAX = 8
 export class ProfilesService {
   constructor(private readonly prisma: PrismaService) {}
 
+  /**
+   * A regra de "este perfil aparece para o público" — FONTE ÚNICA.
+   *
+   * Perfil restrito pela moderação some do público (equiparado a não publicado)
+   * — mas só enquanto a medida VALER. O prazo é conferido na leitura, e não
+   * por uma varredura agendada: sem cron para esquecer de rodar, e sem uma
+   * restrição vencida continuar de pé porque o servidor reiniciou na hora
+   * errada. Ver admin/sancoes.ts.
+   *
+   * Virou método porque agora TRÊS portas devolvem perfil ao público: a página
+   * (getBySlug), a foto que alimenta a prévia de link (avatarBySlug) e o mapa do
+   * site (sitemap). Se as três escrevessem a condição à mão, bastaria uma
+   * esquecer o `moderationStatus` para um perfil restrito voltar a circular pelo
+   * WhatsApp — justamente onde a medida menos se desfaz.
+   */
+  private visivelAoPublico() {
+    return {
+      published: true,
+      OR: [
+        { moderationStatus: { not: 'restricted' as const } },
+        { moderationUntil: { lte: new Date() } },
+      ],
+    }
+  }
+
   async getBySlug(slug: string) {
-    // Perfil restrito pela moderação some do público (equiparado a não publicado)
-    // — mas só enquanto a medida VALER. O prazo é conferido na leitura, e não
-    // por uma varredura agendada: sem cron para esquecer de rodar, e sem uma
-    // restrição vencida continuar de pé porque o servidor reiniciou na hora
-    // errada. Ver admin/sancoes.ts.
     const profile = await this.prisma.profile.findFirst({
-      where: {
-        slug,
-        published: true,
-        OR: [
-          { moderationStatus: { not: 'restricted' } },
-          { moderationUntil: { lte: new Date() } },
-        ],
-      },
+      where: { slug, ...this.visivelAoPublico() },
       include: relations,
     })
     if (!profile) throw new NotFoundException('Perfil não encontrado')
     // registra a visita de forma assíncrona (não bloqueia a resposta)
     void this.prisma.linkEvent.create({ data: { profileId: profile.id, kind: 'view' } })
     return this.toApi(this.toPublic(profile))
+  }
+
+  /**
+   * GET /api/profiles/:slug/avatar — a foto como IMAGEM de verdade.
+   *
+   * Existe por causa da prévia do link. A foto é gravada como data URI
+   * (`data:image/png;base64,…` — ver security/sanitize.ts, safeImageSrc), e data
+   * URI não serve para `og:image`: WhatsApp, LinkedIn e Telegram buscam a imagem
+   * por HTTP, num processo que nem abre a página. Enquanto a única forma da foto
+   * era o data URI, todo perfil compartilhado saía sem rosto.
+   *
+   * Devolve os bytes decodificados com o tipo certo. Quando a foto já é uma URL
+   * https (o outro formato que o saneamento aceita), devolve a URL para o
+   * chamador redirecionar — não buscamos imagem de terceiro por conta própria,
+   * que seria transformar a API num proxy aberto de saída.
+   *
+   * Não incrementa visita: quem carrega a prévia é o robô do mensageiro, não uma
+   * pessoa. Contar isso inflaria a métrica do advogado com robô.
+   */
+  async avatarBySlug(slug: string): Promise<
+    { kind: 'bytes'; bytes: Buffer; contentType: string } | { kind: 'redirect'; url: string }
+  > {
+    const profile = await this.prisma.profile.findFirst({
+      where: { slug, ...this.visivelAoPublico() },
+      select: { avatarUrl: true },
+    })
+    const src = profile?.avatarUrl
+    if (!src) throw new NotFoundException('Sem foto')
+
+    const m = /^data:(image\/(?:png|jpeg|jpg|webp|gif));base64,([A-Za-z0-9+/=]+)$/.exec(src)
+    if (m) {
+      const contentType = m[1] === 'image/jpg' ? 'image/jpeg' : m[1]
+      return { kind: 'bytes', bytes: Buffer.from(m[2], 'base64'), contentType }
+    }
+    if (src.startsWith('https://')) return { kind: 'redirect', url: src }
+    throw new NotFoundException('Sem foto')
+  }
+
+  /**
+   * GET /api/sitemap — os endereços que o Google pode indexar.
+   *
+   * Deliberadamente magro: só `slug` e a data da última alteração. O `/directory`
+   * existente não serve para isto — ele corta em 40 linhas e traz `avatarUrl`,
+   * que é o data URI da foto inteira. Um mapa do site com 40 fotos embutidas
+   * seria alguns megabytes para entregar uma lista de endereços.
+   */
+  async sitemap() {
+    const rows = await this.prisma.profile.findMany({
+      where: this.visivelAoPublico(),
+      orderBy: [{ updatedAt: 'desc' }],
+      take: 5000,
+      select: { slug: true, updatedAt: true },
+    })
+    return rows.map((r) => ({ slug: r.slug, updatedAt: r.updatedAt.toISOString() }))
   }
 
   // Aplica a censura parcial (moderationStatus == partial) e remove os campos
@@ -841,7 +908,7 @@ export class ProfilesService {
   async search(q?: string, area?: string) {
     const rows = await this.prisma.profile.findMany({
       where: {
-        published: true,
+        ...this.visivelAoPublico(),
         ...(area ? { areas: { some: { label: area } } } : {}),
         // `contains` portável entre SQLite (dev) e Postgres. No SQLite o LIKE já é
         // case-insensitive p/ ASCII; em produção Postgres, use índice lower()/citext
