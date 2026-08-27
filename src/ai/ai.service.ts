@@ -7,6 +7,14 @@ import {
   type ComplianceIssue,
 } from '../oab/compliance'
 import { clampList, clampText } from '../security/sanitize'
+// O teto do FAQ entra no PROMPT. Antes era o número 300 escrito à mão aqui: se
+// alguém baixasse a constante (como aconteceu, para 220), a IA continuaria sendo
+// instruída a escrever até 300 e o texto voltaria cortado no meio da frase.
+//
+// ⚠️ Use `||` e não `??` ao ler `dto.maxChars`: ausente ele vale ZERO (ver a
+// normalização em `toDto`), e `0 ?? 220` devolve 0 — o prompt mandaria a IA
+// escrever "no máximo 0 caracteres".
+import { FAQ_ANSWER_MAX } from '../plans'
 
 // Tetos do que entra no prompt. Duas razões, nesta ordem: o prompt é enviado a um
 // provedor que cobra por token (texto sem limite é conta sem limite), e um campo
@@ -165,9 +173,32 @@ export class AiService {
         .filter(Boolean),
       currentText: clampText(d?.currentText, CURRENT_TEXT_MAX) || undefined,
       plan: d?.plan === 'pro' || d?.plan === 'premium' ? d.plan : 'free',
-      maxChars:
-        Number.isFinite(maxChars) && maxChars > 0 ? Math.min(Math.round(maxChars), MAXCHARS_TETO) : 0,
+      maxChars: this.tetoDeCaracteres(maxChars, kind as GenerateKind),
     }
+  }
+
+  /**
+   * O teto de caracteres que vale para esta geração.
+   *
+   * O front manda o teto do campo de destino, e é ele que manda quando vem. Mas
+   * QUANDO NÃO VEM, o valor caía em 0 — e 0 significa "não corte", então uma
+   * resposta de FAQ voltava com o tamanho que o modelo quisesse. Medido aqui:
+   * 314 caracteres num campo de 220. O texto passava, e só o `maxLength` do
+   * campo na tela impedia o estrago — quem colasse por outro caminho gravaria
+   * um texto que o save recusa.
+   *
+   * O teto do FAQ é fato do SERVIDOR (ver plans.ts), não sugestão do cliente.
+   * Um cliente que esquece de declará-lo não deveria conseguir um texto maior do
+   * que o campo aceita — a mesma razão pela qual o plano é lido do banco e não
+   * do corpo da requisição.
+   */
+  private tetoDeCaracteres(pedido: number, kind: GenerateKind): number {
+    const declarado =
+      Number.isFinite(pedido) && pedido > 0 ? Math.min(Math.round(pedido), MAXCHARS_TETO) : 0
+    if (declarado > 0) return declarado
+    // Campos cujo tamanho o servidor conhece sozinho. Os demais seguem sem teto
+    // (0), porque dependem do plano — e o plano do corpo não é confiável.
+    return kind === 'faq' ? FAQ_ANSWER_MAX : 0
   }
 
   /**
@@ -284,7 +315,7 @@ ${contexto}${kws ? `
 Pontos a abordar: ${kws}` : ''}${ctx}
 
 Regras obrigatórias (normas de publicidade da advocacia, Provimento 205/2021 da OAB):
-- Resposta EDUCATIVA e GERAL, CURTA: no máximo ${dto.maxChars ?? 300} caracteres (2 a 3 frases).
+- Resposta EDUCATIVA e GERAL, CURTA: no máximo ${dto.maxChars || FAQ_ANSWER_MAX} caracteres, em 2 ou 3 frases. Prefira ficar ABAIXO desse teto — o teto é o limite, não a meta.
 - Pode explicar como a lei trata o tema e citar o dispositivo ou instituto aplicável.
 - NÃO prometa resultado, prazo ou êxito; não diga que "resolve" ou "garante" nada.
 - NÃO cite casos, clientes, processos, valores de honorários nem preços.

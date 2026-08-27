@@ -29,7 +29,12 @@ export const FAQ_LIMIT: Record<Plan, number> = { free: 0, pro: 2, premium: 5 }
 // no celular vira parede de texto que ninguém lê — e quanto mais texto, mais chance
 // de escorregar para fora do que o Prov. 205/2021 permite.
 export const FAQ_QUESTION_MAX = 100
-export const FAQ_ANSWER_MAX = 300
+// 300 → 220 em 27/08/2026. A 300, a IA escrevia até encostar no teto e a resposta
+// saía com cinco linhas no celular. 220 cabe em duas ou três frases.
+//
+// ⚠️ Espelha frontend/src/lib/plans.ts. Este número também vai para o PROMPT da
+// IA (ai.service.ts) — mudar aqui muda o que o modelo recebe como instrução.
+export const FAQ_ANSWER_MAX = 220
 
 export function countLimit(
   table: Record<Plan, number>,

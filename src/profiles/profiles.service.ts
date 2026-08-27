@@ -475,6 +475,36 @@ export class ProfilesService {
     throw new NotFoundException('Perfil não encontrado')
   }
 
+  /**
+   * O que um perfil PÚBLICO não pode deixar de ter.
+   *
+   * Não existia checagem nenhuma: dava para publicar sem nome e sem número de
+   * OAB. O perfil ia ao ar com o endereço `perfil-4821`, o cabeçalho vazio e o
+   * link do CNA apontando para uma consulta sem nome — e ninguém era avisado de
+   * nada, porque a requisição respondia 200. O advogado descobria sozinho, se
+   * descobrisse, abrindo o próprio link.
+   *
+   * Os dois campos não são escolha de produto: o perfil É publicidade da
+   * advocacia, e ela tem de identificar quem anuncia. Sem o número da OAB o
+   * `CnaLink` (a consulta à base oficial, que é o que substitui um selo de
+   * verificação) não tem o que consultar. Ver REGRAS.md.
+   *
+   * A mensagem lista TUDO que falta de uma vez, e nomeia os campos como eles
+   * aparecem na tela. Recusar um campo por vez faria a pessoa descobrir o
+   * segundo problema só depois de resolver o primeiro.
+   */
+  private exigirCamposDePublicacao(data: any) {
+    const faltando: string[] = []
+    if (!String(data.name ?? '').trim()) faltando.push('seu nome')
+    if (!String(data.oabNumber ?? '').trim()) faltando.push('seu número da OAB')
+
+    if (faltando.length === 0) return
+    throw new BadRequestException(
+      `Para publicar, falta preencher: ${faltando.join(' e ')}. ` +
+        'Seu rascunho continua salvo — complete e publique de novo.',
+    )
+  }
+
   // Valida os limites de caracteres do plano (fonte da verdade). Lança 400 se exceder.
   // O `plan` vem SEMPRE do banco (assinatura vigente) — nunca do corpo da requisição.
   private enforceCharLimits(data: any, plan: Plan) {
@@ -695,6 +725,9 @@ export class ProfilesService {
         'Este perfil foi restringido pela moderação e não pode ser publicado. Fale com o suporte para revisão.',
       )
     }
+    // O que um perfil PÚBLICO não pode deixar de ter.
+    if (data.published) this.exigirCamposDePublicacao(data)
+
     const plan: Plan = (current?.plan as Plan) ?? 'free'
     // Fonte da verdade dos limites por plano.
     this.enforceCharLimits(data, plan)
