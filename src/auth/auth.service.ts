@@ -140,7 +140,16 @@ export class AuthService {
     const senha = typeof password === 'string' ? password : ''
     const user = await this.prisma.user.findUnique({
       where: { email: mail },
-      select: { id: true, email: true, password: true, profile: { select: { name: true, plan: true } } },
+      select: {
+        id: true,
+        email: true,
+        password: true,
+        suspendedUntil: true,
+        suspendedReason: true,
+        closedAt: true,
+        closedReason: true,
+        profile: { select: { name: true, plan: true } },
+      },
     })
     // E-mail inexistente também paga o preço de uma verificação de senha: sem
     // isso, a diferença de tempo entre "não existe" e "senha errada" entrega quais
@@ -152,6 +161,31 @@ export class AuthService {
     if (!verifyPassword(senha, user.password)) {
       throw new UnauthorizedException('E-mail ou senha incorretos.')
     }
+
+    // Sanções que alcançam a CONTA (degraus 4 e 5 de docs/politica-de-sancoes.md).
+    // A checagem vem DEPOIS da senha de propósito: quem erra a senha continua
+    // recebendo a mesma resposta de sempre, e só quem prova ser o dono da conta
+    // descobre que ela foi suspensa — e por quê. Dizer antes transformaria o
+    // login numa consulta pública de quem foi sancionado.
+    //
+    // A mensagem traz o MOTIVO escrito pelo administrador. É o mesmo texto do
+    // registro: uma sanção que a pessoa não consegue ler é uma sanção que ela
+    // não tem como contestar.
+    if (user.closedAt) {
+      throw new UnauthorizedException(
+        `Esta conta foi encerrada.${user.closedReason ? ` Motivo: ${user.closedReason}` : ''} ` +
+          'Se você discorda, responda ao aviso que enviamos ou fale com o suporte.',
+      )
+    }
+    if (user.suspendedUntil && user.suspendedUntil.getTime() > Date.now()) {
+      const ate = user.suspendedUntil.toLocaleDateString('pt-BR')
+      throw new UnauthorizedException(
+        `Esta conta está suspensa até ${ate}.` +
+          `${user.suspendedReason ? ` Motivo: ${user.suspendedReason}` : ''} ` +
+          'Se você discorda, responda ao aviso que enviamos ou fale com o suporte.',
+      )
+    }
+
     return this.sessionFor(
       req,
       user.id,

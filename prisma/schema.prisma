@@ -67,6 +67,23 @@ model User {
   email      String          @unique
   password   String // hash (argon2)
   createdAt  DateTime        @default(now())
+  // ---- Sanções que alcançam a CONTA, não só o perfil ----
+  // Ver docs/politica-de-sancoes.md, degraus 4 e 5. Até aqui o painel só
+  // alcançava o perfil: dava para tirar a página do ar e não dava para impedir
+  // que a mesma pessoa publicasse outra no dia seguinte.
+  //
+  // Suspensão: o login para de funcionar até `suspendedUntil`. Prazo que vence
+  // sozinho é o que separa sanção de punição perpétua — uma conta suspensa e
+  // esquecida na fila é uma conta morta que ninguém decidiu matar.
+  suspendedAt     DateTime?
+  suspendedUntil  DateTime?
+  // O motivo é o texto que a pessoa lê. Sem ele a rota recusa.
+  suspendedReason String    @default("")
+  // Encerramento (degrau 5): definitivo, exige duas mãos e libera o endereço
+  // público. Não apaga a linha — o registro da sanção é a defesa dos dois lados
+  // (LGPD art. 18 convive com a defesa de direito em processo).
+  closedAt        DateTime?
+  closedReason    String    @default("")
   profile    Profile?
   // Escritórios dos quais este usuário é dono/faturamento (normalmente 0 ou 1).
   firmsOwned Firm[]
@@ -302,6 +319,13 @@ model Profile {
   customDomain         String? // domínio próprio (informativo; DNS fora do escopo do protótipo)
   // ---- Moderação (denúncias) ----
   moderationStatus     ModerationStatus @default(active)
+  // Até quando a medida vale. Nulo = sem prazo (só as antigas; toda medida nova
+  // tem um). Vencido, o perfil volta sozinho — ver moderacaoVigente().
+  moderationUntil      DateTime?
+  // Quando a cobrança foi pausada por causa de uma sanção. Serviço pago e
+  // indisponível não pode seguir sendo cobrado (CDC art. 51, IV) — e isso é
+  // indefensável mesmo quando a restrição é justa.
+  billingPausedAt      DateTime?
   // Aviso do admin visível ao dono do perfil (motivo do aviso/restrição).
   moderationNote       String           @default("")
   // Seções censuradas quando moderationStatus == partial. JSON de chaves,

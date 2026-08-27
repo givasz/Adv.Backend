@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { faixa, pagina } from '../admin/paginacao'
+import { degrau, exigeIdentificacao, venceEm } from '../admin/sancoes'
 import { POLICY_VERSION } from '../oab/compliance'
 import { isValidAction, isValidReason, type ModerationAction } from './moderation.constants'
 import { checkRateLimit, REPORT_RATE_RULES } from './rate-limit'
@@ -32,6 +33,8 @@ interface ModerateInput {
   note?: string
   hiddenSections?: string[]
   reportIds?: string[]
+  /** Por quantos dias a medida vale. Ausente = o padrão do degrau. */
+  dias?: unknown
 }
 
 @Injectable()
@@ -51,6 +54,19 @@ export class ModerationService {
       throw new BadRequestException('Descreva o problema para enviar uma denúncia do tipo "Outro".')
     }
     const email = (input.reporterEmail ?? '').trim().slice(0, 200) || null
+
+    // Ninguém tem o próprio nome retirado do ar por reclamação de quem não se
+    // identifica. Dizer que a inscrição é falsa, ou que o perfil se passa por
+    // outra pessoa, é acusação sobre QUEM A PESSOA É — e o acusador precisa ter
+    // rosto. Nos demais motivos o anonimato continua valendo, de propósito: quem
+    // denuncia captação irregular de um colega não deve precisar se expor numa
+    // profissão pequena e competitiva. Ver admin/sancoes.ts.
+    if (exigeIdentificacao(input.reason) && !email) {
+      throw new BadRequestException(
+        'Para denunciar registro falso ou perfil se passando por outra pessoa, informe seu e-mail. ' +
+          'Acusação sobre a identidade de alguém não é aceita de forma anônima.',
+      )
+    }
 
     const profile = await this.prisma.profile.findUnique({ where: { slug }, select: { id: true } })
     if (!profile) throw new NotFoundException('Perfil não encontrado')
@@ -179,7 +195,14 @@ export class ModerationService {
   async estadoDeModeracao(profileId: string) {
     return this.prisma.profile.findUnique({
       where: { id: profileId },
-      select: { moderationStatus: true, hiddenSections: true, published: true, slug: true },
+      select: {
+        moderationStatus: true,
+        moderationUntil: true,
+        billingPausedAt: true,
+        hiddenSections: true,
+        published: true,
+        slug: true,
+      },
     })
   }
 
@@ -210,19 +233,34 @@ export class ModerationService {
 
     const profile = await this.prisma.profile.findUnique({
       where: { id: profileId },
-      select: { id: true, bio: true },
+      select: { id: true, bio: true, plan: true, billingPausedAt: true },
     })
     if (!profile) throw new NotFoundException('Perfil não encontrado')
+    const perfilPago = profile.plan !== 'free'
 
     const status = ACTION_TO_STATUS[action]
     const hiddenSections =
       action === 'partial' ? JSON.stringify(input.hiddenSections) : '[]'
+
+    // Prazo. Uma medida sem prazo não é sanção, é esquecimento: a restrição fica
+    // de pé para sempre porque ninguém voltou na fila para desfazê-la.
+    const ate = action === 'clear' ? null : venceEm(action, input.dias)
+
+    // Cobrança. Serviço pago e indisponível não pode seguir sendo cobrado —
+    // é indefensável perante o CDC mesmo quando a restrição é justa. Só a
+    // restrição do perfil inteiro derruba o serviço; aviso e ocultação parcial
+    // deixam a página no ar. Ver docs/politica-de-sancoes.md § 2.3.
+    const pausaCobranca = !!degrau(action)?.suspendeCobranca && perfilPago
+    const billingPausedAt =
+      action === 'clear' ? null : pausaCobranca ? new Date() : profile.billingPausedAt
 
     await this.prisma.profile.update({
       where: { id: profileId },
       data: {
         moderationStatus: status,
         moderationNote: action === 'clear' ? '' : note,
+        moderationUntil: ate,
+        billingPausedAt,
         hiddenSections,
       },
     })

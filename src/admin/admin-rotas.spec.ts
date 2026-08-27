@@ -72,6 +72,9 @@ const REGISTRAM_NO_SERVICO: Record<string, string> = {
   criar: 'AdminService.criarAdmin registra',
   atualizar: 'AdminService.atualizarAdmin registra',
   revogar: 'AdminService.derrubarSessoes registra',
+  suspender: 'AdminService.suspenderConta registra e exige motivo',
+  reativar: 'AdminService.reativarConta registra e exige motivo',
+  encerrar: 'AdminService.encerrarConta registra, exige motivo e confirmação digitada',
 }
 
 describe('as rotas do painel', () => {
@@ -118,11 +121,16 @@ describe('as rotas do painel', () => {
     // O motivo é o texto que a pessoa afetada lê. Uma decisão sem ele é uma
     // decisão que ninguém consegue contestar.
     const decisoes = DO_PAINEL.filter(
-      (r) => ESCREVE.has(r.metodo) && /exigir\(\s*req,\s*'(moderacao:decidir|suporte:responder)'/.test(r.corpo),
+      (r) =>
+        ESCREVE.has(r.metodo) &&
+        /exigir\(\s*req,\s*'(moderacao:decidir|suporte:responder|contas:sancionar)'/.test(r.corpo),
     )
     expect(decisoes.length).toBeGreaterThan(0)
     for (const rota of decisoes) {
-      expect(/exigirMotivo\(/.test(rota.corpo), `${rota.metodo} /${rota.caminho} sem motivo`).toBe(true)
+      // Ou o motivo é exigido na rota, ou no método do serviço que ela chama —
+      // e nesse caso a rota está na lista acima, com o porquê escrito.
+      const ok = /exigirMotivo\(/.test(rota.corpo) || /exige motivo/.test(REGISTRAM_NO_SERVICO[rota.handler] ?? '')
+      expect(ok, `${rota.metodo} /${rota.caminho} não exige motivo`).toBe(true)
     }
   })
 })

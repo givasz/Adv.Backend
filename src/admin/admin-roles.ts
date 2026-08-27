@@ -47,6 +47,10 @@ export const PERMISSOES = {
   'moderacao:decidir': ['owner', 'moderator'],
   /** Mudar a situação de um chamado e responder ao advogado. */
   'suporte:responder': ['owner', 'moderator', 'support'],
+  /** Suspender, reativar e encerrar a CONTA de um advogado (degraus 4 e 5 da
+   *  escada — ver sancoes.ts e docs/politica-de-sancoes.md). Fica com quem já
+   *  decide moderação: quem atende suporte não tira ninguém da plataforma. */
+  'contas:sancionar': ['owner', 'moderator'],
   /** Criar, mudar o papel, desativar administradores e derrubar sessões deles. */
   'admins:gerir': ['owner'],
 } as const satisfies Record<string, readonly AdminRole[]>
@@ -78,6 +82,7 @@ export function permissoesDe(papel: string | undefined): Permissao[] {
 export const PERMISSOES_DE_DECISAO: readonly Permissao[] = [
   'moderacao:decidir',
   'suporte:responder',
+  'contas:sancionar',
   'admins:gerir',
 ]
 
