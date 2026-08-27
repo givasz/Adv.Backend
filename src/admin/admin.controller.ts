@@ -166,7 +166,12 @@ export class AdminController {
 
   // ---- Histórico ------------------------------------------------------------
 
-  /** GET /api/admin/actions?admin=&action=&targetType=&targetId=&limite= */
+  /**
+   * GET /api/admin/actions?admin=&action=&targetType=&targetId=&limite=&cursor=
+   *
+   * Paginado por cursor: `cursor` é o `proximo` que veio na resposta anterior.
+   * Ver o porquê em admin/paginacao.ts.
+   */
   @Get('actions')
   async acoes(
     @Req() req: RequisicaoComAuth,
@@ -175,9 +180,10 @@ export class AdminController {
     @Query('targetType') targetType?: string,
     @Query('targetId') targetId?: string,
     @Query('limite') limite?: string,
+    @Query('cursor') cursor?: string,
     @Headers('x-admin-token') token?: string,
   ) {
     await this.admin.exigir(req, 'auditoria:ler', token)
-    return this.admin.historico({ admin, action, targetType, targetId, limite: Number(limite) })
+    return this.admin.historico({ admin, action, targetType, targetId, limite, cursor })
   }
 }

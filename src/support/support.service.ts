@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
+import { faixa, pagina } from '../admin/paginacao'
 
 // Suporte ao cliente — canal EXCLUSIVO de quem tem conta.
 //
@@ -85,25 +86,32 @@ export class SupportService {
    * Fila do admin. Traz o e-mail e o perfil do autor: sem saber DE QUEM é o
    * chamado, o admin não consegue reproduzir nem responder.
    */
-  listAll(status?: string) {
+  async listAll(status?: string, limite?: unknown, offset?: unknown) {
     const filtro = (STATUSES as readonly string[]).includes(status ?? '')
       ? { status: status as SupportStatus }
       : {}
-    return this.prisma.supportTicket.findMany({
-      where: filtro,
-      // Abertos primeiro, e dentro de cada grupo os mais antigos na frente —
-      // fila de atendimento, não mural de novidades.
-      orderBy: [{ status: 'asc' }, { createdAt: 'asc' }],
-      take: 200,
-      include: {
-        user: {
-          select: {
-            email: true,
-            profile: { select: { name: true, slug: true, plan: true, oabNumber: true } },
+    const { take, skip } = faixa(limite, offset)
+    const [itens, total] = await this.prisma.$transaction([
+      this.prisma.supportTicket.findMany({
+        where: filtro,
+        // Abertos primeiro, e dentro de cada grupo os mais antigos na frente —
+        // fila de atendimento, não mural de novidades. O id desempata para a
+        // paginação não embaralhar chamados abertos no mesmo segundo.
+        orderBy: [{ status: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+        take,
+        skip,
+        include: {
+          user: {
+            select: {
+              email: true,
+              profile: { select: { name: true, slug: true, plan: true, oabNumber: true } },
+            },
           },
         },
-      },
-    })
+      }),
+      this.prisma.supportTicket.count({ where: filtro }),
+    ])
+    return pagina(itens, total, take, skip)
   }
 
   /** Admin muda o estado e/ou deixa uma resposta ao autor. */

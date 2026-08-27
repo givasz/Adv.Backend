@@ -52,6 +52,7 @@ import {
   type Permissao,
 } from './admin-roles'
 import { novoSegredoTotp, otpauthUrl, segredoLegivel, totpConfere } from './totp'
+import { faixaTrilha, trilha } from './paginacao'
 
 /** Quem está usando o painel nesta requisição. */
 export interface AdminAtual {
@@ -513,25 +514,39 @@ export class AdminService {
     return limpo.slice(0, MOTIVO_MAX)
   }
 
-  /** Histórico de ações, filtrado. Ordem: o mais recente primeiro. */
+  /**
+   * Histórico de ações, filtrado. O mais recente primeiro.
+   *
+   * Paginado por CURSOR, e não por deslocamento, porque esta tabela recebe linha
+   * nova no topo o tempo todo: com deslocamento, uma ação registrada entre um
+   * "carregar mais" e o seguinte empurraria a lista e faria a página seguinte
+   * repetir o que já estava na tela. Numa trilha de auditoria, ver a mesma
+   * decisão duas vezes não é um incômodo — é uma leitura errada do que houve.
+   */
   async historico(filtros: {
     admin?: string
     action?: string
     targetType?: string
     targetId?: string
-    limite?: number
+    limite?: unknown
+    cursor?: string
   }) {
-    const take = Math.min(Math.max(Number(filtros.limite) || 100, 1), 300)
-    return this.prisma.adminAction.findMany({
+    const take = faixaTrilha(filtros.limite)
+    const linhas = await this.prisma.adminAction.findMany({
       where: {
         ...(filtros.admin ? { adminId: filtros.admin } : {}),
         ...(filtros.action ? { action: { startsWith: filtros.action } } : {}),
         ...(filtros.targetType ? { targetType: filtros.targetType } : {}),
         ...(filtros.targetId ? { targetId: filtros.targetId } : {}),
       },
-      orderBy: { createdAt: 'desc' },
-      take,
+      // O id desempata: duas ações no mesmo milissegundo teriam ordem instável,
+      // e o cursor precisa de uma ordem total para não pular nem repetir linha.
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      // Um a mais do que se vai mostrar: se ele vier, é porque há mais.
+      take: take + 1,
+      ...(filtros.cursor ? { cursor: { id: filtros.cursor }, skip: 1 } : {}),
     })
+    return trilha(linhas, take)
   }
 
   // ---- Gestão de administradores --------------------------------------------
@@ -714,16 +729,28 @@ export class AdminService {
 
   // ---- Segundo fator --------------------------------------------------------
 
-  /** Sorteia um segredo e devolve o que o aplicativo precisa ler. Não liga nada
-   *  ainda: ligar exige provar que o aplicativo está funcionando. */
+  /**
+   * Devolve o que o aplicativo precisa ler. Não liga nada ainda: ligar exige
+   * provar que o aplicativo está funcionando.
+   *
+   * O segredo pendente é REAPROVEITADO em vez de sorteado de novo. Enquanto cada
+   * chamada sorteava um, recarregar a página (ou clicar "Começar" duas vezes)
+   * substituía em silêncio o segredo que o celular acabara de ler — e a partir
+   * daí nenhum código funcionava, para sempre, sem nada na tela explicando.
+   * Reaproveitar não custa segurança nenhuma: um segredo que ainda não foi
+   * confirmado não protege nada, e continua sem valer até alguém provar que o
+   * aplicativo o tem.
+   */
   async iniciarTotp(quem: AdminAtual) {
     if (!quem.id) throw new BadRequestException('A credencial de emergência não tem segundo fator.')
     const conta = await this.prisma.adminUser.findUnique({ where: { id: quem.id } })
     if (!conta) throw new BadRequestException('Administrador não encontrado.')
     if (conta.totpEnabled) throw new BadRequestException('O segundo fator já está ligado.')
 
-    const segredo = novoSegredoTotp()
-    await this.prisma.adminUser.update({ where: { id: quem.id }, data: { totpSecret: segredo } })
+    const segredo = conta.totpSecret || novoSegredoTotp()
+    if (segredo !== conta.totpSecret) {
+      await this.prisma.adminUser.update({ where: { id: quem.id }, data: { totpSecret: segredo } })
+    }
     return {
       segredo: segredoLegivel(segredo),
       otpauth: otpauthUrl(segredo, conta.email),

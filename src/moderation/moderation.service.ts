@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
+import { faixa, pagina } from '../admin/paginacao'
 import { POLICY_VERSION } from '../oab/compliance'
 import { isValidAction, isValidReason, type ModerationAction } from './moderation.constants'
 import { checkRateLimit, REPORT_RATE_RULES } from './rate-limit'
@@ -74,11 +75,45 @@ export class ModerationService {
 
   // ---- Admin: fila e detalhe ----
 
-  /** Fila de denúncias agrupada por perfil (default: só as abertas). */
-  async listReports(status: 'open' | 'resolved' | 'dismissed' | 'all' = 'open') {
+  /**
+   * A fila, agrupada por perfil.
+   *
+   * Antes esta consulta trazia **toda denúncia já feita** para agrupar em
+   * memória — sem `take` nenhum. Funcionava com dezenas e não funcionaria com
+   * dezenas de milhares, e o painel nunca dizia quantos perfis havia na fila.
+   *
+   * A paginação é por PERFIL, não por denúncia: um perfil com quarenta denúncias
+   * é uma linha da fila, não quarenta. Por isso a consulta é em duas etapas —
+   * primeiro quais perfis entram nesta página, depois as denúncias deles.
+   */
+  async listReports(
+    status: 'open' | 'resolved' | 'dismissed' | 'all' = 'open',
+    limite?: unknown,
+    offset?: unknown,
+  ) {
     const where = status === 'all' ? {} : { status }
-    const reports = await this.prisma.report.findMany({
+    const { take, skip } = faixa(limite, offset)
+
+    // 1. Quais perfis, e em que ordem (o da denúncia mais recente na frente).
+    const grupos = await this.prisma.report.groupBy({
+      by: ['profileId'],
       where,
+      _max: { createdAt: true },
+      orderBy: { _max: { createdAt: 'desc' } },
+      take,
+      skip,
+    })
+    // Quantos perfis existem na fila inteira — é o número que a tela mostra.
+    const total = await this.prisma.profile.count({ where: { reports: { some: where } } })
+
+    if (!grupos.length) return pagina([], total, take, skip)
+
+    const ids = grupos.map((g) => g.profileId)
+    // 2. As denúncias desses perfis. Todas as do perfil, inclusive as já
+    //    resolvidas quando o filtro é "abertas": o histórico dele é o que
+    //    permite ver reincidência antes de decidir.
+    const reports = await this.prisma.report.findMany({
+      where: { profileId: { in: ids } },
       orderBy: { createdAt: 'desc' },
       include: {
         profile: {
@@ -96,20 +131,25 @@ export class ModerationService {
       },
     })
 
-    // Agrupa por perfil preservando a ordem (mais recente primeiro).
-    const byProfile = new Map<string, { profile: (typeof reports)[number]['profile']; reports: any[] }>()
+    const porPerfil = new Map<string, { profile: (typeof reports)[number]['profile']; reports: any[] }>()
     for (const r of reports) {
-      const key = r.profileId
-      if (!byProfile.has(key)) byProfile.set(key, { profile: r.profile, reports: [] })
-      const { profile: _omit, ...rest } = r
-      byProfile.get(key)!.reports.push(rest)
+      if (!porPerfil.has(r.profileId)) porPerfil.set(r.profileId, { profile: r.profile, reports: [] })
+      const { profile: _omit, ...resto } = r
+      porPerfil.get(r.profileId)!.reports.push(resto)
     }
-    return Array.from(byProfile.values()).map((g) => ({
-      profile: g.profile,
-      reports: g.reports,
-      openCount: g.reports.filter((r) => r.status === 'open').length,
-      total: g.reports.length,
-    }))
+
+    // A ordem quem manda é a do groupBy — o Map veio da segunda consulta.
+    const itens = ids
+      .map((id) => porPerfil.get(id))
+      .filter(Boolean)
+      .map((g) => ({
+        profile: g!.profile,
+        reports: g!.reports,
+        openCount: g!.reports.filter((r) => r.status === 'open').length,
+        total: g!.reports.length,
+      }))
+
+    return pagina(itens, total, take, skip)
   }
 
   /** Detalhe completo do perfil + todas as suas denúncias (para o admin avaliar). */
