@@ -1,12 +1,22 @@
 -- ===========================================================================
 -- O USUÁRIO DE LEITURA DO BI — roda UMA vez, à mão, na VPS.
 --
---     export BI_SENHA="$(openssl rand -base64 24)"
---     psql "$DATABASE_URL" -v senha="'$BI_SENHA'" -f prisma/bi/bi_leitor.sql
+-- ⚠️ DEPOIS de bi.sql, e como SUPERUSUÁRIO. As duas ordens não são detalhe:
+--
+--   · DEPOIS, porque aqui se dá permissão no esquema `bi`, e quem o cria é o
+--     bi.sql. Na ordem inversa isto morre em "schema bi does not exist".
+--   · como POSTGRES, porque o usuário da aplicação não tem CREATEROLE — e não
+--     deve ter. Uma API que consegue criar login é uma API que, comprometida,
+--     cria o próprio. (Descoberto ao aplicar em produção: o `create role` foi
+--     recusado, e a recusa estava certa.)
+--
+--     BI_SENHA="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
+--     sudo -u postgres psql -d advocme -v ON_ERROR_STOP=1 \
+--          -v senha="'$BI_SENHA'" -f prisma/bi/bi_leitor.sql
 --     echo "$BI_SENHA"     # guardar no gerenciador de senhas e limpar o histórico
 --
--- Depois, sempre, `psql "$DATABASE_URL" -f prisma/bi/bi.sql` — é ele que dá as
--- permissões nas views (e as redá toda vez que uma view é recriada).
+-- E, sempre que uma view for recriada, `psql "$DATABASE_URL" -f prisma/bi/bi.sql`
+-- — é o bloco final dele que redá as permissões.
 --
 -- ---------------------------------------------------------------------------
 -- O QUE ESTE USUÁRIO PODE
