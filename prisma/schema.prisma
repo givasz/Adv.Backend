@@ -417,6 +417,12 @@ model SocialLink {
   id        String     @id @default(cuid())
   kind      SocialKind
   url       String
+  // Ordem em que as redes aparecem no perfil, escolhida pelo advogado (arrastando
+  // no editor). Sem esta coluna o Postgres devolvia as linhas na ordem que quisesse
+  // — `areas` e `faqs` sempre tiveram `order`, e só as redes tinham ficado de fora.
+  // O sintoma era discreto e constante: a fileira de ícones trocava de posição
+  // sozinha entre uma visita e outra.
+  order     Int        @default(0)
   profileId String
   profile   Profile    @relation(fields: [profileId], references: [id], onDelete: Cascade)
 
