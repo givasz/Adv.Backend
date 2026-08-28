@@ -43,7 +43,11 @@ import {
 const relations = {
   areas: { orderBy: { order: 'asc' as const } },
   faqs: { orderBy: { order: 'asc' as const } },
-  socials: true,
+  // As redes só tinham ficado de fora. Sem `orderBy`, o Postgres devolve na ordem
+  // que lhe convém — e o sintoma era discreto o bastante para passar despercebido
+  // por muito tempo: a fileira de ícones do perfil trocava de posição sozinha
+  // entre uma visita e outra, sem ninguém ter mexido em nada.
+  socials: { orderBy: { order: 'asc' as const } },
 }
 
 // Planos aceitos na troca de assinatura (POST /profiles/me/plan).
@@ -686,7 +690,10 @@ export class ProfilesService {
         // Link recusado (esquema estranho, texto solto) some da lista em vez de
         // virar um <a> quebrado — ou pior, executável — na página pública.
         .filter((s) => !!s.url)
-        .map((s) => ({ kind: s.kind as string, url: s.url as string })),
+        // A ORDEM da lista é a ordem em que o advogado arrastou no editor, e é o
+        // índice que a grava. Vem depois do filtro de propósito: um link recusado
+        // no meio da lista deixaria um buraco na numeração se contasse antes.
+        .map((s, order) => ({ kind: s.kind as string, url: s.url as string, order })),
       contact: {
         whatsapp: safePhone(c.whatsapp),
         email: safeEmail(c.email),
@@ -827,7 +834,11 @@ export class ProfilesService {
         },
         socials: {
           deleteMany: {},
-          create: (data.socials ?? []).map((s: any) => ({ kind: s.kind, url: s.url })),
+          create: (data.socials ?? []).map((s: any) => ({
+            kind: s.kind,
+            url: s.url,
+            order: s.order ?? 0,
+          })),
         },
       },
       include: relations,

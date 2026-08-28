@@ -46,7 +46,13 @@ describe('links do perfil', () => {
     })
     const d = gravado[0]
     expect(d.scheduling).toBeNull()
-    expect(d.socials.create).toEqual([{ kind: 'instagram', url: 'https://instagram.com/marina' }])
+    // `order: 0` e não 1: a numeração é atribuída DEPOIS de descartar os links
+    // recusados. Contar antes deixaria um buraco na ordem — a primeira rede
+    // sobrevivente começaria em 1, e o `orderBy` do banco ainda funcionaria, mas
+    // a numeração deixaria de corresponder à lista que o editor mostra.
+    expect(d.socials.create).toEqual([
+      { kind: 'instagram', url: 'https://instagram.com/marina', order: 0 },
+    ])
   })
 
   it('recusa rede desconhecida virando "website" — o público não tem ícone para ela', async () => {
@@ -190,5 +196,44 @@ describe('campos obrigatórios para publicar', () => {
     const { svc, gravado } = service()
     await svc.update('u1', { name: 'Marina Sales', oabNumber: 'OAB/SP 123', published: true })
     expect(gravado[0].published).toBe(true)
+  })
+})
+
+// A ordem das redes é escolha do advogado (ele arrasta no editor). Antes não
+// existia coluna `order` nem `orderBy` — `areas` e `faqs` sempre tiveram, e só as
+// redes tinham ficado de fora. O sintoma era discreto e constante: a fileira de
+// ícones do perfil trocava de posição sozinha entre uma visita e outra.
+describe('ordem das redes', () => {
+  it('grava a ordem da lista recebida', async () => {
+    const { svc, gravado } = service()
+    await svc.update('u1', {
+      ...base,
+      socials: [
+        { kind: 'linkedin', url: 'https://linkedin.com/in/marina' },
+        { kind: 'instagram', url: 'https://instagram.com/marina' },
+        { kind: 'website', url: 'https://marina.adv.br' },
+      ],
+    })
+    expect(gravado[0].socials.create.map((s: Qualquer) => [s.kind, s.order])).toEqual([
+      ['linkedin', 0],
+      ['instagram', 1],
+      ['website', 2],
+    ])
+  })
+
+  it('link recusado no meio não deixa buraco na numeração', async () => {
+    const { svc, gravado } = service()
+    await svc.update('u1', {
+      ...base,
+      socials: [
+        { kind: 'linkedin', url: 'https://linkedin.com/in/marina' },
+        { kind: 'instagram', url: 'javascript:alert(1)' }, // recusado
+        { kind: 'website', url: 'https://marina.adv.br' },
+      ],
+    })
+    expect(gravado[0].socials.create.map((s: Qualquer) => [s.kind, s.order])).toEqual([
+      ['linkedin', 0],
+      ['website', 1],
+    ])
   })
 })
