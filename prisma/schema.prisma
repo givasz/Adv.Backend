@@ -312,6 +312,15 @@ model Profile {
   // validação do provedor é do servidor: ver src/video.ts.
   videoUrl              String?
   videoCaption          String           @default("")
+  // Enquadramento do vídeo: "auto" | "horizontal" | "vertical" (ver src/video.ts).
+  //
+  // "auto" resolve sozinho o caso que dá para resolver — um Short do YouTube é
+  // vertical por definição, e a URL canônica preserva o `/shorts/` justamente
+  // para isso. O resto não é dedutível: um vídeo gravado em pé e publicado como
+  // vídeo comum, ou qualquer vídeo do Vimeo, exigiria perguntar ao provedor
+  // (oEmbed) — e nada nesta plataforma faz o navegador do visitante conversar
+  // com terceiros para montar a página. Aí quem responde é o advogado.
+  videoOrientation      String           @default("auto")
   // ---- Cartão de visita impresso (plano Max) ----
   // Só a ESCOLHA do advogado (modelo e o que aparece), em JSON — o conteúdo do
   // cartão sai sempre do perfil, para o papel nunca contradizer a página.

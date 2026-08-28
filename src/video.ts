@@ -5,12 +5,20 @@
 // forjado poderia salvar qualquer URL e o perfil público montaria um <iframe>
 // apontando para ela.
 
+// Shorts vem PRIMEIRO e separado dos demais caminhos do YouTube. Não é detalhe de
+// organização: `/shorts/` é a única pista de ORIENTAÇÃO que existe sem perguntar
+// nada a ninguém — um Short é vertical por definição. Ver `normalizeVideoUrl`.
+const YOUTUBE_SHORTS = /(?:youtube\.com|youtube-nocookie\.com)\/shorts\/([\w-]{6,20})/i
 const YOUTUBE_PATTERNS = [
   /(?:youtube\.com|youtube-nocookie\.com)\/watch\?(?:.*&)?v=([\w-]{6,20})/i,
   /youtu\.be\/([\w-]{6,20})/i,
-  /(?:youtube\.com|youtube-nocookie\.com)\/(?:embed|shorts|live|v)\/([\w-]{6,20})/i,
+  /(?:youtube\.com|youtube-nocookie\.com)\/(?:embed|live|v)\/([\w-]{6,20})/i,
 ]
 const VIMEO_PATTERNS = [/vimeo\.com\/(?:video\/)?(\d{6,12})/i]
+
+/** Como o vídeo é enquadrado no perfil. */
+export const VIDEO_ORIENTATIONS = ['auto', 'horizontal', 'vertical'] as const
+export type VideoOrientation = (typeof VIDEO_ORIENTATIONS)[number]
 
 /** Legenda curta sob o vídeo (espelha VIDEO_CAPTION_MAX no front). */
 export const VIDEO_CAPTION_MAX = 120
@@ -24,6 +32,16 @@ export function normalizeVideoUrl(raw: unknown): string | null {
   if (typeof raw !== 'string') return null
   const url = raw.trim()
   if (!url) return null
+
+  // Short continua Short depois de gravado.
+  //
+  // Isto já foi um bug silencioso: a canonicalização mandava TODO link do YouTube
+  // para `watch?v=`, inclusive os Shorts. O vídeo tocava igual, então nada
+  // parecia errado — mas a informação de que ele era VERTICAL era descartada no
+  // save e não havia como recuperá-la depois. O perfil desenhava um quadro 16:9
+  // com o vídeo em pé no meio, entre duas tarjas pretas.
+  const short = YOUTUBE_SHORTS.exec(url)?.[1]
+  if (short) return `https://www.youtube.com/shorts/${short}`
 
   for (const re of YOUTUBE_PATTERNS) {
     const id = re.exec(url)?.[1]

@@ -26,7 +26,12 @@ import {
   type LimitedField,
   type Plan,
 } from '../plans'
-import { canUseVideo, normalizeVideoUrl, VIDEO_CAPTION_MAX } from '../video'
+import {
+  canUseVideo,
+  normalizeVideoUrl,
+  VIDEO_CAPTION_MAX,
+  VIDEO_ORIENTATIONS,
+} from '../video'
 import {
   aoTrocarPlano,
   ehRebaixamento,
@@ -296,6 +301,7 @@ export class ProfilesService {
     if (set.has('video')) {
       out.videoUrl = null
       out.videoCaption = ''
+      out.videoOrientation = 'auto'
     }
     if (set.has('socials')) out.socials = []
     if (set.has('areas')) out.areas = []
@@ -484,6 +490,7 @@ export class ProfilesService {
       // banco — quem rebaixa e volta reencontra o link (mesma regra do branding).
       videoUrl: canUseVideo(plano) ? (p.videoUrl ?? undefined) : undefined,
       videoCaption: canUseVideo(plano) ? p.videoCaption || undefined : undefined,
+      videoOrientation: canUseVideo(plano) ? (p.videoOrientation ?? undefined) : undefined,
       // Perguntas frequentes: recurso pago. Fora dos planos pagos some da resposta,
       // mas as linhas continuam no banco — quem rebaixa e volta reencontra o texto
       // (mesma regra do vídeo e do branding).
@@ -892,6 +899,7 @@ export class ProfilesService {
       },
       videoUrl: typeof d.videoUrl === 'string' ? d.videoUrl : null,
       videoCaption: clampText(d.videoCaption, VIDEO_CAPTION_MAX),
+      videoOrientation: oneOf(d.videoOrientation, VIDEO_ORIENTATIONS, 'auto'),
       published: !!d.published,
       branding: {
         brandName: clampOrNull(b.brandName, BRAND_NAME_MAX),
@@ -1012,6 +1020,7 @@ export class ProfilesService {
           ? {
               videoUrl: normalizeVideoUrl(data.videoUrl),
               videoCaption: String(data.videoCaption ?? '').slice(0, VIDEO_CAPTION_MAX),
+              videoOrientation: data.videoOrientation,
             }
           : {}),
         published: data.published,
