@@ -461,16 +461,27 @@ nada de pizza com onze fatias.
 | **5** | Painel admin (Fase 9 do plano-admin) passa a ler as mesmas views | sim | ~1 |
 | **6** | *Opcional* — atualização automática (§11) | não | ~1 |
 
-**Feito em 28/08/2026 (fases 1 a 3).** O que ficou pendente, e por quê:
+**Feito em 28/08/2026 (fases 1 a 3) e aplicado na VPS no mesmo dia, 15h15.** A
+história do banco começa em 28/08/2026: `bi.manutencao_snapshot` marca tudo antes
+disso como `faltando`, e é a verdade — não havia o que retratar.
 
-- **Aplicar na VPS.** `prisma db push` (aditivo, duas tabelas novas), `npm run bi`
-  e `psql -f prisma/bi/bi.sql` — roteiro em [DEPLOY-VPS.md](../DEPLOY-VPS.md) §12. O
-  `bi.sql` nunca foi executado contra um Postgres: não há um na máquina de
-  desenvolvimento, e rodar coisa nova direto em produção sem alguém olhando não é
-  jeito de estrear camada nenhuma.
-- **O `.pbix`.** Arquivo binário do Power BI, montado dentro do programa. As views,
-  o modelo em estrela (§8) e as medidas DAX estão especificados; quem abrir o Power
-  BI segue §8 e §9.
+Conferido em produção, não só compilado: evento cru (8) = agregado diário (8) =
+agregado mensal (8); as 13 views respondem; o `bi_leitor` leva `permission denied`
+em `"User"`, `"Session"` e `"Profile"`, e `create table` morre em transação
+só-leitura.
+
+Duas coisas que só a aplicação real ensinou, e que estão no §12 do
+[DEPLOY-VPS.md](../DEPLOY-VPS.md):
+
+- **`bi.sql` roda antes de `bi_leitor.sql`** — é ele quem cria o esquema em que o
+  segundo dá permissão.
+- **O usuário da aplicação não tem `CREATEROLE`**, então o `bi_leitor` nasce pela
+  mão do `postgres`. A recusa está certa: uma API que consegue criar login é uma
+  API que, comprometida, cria o próprio.
+
+Pendente: **o `.pbix`**. Arquivo binário do Power BI, montado dentro do programa.
+As views estão no ar, o modelo em estrela (§8) e as medidas DAX estão
+especificados; quem abrir o Power BI segue §8 e §9.
 
 Ordem: **1 → 2** é fundação, e a 2 é urgente por um motivo que não espera. Todo dia sem
 `BiPerfilDia` é um dia de história que não existirá nunca — o retrato de hoje não pode
