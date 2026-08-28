@@ -5,6 +5,7 @@ import { SessionService } from '../auth/session.service'
 import type { RequisicaoComAuth } from '../auth/session-context'
 import { AI_RATE_RULES, enforceRateLimit } from '../security/rate-limit'
 import { clientIp } from '../security/net'
+import { planoVigente } from '../assinatura'
 
 // Recursos de IA por plano — FONTE DA VERDADE do servidor. Espelha
 // frontend/src/lib/aiFeatures.ts, que decide qual botão aparece; aqui é onde a
@@ -64,9 +65,11 @@ export class AiController {
     try {
       const p = await this.prisma.profile.findUnique({
         where: { userId },
-        select: { plan: true },
+        // O plano CONTRATADO não basta: quem não pagou não usa a IA do plano. Quem
+        // responde "o que vale agora" é planoVigente (ver src/assinatura.ts).
+        select: { plan: true, planStatus: true, currentPeriodEnd: true, graceUntil: true },
       })
-      return (p?.plan as 'free' | 'pro' | 'premium') ?? 'free'
+      return p ? planoVigente(p) : 'free'
     } catch {
       // Banco fora do ar → falha fechada no plano mais restrito, não no mais alto.
       return 'free'

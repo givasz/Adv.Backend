@@ -18,6 +18,15 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Situação da COBRANÇA da assinatura — ver src/assinatura.ts, que é quem decide o
+// plano vigente a partir daqui e das datas. Separar "o que a pessoa contratou"
+// (Plan) de "como está o pagamento" (PlanStatus) é o que permite não derrubar um
+// perfil no primeiro cartão recusado.
+//   active   → em dia
+//   past_due → cobrança falhou; acesso mantido até graceUntil
+//   canceled → encerrada; acesso mantido até currentPeriodEnd
+//   paused   → sanção suspendeu a cobrança (CDC art. 51, IV) — não retira acesso
+
 // Estado de moderação do perfil (resultado de denúncias avaliadas pelo admin).
 //   active   → sem restrição
 //   warned   → dono recebeu aviso, perfil segue no ar
@@ -36,10 +45,10 @@ datasource db {
 //   active  → consome assento e aparece no grid
 
 model User {
-  id         String          @id @default(cuid())
-  email      String          @unique
-  password   String // hash (argon2)
-  createdAt  DateTime        @default(now())
+  id              String          @id @default(cuid())
+  email           String          @unique
+  password        String // hash (argon2)
+  createdAt       DateTime        @default(now())
   // ---- Sanções que alcançam a CONTA, não só o perfil ----
   // Ver docs/politica-de-sancoes.md, degraus 4 e 5. Até aqui o painel só
   // alcançava o perfil: dava para tirar a página do ar e não dava para impedir
@@ -51,21 +60,21 @@ model User {
   suspendedAt     DateTime?
   suspendedUntil  DateTime?
   // O motivo é o texto que a pessoa lê. Sem ele a rota recusa.
-  suspendedReason String    @default("")
+  suspendedReason String          @default("")
   // Encerramento (degrau 5): definitivo, exige duas mãos e libera o endereço
   // público. Não apaga a linha — o registro da sanção é a defesa dos dois lados
   // (LGPD art. 18 convive com a defesa de direito em processo).
   closedAt        DateTime?
-  closedReason    String    @default("")
-  profile    Profile?
+  closedReason    String          @default("")
+  profile         Profile?
   // Escritórios dos quais este usuário é dono/faturamento (normalmente 0 ou 1).
-  firmsOwned Firm[]
+  firmsOwned      Firm[]
   // Chamados de suporte abertos por este advogado (bug, dúvida, conta).
-  tickets    SupportTicket[]
+  tickets         SupportTicket[]
   // Sessões abertas (uma por aparelho). Sair apaga a linha — ver model Session.
-  sessions   Session[]
+  sessions        Session[]
   // Contestações que este advogado abriu contra medidas de moderação.
-  appeals    Appeal[]
+  appeals         Appeal[]
 }
 
 // Sessão de login. O cookie HttpOnly leva um segredo aleatório; aqui fica o hash
@@ -80,21 +89,21 @@ model User {
 model Session {
   // Id sorteado pela aplicação (16 bytes), não um cuid: nada nele conta quantas
   // sessões existem nem quando foram criadas.
-  id        String   @id
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                String   @id
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   // SHA-256 do segredo que viaja no cookie. O segredo em si NÃO é guardado — um
   // dump do banco não devolve a sessão de ninguém.
-  tokenHash String
-  createdAt DateTime @default(now())
+  tokenHash         String
+  createdAt         DateTime @default(now())
   // Vence por inatividade; empurrado para frente enquanto a pessoa usa.
-  expiresAt DateTime
+  expiresAt         DateTime
   // Teto absoluto: nem renovando a sessão passa daqui. Sem ele, uma sessão usada
   // todo dia viveria para sempre — e um cookie roubado junto com ela.
   absoluteExpiresAt DateTime
   // Veio de um login com "lembrar de mim"? Define a duração e se o cookie
   // sobrevive ao fechar do navegador.
-  remember  Boolean  @default(true)
+  remember          Boolean  @default(true)
 
   @@index([userId])
   @@index([expiresAt])
@@ -130,16 +139,16 @@ model SupportTicket {
 // mantém seu Profile individual; o vínculo é feito por FirmMembership. O registro da
 // SOCIEDADE é auto-declarado — a plataforma não confere inscrições (ver Profile).
 model Firm {
-  id             String    @id @default(cuid())
-  slug           String    @unique // advoc.me/escritorio/<slug>
+  id             String  @id @default(cuid())
+  slug           String  @unique // advoc.me/escritorio/<slug>
   name           String
   oabRegistry    String // registro da SOCIEDADE (≠ OAB individual dos advogados)
-  monogram       String    @default("")
+  monogram       String  @default("")
   logoUrl        String?
-  tagline        String    @default("")
-  about          String    @default("")
-  city           String    @default("")
-  state          String    @default("")
+  tagline        String  @default("")
+  about          String  @default("")
+  city           String  @default("")
+  state          String  @default("")
   // Contato INSTITUCIONAL (separado das redes pessoais de cada advogado)
   phone          String?
   email          String?
@@ -152,10 +161,10 @@ model Firm {
   // Destino do pedido montado pelo assistente virtual da página:
   //   "institutional" (padrão) → WhatsApp do escritório
   //   "lawyer"                 → WhatsApp do advogado escolhido na conversa
-  assistantRoute String    @default("institutional")
+  assistantRoute String  @default("institutional")
   // ---- Plano / assentos (billing real entra depois; hoje é campo, como Profile.plan) ----
-  plan           String      @default("premium") // escritório opera no tier alto
-  seatsPurchased Int       @default(5) // base do plano Escritório inclui 5 assentos
+  plan           String    @default("premium") // escritório opera no tier alto
+  seatsPurchased Int     @default(5) // base do plano Escritório inclui 5 assentos
 
   ownerUserId String
   ownerUser   User             @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
@@ -208,61 +217,90 @@ model FirmInvite {
 }
 
 model Profile {
-  id                   String           @id @default(cuid())
-  slug                 String           @unique
-  name                 String
+  id                    String           @id @default(cuid())
+  slug                  String           @unique
+  name                  String
   // Número AUTO-DECLARADO. A plataforma não confere, não valida e não exibe marca
   // de verificação — o perfil público linka a consulta do CNA (base oficial da OAB),
   // igual em todos os planos. Registro falso é tratado pela moderação (Report com
   // motivo `oab_invalid`). Ver frontend/src/components/ui/CnaLink.tsx.
-  oabNumber            String
-  headline             String           @default("")
-  bio                  String           @default("")
-  avatarUrl            String?
-  city                 String           @default("")
-  state                String           @default("")
-  regionNote           String?
-  inPerson             Boolean          @default(true)
-  online               Boolean          @default(true)
-  whatsapp             String?
-  email                String?
-  scheduling           String?
+  oabNumber             String
+  headline              String           @default("")
+  bio                   String           @default("")
+  avatarUrl             String?
+  city                  String           @default("")
+  state                 String           @default("")
+  regionNote            String?
+  inPerson              Boolean          @default(true)
+  online                Boolean          @default(true)
+  whatsapp              String?
+  email                 String?
+  scheduling            String?
   // ---- Agendamento ----
   // Modo do botão "Agendar": "off" (sem botão) | "external" (link Calendly/Google,
   // usa `scheduling`) | "assistant" (conversa guiada que monta a mensagem do WhatsApp).
   // "native" é LEGADO: a agenda-calendário foi removida — ela guardava nome, WhatsApp
   // e o assunto do VISITANTE no nosso banco, sem tela que a usasse e sem aviso de
   // privacidade. Perfis antigos com "native" caem para "whatsapp" na leitura.
-  schedulingMode       String           @default("external")
+  schedulingMode        String           @default("external")
   // Config da agenda-calendário removida. Colunas mantidas INERTES: são preferências
   // do próprio advogado (não há dado de terceiro aqui) e derrubá-las custaria outra
   // migração destrutiva sem ganho. Nada as lê hoje.
-  bookingWeekdays      String           @default("[1,2,3,4,5]") // JSON de dias (0=dom … 6=sáb)
-  bookingStartMin      Int              @default(540) // início do expediente em minutos (09:00)
-  bookingEndMin        Int              @default(1080) // fim do expediente (18:00)
-  bookingSlotMin       Int              @default(30) // duração de cada horário
-  bookingLeadHours     Int              @default(12) // antecedência mínima para marcar
-  bookingHorizonDays   Int              @default(30) // até quantos dias à frente é possível marcar
+  bookingWeekdays       String           @default("[1,2,3,4,5]") // JSON de dias (0=dom … 6=sáb)
+  bookingStartMin       Int              @default(540) // início do expediente em minutos (09:00)
+  bookingEndMin         Int              @default(1080) // fim do expediente (18:00)
+  bookingSlotMin        Int              @default(30) // duração de cada horário
+  bookingLeadHours      Int              @default(12) // antecedência mínima para marcar
+  bookingHorizonDays    Int              @default(30) // até quantos dias à frente é possível marcar
   // ---- Assistente virtual (schedulingMode == "assistant") ----
   // Conversa guiada no perfil: oferece só esta grade, coleta assunto/nome e monta a
   // mensagem para o WhatsApp do advogado. Ver frontend/src/lib/assistant.ts.
-  assistantDays        String           @default("[]") // JSON: [{ "weekday": 1, "times": ["09:00"] }]
-  assistantDurationMin Int              @default(45) // duração indicativa da conversa
-  assistantLeadHours   Int              @default(12) // antecedência mínima para oferecer um horário
-  assistantHorizonDays Int              @default(14) // até quantos dias à frente sugerir datas
-  assistantGreeting    String           @default("") // frase de abertura (passa pela checagem OAB)
+  assistantDays         String           @default("[]") // JSON: [{ "weekday": 1, "times": ["09:00"] }]
+  assistantDurationMin  Int              @default(45) // duração indicativa da conversa
+  assistantLeadHours    Int              @default(12) // antecedência mínima para oferecer um horário
+  assistantHorizonDays  Int              @default(14) // até quantos dias à frente sugerir datas
+  assistantGreeting     String           @default("") // frase de abertura (passa pela checagem OAB)
   // ---- Vídeo de apresentação (plano Max) ----
   // Guardamos só o LINK (YouTube/Vimeo) já normalizado — nunca o arquivo. A
   // validação do provedor é do servidor: ver src/video.ts.
-  videoUrl             String?
-  videoCaption         String           @default("")
+  videoUrl              String?
+  videoCaption          String           @default("")
   // ---- Cartão de visita impresso (plano Max) ----
   // Só a ESCOLHA do advogado (modelo e o que aparece), em JSON — o conteúdo do
   // cartão sai sempre do perfil, para o papel nunca contradizer a página.
   // Ver frontend/src/lib/cardArt.ts. Vazio = cartão ainda não montado.
-  card                 String           @default("")
-  plan                 String             @default("free")
-  theme                String           @default("papel") // ThemeId — ver frontend/src/lib/themes.ts
+  card                  String           @default("")
+  // O que a pessoa CONTRATOU. Não é o que ela pode usar agora — quem responde
+  // isso é planoVigente() em src/assinatura.ts, cruzando este campo com o status e
+  // as datas abaixo. O campo NÃO é rebaixado quando o pagamento falha: preservá-lo
+  // é o que religa tudo no instante em que a cobrança entra, sem a pessoa refazer
+  // nada, e o que deixa o painel dizer "seu Max está suspenso" em vez de fingir
+  // que nunca houve um Max.
+  plan                  String             @default("free")
+  // ---- Cobrança (ver src/assinatura.ts e src/billing/) ----
+  planStatus            String       @default("active")
+  // Fim do período JÁ PAGO. Quem pagou o mês tem o mês, inclusive depois de pedir
+  // o cancelamento.
+  currentPeriodEnd      DateTime?
+  // Fim da carência aberta por falha de cobrança. Aberta UMA vez por episódio: se
+  // cada retentativa do provedor empurrasse o prazo, ele nunca venceria.
+  graceUntil            DateTime?
+  // Rebaixamento pedido e AGENDADO para o fim do período pago. Cobrar um mês de
+  // Max e entregar Pro no dia seguinte é vender o que não se entrega.
+  planScheduled         String?
+  // ---- Vínculo com o provedor de pagamento ----
+  // Guardamos só os identificadores — nunca cartão, nunca CPF. O que o provedor
+  // sabe é problema dele; o que precisamos é conseguir casar um webhook com uma
+  // linha nossa, e conseguir abrir o portal de cobrança da pessoa.
+  billingCustomerId     String?
+  billingSubscriptionId String?          @unique
+  // Último evento aplicado — idempotência e ORDENAÇÃO. Provedor de pagamento
+  // repete webhook e entrega fora de ordem por projeto: sem isto, um
+  // "payment_failed" atrasado chegando depois do "payment_succeeded" rebaixaria
+  // quem acabou de pagar.
+  billingEventId        String?
+  billingEventAt        DateTime?
+  theme                 String           @default("papel") // ThemeId — ver frontend/src/lib/themes.ts
   // LEGADO, inerte. Nada lê e nada escreve — e nada nunca escreveu: a coluna
   // existia desde o começo e NENHUMA linha do código a incrementava, então a tela
   // "Quem visita você" mostrava 0 para todo mundo, sempre, enquanto a visita real
@@ -273,36 +311,36 @@ model Profile {
   // migração destrutiva a mais, sem ganho. Não volte a usá-la — um contador e uma
   // tabela de eventos contando a mesma coisa divergem no primeiro erro de
   // transação, e aí não há como saber qual dos dois está certo.
-  views                Int              @default(0)
-  published            Boolean          @default(false)
+  views                 Int              @default(0)
+  published             Boolean          @default(false)
   // Versão da política de publicidade (Provimento) aplicada à última verificação.
-  policyVersion        String           @default("Prov. 205/2021")
+  policyVersion         String           @default("Prov. 205/2021")
   // Revisão do conjunto de regras (RULESET_REV) conferida na última verificação.
   // Monitor de mudanças normativas: se a revisão vigente for maior, o perfil é
   // reavaliado e o advogado é avisado. Ver src/oab/compliance.ts (policyOutdated).
-  policyRevChecked     Int              @default(0)
+  policyRevChecked      Int              @default(0)
   // ---- Identidade própria (white-label) — plano Premium/Escritório ----
   // Não afeta conformidade: o conteúdo segue sujeito ao Prov. 205/2021.
-  brandName            String?
-  brandAccent          String? // cor de destaque personalizada (hex)
-  brandHideWatermark   Boolean          @default(false)
-  customDomain         String? // domínio próprio (informativo; DNS fora do escopo do protótipo)
+  brandName             String?
+  brandAccent           String? // cor de destaque personalizada (hex)
+  brandHideWatermark    Boolean          @default(false)
+  customDomain          String? // domínio próprio (informativo; DNS fora do escopo do protótipo)
   // ---- Moderação (denúncias) ----
-  moderationStatus     String @default("active")
+  moderationStatus      String @default("active")
   // Até quando a medida vale. Nulo = sem prazo (só as antigas; toda medida nova
   // tem um). Vencido, o perfil volta sozinho — ver moderacaoVigente().
-  moderationUntil      DateTime?
+  moderationUntil       DateTime?
   // Quando a cobrança foi pausada por causa de uma sanção. Serviço pago e
   // indisponível não pode seguir sendo cobrado (CDC art. 51, IV) — e isso é
   // indefensável mesmo quando a restrição é justa.
-  billingPausedAt      DateTime?
+  billingPausedAt       DateTime?
   // Aviso do admin visível ao dono do perfil (motivo do aviso/restrição).
-  moderationNote       String           @default("")
+  moderationNote        String           @default("")
   // Seções censuradas quando moderationStatus == partial. JSON de chaves,
   // ex.: ["bio","socials","area:<id>"]. Aplicado no getBySlug (público).
-  hiddenSections       String           @default("[]")
-  createdAt            DateTime         @default(now())
-  updatedAt            DateTime         @updatedAt
+  hiddenSections        String           @default("[]")
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
 
   userId String @unique
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -317,6 +355,10 @@ model Profile {
   firmMembership FirmMembership?
 
   @@index([city, state])
+  // A varredura diária de assinaturas (src/billing/assinaturas.service.ts) procura
+  // exatamente por isto: quem tem plano pago e alguma data para vencer. Sem o
+  // índice, a varredura vira uma leitura da tabela inteira, todo dia.
+  @@index([plan, planStatus])
 }
 
 // Denúncia feita por qualquer visitante sobre um perfil (conteúdo que viola as
@@ -413,6 +455,52 @@ model AuditLog {
   @@index([profileId, createdAt])
 }
 
+// Todo webhook de cobrança que chega — aceito ou recusado.
+//
+// SERVE PARA TRÊS COISAS, nesta ordem de importância:
+//
+//  1. IDEMPOTÊNCIA. Provedor de pagamento repete webhook por projeto (é assim que
+//     ele garante entrega). Sem uma chave única do lado de cá, o mesmo
+//     "pagamento confirmado" processado duas vezes estende o período duas vezes,
+//     e o mesmo "falhou" reabre uma carência que já tinha vencido.
+//  2. PROVA. Quando alguém disser "vocês me rebaixaram e eu paguei", a resposta
+//     não pode ser memória: tem de ser a linha do evento, com o que veio dentro.
+//  3. DEPURAÇÃO. Evento que não casou com nenhum perfil fica aqui com
+//     `profileId` nulo, em vez de sumir num log que roda.
+//
+// O `payload` guarda o corpo cru recebido. Ele NÃO tem dado de cartão — provedor
+// sério não manda número de cartão em webhook — mas pode ter e-mail, então
+// entra no mesmo prazo de guarda da auditoria (ver retencao.service.ts).
+model BillingEvent {
+  id         String   @id @default(cuid())
+  // Id do evento NO PROVEDOR. É esta coluna que faz a idempotência valer.
+  eventId    String   @unique
+  provider   String   @default("")
+  type       String
+  // Id do perfil, SEM relação de banco — de propósito, e por isso sem cascade.
+  //
+  // Registro de cobrança sobrevive à exclusão da conta. Não é descuido: é
+  // obrigação fiscal e contábil (LGPD art. 16, I — guarda para cumprimento de
+  // obrigação legal), e é a única prova de quem pagou o quê quando a conta que
+  // pagou não existe mais. Some sozinho no prazo de guarda de um ano, como tudo o
+  // mais (ver retencao.service.ts). Enquanto a conta existe, a pessoa vê este
+  // histórico na exportação de dados dela (account.service.ts).
+  profileId  String?
+  // Momento do evento SEGUNDO O PROVEDOR — não o da chegada. É por ele que se
+  // ordena: webhook chega fora de ordem, e aplicar um "falhou" de ontem depois de
+  // um "pagou" de hoje rebaixaria quem está em dia.
+  occurredAt DateTime
+  // Foi aplicado a um perfil, ou apenas registrado? (repetido, fora de ordem,
+  // desconhecido, sem dono)
+  applied    Boolean  @default(false)
+  note       String   @default("")
+  payload    String   @default("")
+  createdAt  DateTime @default(now())
+
+  @@index([profileId, occurredAt])
+  @@index([createdAt])
+}
+
 // Camada de política versionada — permite atualizar as regras do Provimento sem
 // depender de deploy e manter histórico (ex.: revisão futura do Prov. 205/2021).
 model PolicyVersion {
@@ -452,7 +540,7 @@ model Appeal {
   texto  String
 
   // Quando a plataforma precisa ter respondido. 10 dias a partir da abertura.
-  respondeAte DateTime
+  respondeAte   DateTime
   // O prazo que a medida tinha antes de ser encurtada. Devolvido se a
   // contestação for rejeitada. Nulo = a medida não tinha prazo.
   prazoOriginal DateTime?

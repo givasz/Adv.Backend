@@ -87,3 +87,12 @@ export const AI_RATE_RULES = {
   perIpBurst: { windowMs: 60 * 1000, max: 8 } as Rule,
   perUser: { windowMs: 60 * 60 * 1000, max: 120 } as Rule,
 }
+
+// Webhook de cobrança. O teto é FOLGADO de propósito: quem chama é o servidor do
+// provedor, sempre do mesmo punhado de IPs, e uma rajada de retentativas legítima
+// (que é como todo provedor se recupera de uma indisponibilidade nossa) não pode
+// ser barrada — evento barrado é assinatura que para de refletir a realidade.
+// O que este teto segura é força bruta contra a assinatura HMAC, não o provedor.
+export const BILLING_RATE_RULES = {
+  perIp: { windowMs: 60 * 1000, max: 240 } as Rule,
+}

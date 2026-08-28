@@ -233,7 +233,7 @@ export class ModerationService {
 
     const profile = await this.prisma.profile.findUnique({
       where: { id: profileId },
-      select: { id: true, bio: true, plan: true, billingPausedAt: true },
+      select: { id: true, bio: true, plan: true, billingPausedAt: true, planStatus: true },
     })
     if (!profile) throw new NotFoundException('Perfil não encontrado')
     const perfilPago = profile.plan !== 'free'
@@ -254,6 +254,24 @@ export class ModerationService {
     const billingPausedAt =
       action === 'clear' ? null : pausaCobranca ? new Date() : profile.billingPausedAt
 
+    // `billingPausedAt` registra QUANDO a cobrança parou; `planStatus: 'paused'` é
+    // o que a faz parar de verdade (ver src/assinatura.ts: em `paused` o prazo da
+    // assinatura não corre, e com o provedor real é este estado que dispara a
+    // pausa lá). Até 28/08/2026 só a data era gravada, e nada a lia — a política
+    // prometia não cobrar por serviço indisponível e a promessa não tinha efeito.
+    //
+    // Só mexe quando há o que mexer: pausar uma assinatura já vencida ou já
+    // cancelada apagaria o estado real dela, e retomar sozinho uma cobrança que
+    // falhou daria por pago o que ninguém pagou.
+    const statusDaCobranca =
+      action === 'clear'
+        ? profile.planStatus === 'paused'
+          ? { planStatus: 'active' as const }
+          : {}
+        : pausaCobranca && profile.planStatus === 'active'
+          ? { planStatus: 'paused' as const }
+          : {}
+
     await this.prisma.profile.update({
       where: { id: profileId },
       data: {
@@ -261,6 +279,7 @@ export class ModerationService {
         moderationNote: action === 'clear' ? '' : note,
         moderationUntil: ate,
         billingPausedAt,
+        ...statusDaCobranca,
         hiddenSections,
       },
     })

@@ -27,7 +27,19 @@ async function bootstrap() {
   // faz req.ip ser o IP real. Sem proxy, confiar no cabeçalho seria deixar
   // qualquer um escolher a própria identidade no rate limit (ver security/net.ts).
   app.set('trust proxy', process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY === 'true')
-  app.useBodyParser('json', { limit: BODY_LIMIT })
+  // O corpo CRU é preservado para o webhook de cobrança conferir a assinatura
+  // HMAC. Tem de ser o byte a byte recebido: `JSON.stringify(JSON.parse(x))` não
+  // devolve `x` (ordem de chaves, espaços, escapes), e uma diferença de um byte
+  // invalida o HMAC — é o erro clássico de integração de webhook.
+  //
+  // Guardado só na rota do webhook: manter uma cópia do corpo de TODA requisição
+  // dobraria a memória por pedido para servir a uma rota só.
+  app.useBodyParser('json', {
+    limit: BODY_LIMIT,
+    verify: (req: { url?: string; rawBody?: Buffer }, _res: unknown, buf: Buffer) => {
+      if (req.url?.startsWith('/api/billing/')) req.rawBody = Buffer.from(buf)
+    },
+  })
   app.useBodyParser('urlencoded', { limit: BODY_LIMIT, extended: true })
   app.use(securityHeaders)
   // Monta o contexto de autenticação (cookie da sessão, origem, token anti-CSRF)

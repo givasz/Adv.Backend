@@ -6,7 +6,8 @@ import {
   UnauthorizedException,
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
-import { FIRM_PRICING, firmMonthlyPrice, slugify } from '../plans'
+import { FIRM_PRICING, firmMonthlyPrice, slugify, type Plan } from '../plans'
+import { ProfilesService } from '../profiles/profiles.service'
 import {
   clampOrNull,
   clampText,
@@ -40,7 +41,10 @@ const STATE_MAX = 40
 //      hierarquia entre advogados.
 @Injectable()
 export class FirmsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly profiles: ProfilesService,
+  ) {}
 
   // ---- Leitura pública ------------------------------------------------------
 
@@ -332,6 +336,12 @@ export class FirmsService {
 
   // Desfaz o vínculo devolvendo o plano individual. Um membro ATIVO usava o tier do
   // escritório; sem devolver, sair viraria um rebaixamento silencioso para free.
+  //
+  // A devolução passa pela porta que RECONCILIA (ProfilesService), não por um
+  // `profile.update` cru. Enquanto foi cru, quem saía de um escritório voltava ao
+  // Free carregando o tema do Max e o botão de agendar ligados: o perfil público
+  // seguia prometendo o que o plano não entregava, até um próximo save do editor
+  // que podia nunca vir.
   private async releaseMember(m: {
     id: string
     status: string
@@ -339,10 +349,14 @@ export class FirmsService {
     previousPlan: string | null
   }) {
     if (m.status === 'active') {
-      await this.prisma.profile.update({
-        where: { id: m.profileId },
-        data: { plan: (m.previousPlan as any) ?? 'free' },
-      })
+      const volta = (m.previousPlan as Plan) ?? 'free'
+      await this.profiles.aplicarAssinaturaPorPerfil(
+        m.profileId,
+        // Plano individual de volta, sem herdar o relógio de cobrança do
+        // escritório: quem paga o escritório é o dono dele, não este advogado.
+        { plan: volta, planStatus: 'active', currentPeriodEnd: null, graceUntil: null, planScheduled: null },
+        `saída do escritório: ${volta}`,
+      )
     }
     await this.prisma.firmMembership.delete({ where: { id: m.id } })
   }
@@ -389,13 +403,20 @@ export class FirmsService {
   async acceptInvite(userId: string, membershipId: string) {
     const m = await this.requireOwnInvite(userId, membershipId)
     if (m.status === 'active') return { status: 'active' as const }
-    await this.prisma.$transaction([
-      this.prisma.firmMembership.update({
-        where: { id: m.id },
-        data: { status: 'active', previousPlan: m.profile.plan },
-      }),
-      this.prisma.profile.update({ where: { id: m.profileId }, data: { plan: m.firm.plan } }),
-    ])
+    await this.prisma.firmMembership.update({
+      where: { id: m.id },
+      data: { status: 'active', previousPlan: m.profile.plan },
+    })
+    // Mesma porta do checkout e do webhook: entrar no escritório é uma SUBIDA de
+    // plano, e subir de plano também reconcilia o endereço (o número automático do
+    // Free cai fora). Antes, o `profile.update` cru pulava essa parte e o membro
+    // ficava com o endereço numerado dentro de um escritório que paga o tier alto.
+    await this.profiles.aplicarAssinaturaPorPerfil(
+      m.profileId,
+      // O escritório não tem prazo por advogado — quem tem período pago é o dono.
+      { plan: m.firm.plan as Plan, planStatus: 'active', currentPeriodEnd: null, graceUntil: null, planScheduled: null },
+      `entrada no escritório: ${m.firm.plan}`,
+    )
     return { status: 'active' as const }
   }
 

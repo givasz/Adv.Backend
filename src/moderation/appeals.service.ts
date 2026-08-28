@@ -284,7 +284,7 @@ export class AppealsService {
 
     const perfil = await this.prisma.profile.findUnique({
       where: { userId: a.userId },
-      select: { id: true },
+      select: { id: true, planStatus: true },
     })
 
     await this.prisma.$transaction(async (tx) => {
@@ -314,6 +314,10 @@ export class AppealsService {
               moderationUntil: null,
               hiddenSections: '[]',
               billingPausedAt: null,
+              // A cobrança volta a correr só se tinha sido a medida a pará-la —
+              // uma contestação aceita não transforma em "em dia" uma assinatura
+              // que já estava em atraso antes da sanção.
+              ...(perfil.planStatus === 'paused' ? { planStatus: 'active' as const } : {}),
             },
           })
         }

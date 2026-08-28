@@ -13,7 +13,10 @@ async function main() {
   const app = await NestFactory.createApplicationContext(AppModule, { logger: ['error', 'warn'] })
   try {
     const r = await app.get(RetencaoService).expurgar()
-    console.log(`Expurgo: ${r.eventos} eventos e ${r.auditoria} registros de auditoria apagados.`)
+    console.log(
+      `Expurgo: ${r.eventos} eventos, ${r.auditoria} registros de auditoria e ` +
+        `${r.cobranca} eventos de cobrança apagados.`,
+    )
   } finally {
     await app.close()
   }

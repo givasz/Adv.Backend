@@ -16,11 +16,15 @@
 
 import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
+import { ProfilesService } from '../profiles/profiles.service'
 import { verifyPassword } from '../auth/user-auth'
 
 @Injectable()
 export class AccountService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly profiles: ProfilesService,
+  ) {}
 
   /**
    * Tudo o que a plataforma guarda sobre esta conta, em JSON legível — o formato
@@ -73,6 +77,20 @@ export class AccountService {
       ? await this.prisma.linkEvent.count({ where: { profileId: p.id } })
       : 0
 
+    // Histórico de cobrança. Entra na exportação porque é dado sobre a PESSOA — e
+    // porque é justamente o que ela vai querer ver se algum dia discordar de uma
+    // mudança de plano. Sem o payload cru: ele é a cópia do que o provedor mandou,
+    // guardada para depuração e prova, e devolvê-lo aqui exportaria os
+    // identificadores internos do provedor sem nenhum ganho para quem lê.
+    const cobranca = p
+      ? await this.prisma.billingEvent.findMany({
+          where: { profileId: p.id },
+          select: { type: true, occurredAt: true, applied: true, note: true, provider: true },
+          orderBy: { occurredAt: 'desc' },
+          take: 500,
+        })
+      : []
+
     return {
       geradoEm: new Date().toISOString(),
       sobre:
@@ -83,11 +101,13 @@ export class AccountService {
       escritoriosQueSaoSeus: user.firmsOwned,
       chamadosDeSuporte: user.tickets,
       sessoesAbertas: user.sessions,
+      historicoDeCobranca: cobranca,
       estatisticas: { visitasAoPerfil: visitas },
       naoGuardamos: [
         'Dados de quem visita o seu perfil: o contato vai do aparelho do visitante direto para o seu WhatsApp.',
         'Sua senha em texto: guardamos apenas um hash scrypt, do qual ela não pode ser recuperada.',
         'Endereço IP de sessões: o IP é usado só na hora, para limitar tentativas, e não é gravado.',
+        'Dados do seu cartão: quem os guarda é o provedor de pagamento. Aqui ficam só os identificadores da assinatura.',
       ],
     }
   }
@@ -139,11 +159,24 @@ export class AccountService {
         // O perfil do próprio dono some junto com a conta — não faz sentido
         // "devolver" plano para ele.
         if (m.profile.userId === userId) continue
-        await this.prisma.profile
-          .update({
-            where: { id: m.profileId },
-            data: { plan: (m.previousPlan as 'free' | 'pro' | 'premium') ?? 'free' },
-          })
+        const volta = (m.previousPlan as 'free' | 'pro' | 'premium') ?? 'free'
+        // Mesma porta do escritório e do webhook: devolver plano com um
+        // `profile.update` cru deixava tema do Max e botão de agendar ligados num
+        // perfil que voltou ao Free — o público prometendo o que o plano não tem.
+        await this.profiles
+          .aplicarAssinaturaPorPerfil(
+            m.profileId,
+            {
+              plan: volta,
+              planStatus: 'active',
+              currentPeriodEnd: null,
+              graceUntil: null,
+              planScheduled: null,
+            },
+            `escritório encerrado pelo dono: ${volta}`,
+          )
+          // Um membro que falhe não pode impedir a exclusão da conta de quem pediu
+          // (é direito da LGPD, art. 18) nem travar a devolução dos outros.
           .catch(() => undefined)
       }
     }

@@ -31,6 +31,17 @@ import { RETENCAO_EVENTOS_DIAS } from '../analytics/eventos'
 /** Retrato de bio e resultado de conformidade: um ano cobre qualquer fiscalização. */
 export const RETENCAO_AUDITORIA_DIAS = 365
 
+/**
+ * Eventos de cobrança (BillingEvent). Mesmo ano da auditoria, e pelo mesmo motivo:
+ * é a PROVA de quem pagou o quê e quando. Quando alguém disser "vocês me
+ * rebaixaram e eu paguei", a resposta não pode ser memória — tem de ser a linha do
+ * evento. Um ano cobre o ciclo de contestação de qualquer cobrança.
+ *
+ * O payload guardado não tem dado de cartão (provedor sério não manda número de
+ * cartão em webhook), mas pode ter e-mail — então tem prazo, como tudo o mais.
+ */
+export const RETENCAO_COBRANCA_DIAS = 365
+
 const INTERVALO_MS = 24 * 60 * 60 * 1000
 // Espera antes da primeira passagem: subir a aplicação e imediatamente disparar
 // um DELETE grande disputaria o banco justamente no instante em que o pm2 está
@@ -66,27 +77,31 @@ export class RetencaoService implements OnModuleInit, OnModuleDestroy {
    * Apaga o que passou do prazo. Público para o `npm run retencao` poder chamar
    * uma passagem avulsa — útil logo depois de um deploy, sem esperar o intervalo.
    */
-  async expurgar(): Promise<{ eventos: number; auditoria: number }> {
+  async expurgar(): Promise<{ eventos: number; auditoria: number; cobranca: number }> {
     try {
-      const [eventos, auditoria] = await Promise.all([
+      const [eventos, auditoria, cobranca] = await Promise.all([
         this.prisma.linkEvent.deleteMany({ where: { createdAt: { lt: limite(RETENCAO_EVENTOS_DIAS) } } }),
         this.prisma.auditLog.deleteMany({ where: { createdAt: { lt: limite(RETENCAO_AUDITORIA_DIAS) } } }),
+        this.prisma.billingEvent.deleteMany({
+          where: { createdAt: { lt: limite(RETENCAO_COBRANCA_DIAS) } },
+        }),
       ])
-      const total = eventos.count + auditoria.count
+      const total = eventos.count + auditoria.count + cobranca.count
       // Só registra quando houve o que apagar: uma linha de log por dia dizendo
       // "apaguei zero" é ruído que faz o log parar de ser lido.
       if (total > 0) {
         this.log.log(
           `expurgo: ${eventos.count} eventos (>${RETENCAO_EVENTOS_DIAS}d), ` +
-            `${auditoria.count} registros de auditoria (>${RETENCAO_AUDITORIA_DIAS}d)`,
+            `${auditoria.count} registros de auditoria (>${RETENCAO_AUDITORIA_DIAS}d), ` +
+            `${cobranca.count} eventos de cobrança (>${RETENCAO_COBRANCA_DIAS}d)`,
         )
       }
-      return { eventos: eventos.count, auditoria: auditoria.count }
+      return { eventos: eventos.count, auditoria: auditoria.count, cobranca: cobranca.count }
     } catch (e) {
       // Uma falha de limpeza não pode derrubar a API: o pior efeito de não
       // apagar hoje é apagar amanhã.
       this.log.warn(`expurgo falhou: ${e instanceof Error ? e.message : e}`)
-      return { eventos: 0, auditoria: 0 }
+      return { eventos: 0, auditoria: 0, cobranca: 0 }
     }
   }
 }
