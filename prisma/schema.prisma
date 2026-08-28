@@ -400,6 +400,10 @@ model Profile {
   reports        Report[]
   // Vínculo com um escritório (opcional). Presente quando o advogado integra uma sociedade.
   firmMembership FirmMembership?
+  // Histórico para análise (ver src/bi e prisma/bi/bi.sql). Cascade de propósito:
+  // excluir a conta tem de alcançar o derivado, senão não é exclusão.
+  biDias         BiPerfilDia[]
+  biMeses        BiEventoMes[]
 
   @@index([city, state])
   // A varredura diária de assinaturas (src/billing/assinaturas.service.ts) procura
@@ -711,4 +715,65 @@ model AdminAction {
   @@index([adminId, createdAt])
   @@index([action, createdAt])
   @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// HISTÓRICO PARA ANÁLISE (BI) — ver docs/plano-bi.md
+//
+// As duas tabelas abaixo existem por um motivo só: o resto do banco guarda o
+// ESTADO, e estado não responde pergunta sobre o passado.
+//
+// `Profile` sobrescreve plano, situação de cobrança e UF na própria linha. No dia
+// em que alguém perguntar "quantos Pro tínhamos em junho", a resposta não é
+// difícil — é impossível: a informação não existe em lugar nenhum. E, ao
+// contrário de quase todo defeito de dado, este não dá para consertar depois. O
+// retrato de hoje não pode ser reconstruído amanhã.
+//
+// Nenhuma das duas guarda dado novo sobre ninguém: são cópia de campos que já
+// estão no perfil (a primeira) e contagem de acontecimentos (a segunda). E as
+// duas caem por cascade quando a conta é excluída — exclusão que não alcança o
+// derivado não é exclusão (LGPD art. 18, VI).
+// ---------------------------------------------------------------------------
+
+/// Retrato diário do perfil. Uma linha por perfil por dia, escrita pela rotina de
+/// src/bi/bi.service.ts.
+model BiPerfilDia {
+  // O DIA de calendário em São Paulo, guardado como meia-noite UTC. Não é um
+  // instante: é um rótulo. Guardar "meia-noite de Brasília" (03:00Z) faria toda
+  // comparação com `::date` no SQL depender do fuso da sessão que consulta.
+  dia       DateTime
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  // O que a pessoa CONTRATOU (cópia de Profile.plan).
+  planoContratado  String
+  // O que ela PODIA USAR naquele dia — resultado de planoVigente() (src/assinatura.ts).
+  //
+  // Calculado em TypeScript e gravado aqui de propósito. A alternativa seria a
+  // camada `bi` reescrever aquela escada de datas em SQL, e aí passariam a existir
+  // duas respostas para a mesma pergunta — que divergem no primeiro ajuste de
+  // carência, sem ninguém perceber qual das duas está errada.
+  planoVigente     String
+  situacaoCobranca String
+  publicado        Boolean
+  moderacao        String
+  uf               String  @default("")
+  emEscritorio     Boolean @default(false)
+
+  @@id([dia, profileId])
+  @@index([dia])
+}
+
+/// Uso mensal agregado. Sobrevive ao expurgo de LinkEvent (400 dias) porque é
+/// contagem, não acontecimento — some do banco o QUANDO e sobra o QUANTO.
+model BiEventoMes {
+  /// Primeiro dia do mês em São Paulo, guardado como meia-noite UTC (ver `dia` acima).
+  mes       DateTime
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  evento    String
+  total     Int
+
+  @@id([mes, profileId, evento])
+  @@index([mes])
 }
