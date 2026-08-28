@@ -6,6 +6,7 @@ import type { RequisicaoComAuth } from '../auth/session-context'
 import { clientIp } from '../security/net'
 import { checkRateLimit } from '../security/rate-limit'
 import type { Plan } from '../plans'
+import { planoVigente } from '../assinatura'
 
 @Controller()
 export class AnalyticsController {
@@ -69,8 +70,10 @@ export class AnalyticsController {
     )
     const perfil = await this.prisma.profile.findUnique({
       where: { userId },
-      select: { plan: true },
+      // Vigente, não contratado: o detalhamento das visitas é recurso pago, e
+      // assinatura vencida não o entrega (ver src/assinatura.ts).
+      select: { plan: true, planStatus: true, currentPeriodEnd: true, graceUntil: true },
     })
-    return this.analytics.resumoDoDono(userId, (perfil?.plan as Plan) ?? 'free')
+    return this.analytics.resumoDoDono(userId, perfil ? planoVigente(perfil) : 'free')
   }
 }

@@ -14,7 +14,7 @@ type Qualquer = Record<string, any>
 const SENHA = 'ceramica-vento-38-azul'
 
 function service(opts: { firms?: Qualquer[]; user?: Qualquer | null } = {}) {
-  const calls: Qualquer = { profileUpdate: [], userDelete: [] }
+  const calls: Qualquer = { profileUpdate: [], userDelete: [], assinatura: [] }
   const prisma: Qualquer = {
     user: {
       findUnique: vi.fn(() =>
@@ -47,11 +47,45 @@ function service(opts: { firms?: Qualquer[]; user?: Qualquer | null } = {}) {
     firm: { findMany: vi.fn(() => Promise.resolve(opts.firms ?? [])) },
     profile: { update: vi.fn((a: Qualquer) => (calls.profileUpdate.push(a), Promise.resolve({}))) },
     linkEvent: { count: vi.fn(() => Promise.resolve(42)) },
+    // Histórico de cobrança: dado sobre a PESSOA, então entra na exportação.
+    billingEvent: {
+      findMany: vi.fn(() =>
+        Promise.resolve([
+          {
+            type: 'payment_succeeded',
+            occurredAt: new Date('2026-08-01'),
+            applied: true,
+            note: 'aplicado',
+            provider: 'teste',
+          },
+        ]),
+      ),
+    },
   }
-  return { svc: new AccountService(prisma as any), prisma, calls }
+  // Devolver plano passa pela porta que reconcilia (ProfilesService), não por um
+  // profile.update cru — ver releaseOwnedFirms.
+  const profiles: Qualquer = {
+    aplicarAssinaturaPorPerfil: vi.fn((profileId: string, patch: Qualquer, motivo: string) => {
+      calls.assinatura.push({ profileId, patch, motivo })
+      return Promise.resolve({})
+    }),
+  }
+  return { svc: new AccountService(prisma as any, profiles as any), prisma, calls, profiles }
 }
 
 describe('exportar', () => {
+  it('entrega o histórico de cobrança, sem o payload cru do provedor', async () => {
+    // O histórico é dado da pessoa e é o que ela vai querer ver se discordar de
+    // uma mudança de plano. O payload cru, não: ele é a cópia do que o provedor
+    // mandou, guardada para depuração, e devolvê-lo exportaria identificadores
+    // internos do provedor sem ganho nenhum para quem lê.
+    const { svc } = service()
+    const d: Record<string, any> = await svc.exportData('u1')
+    expect(d.historicoDeCobranca).toHaveLength(1)
+    expect(d.historicoDeCobranca[0]).not.toHaveProperty('payload')
+    expect(JSON.stringify(d)).not.toMatch(/billingCustomerId":"cus/)
+  })
+
   it('entrega a conta, o perfil e as estatísticas', async () => {
     const { svc } = service()
     const d = await svc.exportData('u1')
@@ -111,10 +145,14 @@ describe('excluir', () => {
     await svc.deleteAccount('u1', SENHA)
 
     // O dono não recebe devolução (o perfil dele some junto).
-    expect(calls.profileUpdate).toHaveLength(2)
-    expect(calls.profileUpdate[0]).toEqual({ where: { id: 'p-ana' }, data: { plan: 'pro' } })
+    expect(calls.assinatura).toHaveLength(2)
+    expect(calls.assinatura[0].profileId).toBe('p-ana')
+    expect(calls.assinatura[0].patch.plan).toBe('pro')
     // Sem plano anterior registrado, volta para o Free — nunca fica no tier do
     // escritório que deixou de existir.
-    expect(calls.profileUpdate[1]).toEqual({ where: { id: 'p-caio' }, data: { plan: 'free' } })
+    expect(calls.assinatura[1].profileId).toBe('p-caio')
+    expect(calls.assinatura[1].patch.plan).toBe('free')
+    // E nunca por um update cru, que pularia a reconciliação de tema/agendamento.
+    expect(calls.profileUpdate).toHaveLength(0)
   })
 })

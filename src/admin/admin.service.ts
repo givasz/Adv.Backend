@@ -621,7 +621,12 @@ export class AdminService {
     const motivo = this.exigirMotivo(reason, 'suspender esta conta')
     const alvo = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, closedAt: true, suspendedUntil: true, profile: { select: { id: true, plan: true } } },
+      select: {
+        id: true,
+        closedAt: true,
+        suspendedUntil: true,
+        profile: { select: { id: true, plan: true, planStatus: true } },
+      },
     })
     if (!alvo) throw new BadRequestException('Conta não encontrada.')
     if (alvo.closedAt) throw new BadRequestException('Esta conta já foi encerrada.')
@@ -641,8 +646,19 @@ export class AdminService {
             moderationStatus: 'restricted',
             moderationNote: motivo,
             moderationUntil: ate,
-            // Serviço pago e indisponível não segue sendo cobrado (CDC).
-            ...(alvo.profile.plan !== 'free' ? { billingPausedAt: new Date() } : {}),
+            // Serviço pago e indisponível não segue sendo cobrado (CDC). A data
+            // registra quando parou; `planStatus: 'paused'` é o que de fato para o
+            // relógio da assinatura (ver src/assinatura.ts) — e, com o provedor
+            // real, o que dispara a pausa lá. Só pausa cobrança que estava em dia:
+            // sobrescrever um `past_due` ou um `canceled` apagaria o estado real.
+            ...(alvo.profile.plan !== 'free'
+              ? {
+                  billingPausedAt: new Date(),
+                  ...(alvo.profile.planStatus === 'active'
+                    ? { planStatus: 'paused' as const }
+                    : {}),
+                }
+              : {}),
           },
         })
       }
@@ -665,7 +681,7 @@ export class AdminService {
     const motivo = this.exigirMotivo(reason, 'reativar esta conta')
     const alvo = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, closedAt: true, profile: { select: { id: true } } },
+      select: { id: true, closedAt: true, profile: { select: { id: true, planStatus: true } } },
     })
     if (!alvo) throw new BadRequestException('Conta não encontrada.')
     if (alvo.closedAt) {
@@ -686,6 +702,8 @@ export class AdminService {
             moderationUntil: null,
             hiddenSections: '[]',
             billingPausedAt: null,
+            // A cobrança volta a correr só se tinha sido a sanção a pará-la.
+            ...(alvo.profile.planStatus === 'paused' ? { planStatus: 'active' as const } : {}),
           },
         })
       }
@@ -784,6 +802,13 @@ export class AdminService {
             moderationNote: motivo,
             moderationUntil: null,
             billingPausedAt: new Date(),
+            // Encerramento é definitivo: a assinatura não fica "pausada
+            // esperando", ela acaba. Sem isto, uma conta encerrada seguiria com o
+            // relógio de cobrança de pé — e, com o provedor real, seguiria sendo
+            // cobrada de alguém que não tem mais como usar nada.
+            planStatus: 'canceled' as const,
+            planScheduled: null,
+            currentPeriodEnd: new Date(),
           },
         })
       }

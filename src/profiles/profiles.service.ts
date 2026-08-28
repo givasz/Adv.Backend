@@ -28,6 +28,14 @@ import {
 } from '../plans'
 import { canUseVideo, normalizeVideoUrl, VIDEO_CAPTION_MAX } from '../video'
 import {
+  aoTrocarPlano,
+  ehRebaixamento,
+  emCortesia,
+  planoVigente,
+  valeAte,
+  type PatchAssinatura,
+} from '../assinatura'
+import {
   clampList,
   clampOrNull,
   clampText,
@@ -57,6 +65,71 @@ const PLANS: Plan[] = ['free', 'pro', 'premium']
 // Allowlist, não blocklist: um `kind` desconhecido não tem ícone do outro lado e
 // derruba a página pública inteira ao tentar renderizar.
 const SOCIAL_KINDS = ['instagram', 'linkedin', 'website', 'facebook', 'youtube', 'tiktok'] as const
+
+/** Tamanho dos textos JÁ GRAVADOS — ver enforceCharLimits (teto só para o que cresce). */
+interface TextoAtual {
+  headline: number
+  bio: number
+  /** rótulo da área → tamanho da descrição gravada */
+  areaDesc: Map<string, number>
+}
+
+/**
+ * A JANELA DA COTA: as linhas filhas que o plano vigente entrega.
+ *
+ * É `order < limite`, e não "as `limite` primeiras". A diferença aparece quando
+ * alguém rebaixa e depois apaga uma das linhas visíveis: com "as primeiras", uma
+ * linha CONGELADA (herdada do plano maior) subiria para ocupar a vaga e apareceria
+ * do nada na tela. Com a janela por posição, o que está fora dela fica fora dela
+ * até o plano crescer de novo.
+ *
+ * O `slice` no fim é só teto de sanidade — `order` não é único no banco.
+ */
+function dentroDaCota<T extends { order?: number | null }>(lista: T[], limite: number): T[] {
+  if (limite <= 0) return []
+  return lista.filter((x) => (x.order ?? 0) < limite).slice(0, limite)
+}
+
+/**
+ * O que o save precisa saber da linha ANTES de gravar por cima dela.
+ *
+ * Um único `select`, usado tanto no caminho normal quanto no de recuperação
+ * (garantirPerfil): quando os dois divergiam, o segundo devolvia um objeto sem
+ * `slug` e sem os textos, e o save seguia adiante com `undefined` no lugar de
+ * dados — sem erro, só com decisões erradas.
+ */
+const perfilBase = {
+  id: true,
+  moderationStatus: true,
+  plan: true,
+  oabNumber: true,
+  slug: true,
+  // Situação da cobrança: quem decide o que está liberado é o plano VIGENTE.
+  planStatus: true,
+  currentPeriodEnd: true,
+  graceUntil: true,
+  // Tamanho dos textos já gravados — o teto de caracteres só vale para o que
+  // cresce (ver enforceCharLimits).
+  headline: true,
+  bio: true,
+  areas: { select: { label: true, description: true } },
+} as const
+
+/** Tamanhos já gravados, no formato que o enforceCharLimits espera. */
+function textoAtual(p: any): TextoAtual {
+  const areaDesc = new Map<string, number>()
+  for (const a of p?.areas ?? []) {
+    const label = String(a?.label ?? '')
+    // Rótulos repetidos: fica o MAIOR. Errar para o lado permissivo aqui custa um
+    // texto longo a mais; errar para o outro trava o editor de novo.
+    areaDesc.set(label, Math.max(areaDesc.get(label) ?? 0, String(a?.description ?? '').length))
+  }
+  return {
+    headline: String(p?.headline ?? '').length,
+    bio: String(p?.bio ?? '').length,
+    areaDesc,
+  }
+}
 
 // Tetos fixos de sanidade (não dependem do plano).
 const CITY_MAX = 80
@@ -332,8 +405,10 @@ export class ProfilesService {
   // Reconstrói o objeto `branding` (white-label) a partir das colunas planas.
   // Perk exclusivo do Max: fora dele o objeto some da resposta, mas as colunas
   // continuam no banco — quem faz downgrade e volta reencontra sua marca intacta.
-  private buildBranding(p: any) {
-    if (p.plan !== 'premium') return undefined
+  // (A promessa desta linha era falsa até 28/08/2026: o save zerava as colunas.
+  // Ver o bloco `branding` em update().)
+  private buildBranding(p: any, plano: Plan) {
+    if (plano !== 'premium') return undefined
     const b: Record<string, unknown> = {}
     if (p.brandName) b.brandName = p.brandName
     if (p.brandAccent) b.accent = p.brandAccent
@@ -363,8 +438,8 @@ export class ProfilesService {
 
   // Coluna → objeto `card` do frontend. JSON inválido vira "sem cartão montado":
   // o editor cai no padrão em vez de quebrar a tela.
-  private buildCard(p: any) {
-    if (!canUsePrintCard(p.plan) || !p.card) return undefined
+  private buildCard(p: any, plano: Plan) {
+    if (!canUsePrintCard(plano) || !p.card) return undefined
     try {
       const parsed = JSON.parse(p.card)
       return parsed && typeof parsed === 'object' ? parsed : undefined
@@ -377,7 +452,14 @@ export class ProfilesService {
   // (serviceMode/contact/branding + coleções filhas). Ver frontend/src/lib/types.ts.
   // Usado nos retornos públicos (getBySlug/getMine/update); a moderação tem shape
   // próprio (ModerationProfile) e NÃO passa por aqui.
+  //
+  // O `plan` DEVOLVIDO É O VIGENTE, não o contratado (ver src/assinatura.ts). Todo
+  // portão do produto — front e back — lê este campo, então é ele que precisa
+  // dizer a verdade sobre o que está liberado AGORA. O que a pessoa contratou, e
+  // por que está ou não valendo, vai à parte, em `subscription`, e só para o dono:
+  // é conversa entre a plataforma e o advogado, não informação de visitante.
   private toApi(p: any) {
+    const plano = planoVigente(p)
     const out: any = {
       slug: p.slug,
       name: p.name,
@@ -389,20 +471,28 @@ export class ProfilesService {
       state: p.state ?? '',
       regionNote: p.regionNote ?? undefined,
       serviceMode: { inPerson: !!p.inPerson, online: !!p.online },
-      areas: (p.areas ?? []).map((a: any) => ({
+      // Áreas e FAQ são CORTADAS no limite do plano vigente, e cortadas aqui — na
+      // leitura. Quem rebaixa continua com tudo no banco e volta a ver tudo no dia
+      // em que reassinar; o que o plano menor não entrega apenas para de aparecer.
+      // Antes o corte era no SAVE, o que apagava as linhas excedentes de vez.
+      areas: dentroDaCota(p.areas ?? [], countLimit(AREA_LIMIT, plano)).map((a: any) => ({
         id: a.id,
         label: a.label,
         description: a.description,
       })),
       // Vídeo é perk do Max: fora dele some da resposta, mas a coluna continua no
       // banco — quem rebaixa e volta reencontra o link (mesma regra do branding).
-      videoUrl: canUseVideo(p.plan) ? (p.videoUrl ?? undefined) : undefined,
-      videoCaption: canUseVideo(p.plan) ? p.videoCaption || undefined : undefined,
+      videoUrl: canUseVideo(plano) ? (p.videoUrl ?? undefined) : undefined,
+      videoCaption: canUseVideo(plano) ? p.videoCaption || undefined : undefined,
       // Perguntas frequentes: recurso pago. Fora dos planos pagos some da resposta,
       // mas as linhas continuam no banco — quem rebaixa e volta reencontra o texto
       // (mesma regra do vídeo e do branding).
-      faqs: canUseFaq(p.plan)
-        ? (p.faqs ?? []).map((f: any) => ({ id: f.id, question: f.question, answer: f.answer }))
+      faqs: canUseFaq(plano)
+        ? dentroDaCota(p.faqs ?? [], countLimit(FAQ_LIMIT, plano)).map((f: any) => ({
+            id: f.id,
+            question: f.question,
+            answer: f.answer,
+          }))
         : [],
       socials: (p.socials ?? []).map((s: any) => ({ kind: s.kind, url: s.url })),
       contact: {
@@ -410,7 +500,12 @@ export class ProfilesService {
         email: p.email ?? undefined,
         scheduling: p.scheduling ?? undefined,
       },
-      schedulingMode: p.schedulingMode ?? 'external',
+      // Agendamento e tema também passam pelo plano VIGENTE na leitura, e não só
+      // no save. Entre o dia em que a assinatura vence e a passagem da varredura
+      // que reconcilia o banco existe uma janela — se a leitura não fechasse a
+      // porta, o perfil público seguiria com botão de agendar e tema do Max dentro
+      // dela. É o mesmo motivo pelo qual a moderação também vence na leitura.
+      schedulingMode: this.sanitizeMode(p.schedulingMode, plano),
       booking: {
         weekdays: this.parseWeekdays(p.bookingWeekdays),
         startMin: p.bookingStartMin ?? 540,
@@ -420,18 +515,50 @@ export class ProfilesService {
         horizonDays: p.bookingHorizonDays ?? 30,
       },
       assistant: this.buildAssistant(p),
-      plan: p.plan,
-      theme: p.theme,
+      plan: plano,
+      theme: resolveTheme(p.theme, plano),
       published: p.published,
       policyRevChecked: p.policyRevChecked,
-      branding: this.buildBranding(p),
-      card: this.buildCard(p),
+      branding: this.buildBranding(p, plano),
+      card: this.buildCard(p, plano),
     }
     // Campos do dono (getMine) — ausentes no público (toPublic os remove).
-    if (p.moderationStatus !== undefined) out.moderationStatus = p.moderationStatus
+    if (p.moderationStatus !== undefined) {
+      out.moderationStatus = p.moderationStatus
+      // Estado da assinatura — SÓ para o dono. O visitante não tem nada a ver com
+      // a situação de cobrança de quem ele está lendo, e um "pagamento atrasado"
+      // vazando para a página pública seria constrangimento gratuito.
+      out.subscription = this.buildSubscription(p, plano)
+    }
     if (p.moderationNote) out.moderationNote = p.moderationNote
     if (p.contentModerated) out.contentModerated = true
     return out
+  }
+
+  /**
+   * O que o painel precisa saber sobre a assinatura para dizer a verdade ao dono.
+   *
+   * `plan` (acima) é o que vale agora; aqui vai o que foi CONTRATADO e por que
+   * ainda vale — ou por que parou de valer. Sem isto o painel só saberia dizer
+   * "você está no Free", que é exatamente a mentira a evitar com quem pagou o Max
+   * e teve o cartão recusado ontem.
+   */
+  private buildSubscription(p: any, vigente: Plan) {
+    const contratado = (p.plan as Plan) ?? 'free'
+    const ate = valeAte(p)
+    return {
+      plan: contratado,
+      status: (p.planStatus as string) ?? 'active',
+      /** true quando o acesso pago só está de pé por carência/mês já pago */
+      cortesia: emCortesia(p),
+      /** o vigente já é rebaixado em relação ao contratado? */
+      rebaixado: contratado !== 'free' && vigente !== contratado,
+      validoAte: ate ? ate.toISOString() : null,
+      currentPeriodEnd: p.currentPeriodEnd ? new Date(p.currentPeriodEnd).toISOString() : null,
+      graceUntil: p.graceUntil ? new Date(p.graceUntil).toISOString() : null,
+      /** rebaixamento pedido, esperando o fim do período pago */
+      planScheduled: (p.planScheduled as Plan) ?? null,
+    }
   }
 
   async getMine(userId: string) {
@@ -464,13 +591,13 @@ export class ProfilesService {
             published: false,
             policyVersion: POLICY_VERSION,
           },
-          select: { id: true, moderationStatus: true, plan: true, oabNumber: true },
+          select: perfilBase,
         })
       } catch (err) {
         // Outra aba criou o perfil no meio do caminho: use o que existe.
         const existente = await this.prisma.profile.findUnique({
           where: { userId },
-          select: { id: true, moderationStatus: true, plan: true, oabNumber: true },
+          select: perfilBase,
         })
         if (existente) return existente
         if (tentativa === 2) throw err
@@ -509,9 +636,27 @@ export class ProfilesService {
     )
   }
 
-  // Valida os limites de caracteres do plano (fonte da verdade). Lança 400 se exceder.
-  // O `plan` vem SEMPRE do banco (assinatura vigente) — nunca do corpo da requisição.
-  private enforceCharLimits(data: any, plan: Plan) {
+  /**
+   * Valida os limites de caracteres do plano (fonte da verdade). Lança 400 se
+   * exceder. O `plan` vem SEMPRE do banco (assinatura vigente) — nunca do corpo.
+   *
+   * O TETO VALE PARA O TEXTO QUE CRESCE, não para o que já estava escrito.
+   *
+   * Sem esta distinção, um rebaixamento TRAVAVA o editor: quem tinha mil
+   * caracteres de bio no Max e caía para o Free (300) recebia 400 em qualquer save
+   * — inclusive num save que só trocava o telefone — e não conseguia mexer em nada
+   * até cortar setecentos caracteres à mão, sem que nada na tela explicasse o
+   * porquê. Enquanto isso o perfil público seguia exibindo os mil.
+   *
+   * Agora o texto herdado pode ficar e pode ENCURTAR; o que não pode é aumentar.
+   * O plano continua vendendo "escrever mais" — só parou de sequestrar o editor de
+   * quem já escreveu.
+   *
+   * E não truncamos o texto na leitura pública: cortar bio de advogado no meio de
+   * uma frase muda o que ela diz, e o que ela diz é publicidade sujeita ao
+   * Prov. 205/2021. Um teto de EDIÇÃO não vira mordaça de exibição.
+   */
+  private enforceCharLimits(data: any, plan: Plan, atual?: TextoAtual) {
     // Tetos fixos (não dependem do plano) — sanidade/anti-abuso.
     if (data.name && data.name.length > NAME_MAX) {
       throw new BadRequestException(`O nome excede o limite de ${NAME_MAX} caracteres.`)
@@ -521,27 +666,47 @@ export class ProfilesService {
     }
 
     const lim = limitsFor(plan)
-    const check = (value: string | undefined, field: LimitedField, label: string) => {
-      if (value && value.length > lim[field]) {
-        throw new BadRequestException(
-          `${label} excede o limite de ${lim[field]} caracteres do plano ${plan}.`,
-        )
-      }
+    const check = (
+      value: string | undefined,
+      field: LimitedField,
+      label: string,
+      herdado: number,
+    ) => {
+      const tam = value?.length ?? 0
+      if (tam <= lim[field]) return
+      // Já era assim (ou maior) antes deste save: é texto herdado de um plano
+      // maior, e o save não é o momento de cobrá-lo.
+      if (tam <= herdado) return
+      throw new BadRequestException(
+        `${label} excede o limite de ${lim[field]} caracteres do plano ${plan}.`,
+      )
     }
-    check(data.headline, 'headline', 'A frase de apresentação')
-    check(data.bio, 'bio', 'A bio')
-    for (const a of data.areas ?? []) check(a.description, 'areaDesc', `A descrição da área "${a.label}"`)
+    check(data.headline, 'headline', 'A frase de apresentação', atual?.headline ?? 0)
+    check(data.bio, 'bio', 'A bio', atual?.bio ?? 0)
+    for (const a of data.areas ?? []) {
+      // A área é casada pelo RÓTULO, não pela posição: o editor reordena e remove
+      // áreas, e comparar por índice acusaria "aumentou" numa área que só mudou de
+      // lugar. Área nova (rótulo desconhecido) responde pelo teto do plano — é
+      // exatamente o texto que está crescendo.
+      const herdado = atual?.areaDesc?.get(String(a.label ?? '')) ?? 0
+      check(a.description, 'areaDesc', `A descrição da área "${a.label}"`, herdado)
+    }
   }
 
-  // Perguntas frequentes → linhas prontas para o Prisma, cortadas no limite do plano
-  // (2 no Pro, 5 no Max). No Free a lista vem vazia: o downgrade apenas ESCONDE, não
-  // apaga o texto de ninguém sem aviso — ele volta a aparecer quando o plano volta.
+  // Perguntas frequentes → linhas prontas para o Prisma, cortadas na COTA do plano
+  // (nenhuma no Free, 2 no Pro, 5 no Max).
+  //
+  // O corte aqui é só do que ENTRA. O que já existe além da cota não passa por
+  // esta função e não é tocado pelo save — ver o bloco `faqs` em update(). Até
+  // 28/08/2026 era o contrário: o `deleteMany` limpava a tabela e esta função
+  // devolvia lista vazia no Free, então o primeiro save depois de um rebaixamento
+  // apagava as perguntas de vez. O comentário que estava aqui prometia justamente
+  // o oposto ("o downgrade apenas ESCONDE"), e a promessa era falsa.
   //
   // Uma pergunta SEM resposta não vai para o perfil: caixa vazia com uma dúvida
   // pendurada é pior do que não ter FAQ nenhum.
-  private faqRows(raw: unknown, plan: Plan) {
-    const max = countLimit(FAQ_LIMIT, plan)
-    if (max === 0) return []
+  private faqRows(raw: unknown, max: number) {
+    if (max <= 0) return []
     const list = Array.isArray(raw) ? raw : []
     return list
       .filter(
@@ -580,6 +745,12 @@ export class ProfilesService {
      * joao-silva-2020, escolhido à mão) seria alterado sem o usuário pedir.
      */
     stripAutoNumber = false,
+    /**
+     * O endereço GRAVADO no banco. No Free ele é a única coisa que conta — o
+     * `desiredSlug` vem do corpo da requisição e escolher o endereço é perk pago;
+     * aceitá-lo aqui entregaria de graça o que o Pro vende.
+     */
+    slugAtual?: string,
   ) {
     const nameBase = slugify(name ?? '')
     const takenByOther = async (slug: string) => {
@@ -605,11 +776,31 @@ export class ProfilesService {
       return withRandom(base) // ocupado → nome + aleatório
     }
 
-    // Free: mantém o slug atual se já for "nome-<número>" do nome vigente; senão gera novo.
-    const current = (desiredSlug || '').trim()
-    if (current && new RegExp(`^${nameBase}-\\d+$`).test(current) && !(await takenByOther(current))) {
-      return current
-    }
+    // Free: MANTÉM o endereço que já existe, qualquer que seja ele, desde que
+    // esteja livre. Só sorteia quando não há endereço (perfil recém-criado) ou
+    // quando o que havia foi tomado por outra pessoa.
+    //
+    // Antes, o Free só preservava o endereço quando ele batia o padrão
+    // "nome-<número>" do nome VIGENTE. Duas consequências, as duas ruins:
+    //
+    //  • REBAIXAMENTO MATAVA O ENDEREÇO. Quem assinou o Pro ganhou
+    //    advoc.me/marina-sales; no dia em que o cartão falhasse, o endereço limpo
+    //    não casava o padrão do Free e um número novo era sorteado. O cartão de
+    //    visita impresso, o QR, o link na assinatura de e-mail, o link no
+    //    Instagram e a indexação do Google apontavam, todos, para um 404. Isso é
+    //    dano, e dano que chega antes do e-mail avisando da cobrança.
+    //  • CORRIGIR UM TYPO NO NOME MUDAVA O ENDEREÇO. No Free, trocar "Marina
+    //    Salles" por "Marina Sales" renumerava a página inteira, sem ninguém pedir.
+    //
+    // O endereço público é da pessoa, não do plano. O que o Pro vende é ESCOLHER o
+    // endereço (e nascer sem número); quem nasce no Free continua nascendo
+    // numerado, em garantirPerfil. Nada disso se perde ao parar de renumerar.
+    //
+    // O candidato é o slug GRAVADO, nunca o do corpo da requisição: preservar o
+    // endereço existente é uma coisa, deixar o Free escolher um é outra — e a
+    // segunda é exatamente o perk que o Pro cobra.
+    const current = (slugAtual || '').trim()
+    if (current && !(await takenByOther(current))) return current
     return withRandom(nameBase)
   }
 
@@ -724,7 +915,7 @@ export class ProfilesService {
     const current =
       (await this.prisma.profile.findUnique({
         where: { userId },
-        select: { id: true, moderationStatus: true, plan: true, oabNumber: true },
+        select: perfilBase,
       })) ?? (await this.garantirPerfil(userId, data.name))
     // Perfil restrito pela moderação não pode ser republicado pelo dono.
     if (data.published && current?.moderationStatus === 'restricted') {
@@ -735,10 +926,20 @@ export class ProfilesService {
     // O que um perfil PÚBLICO não pode deixar de ter.
     if (data.published) this.exigirCamposDePublicacao(data)
 
-    const plan: Plan = (current?.plan as Plan) ?? 'free'
+    // O plano que vale AGORA — contratado cruzado com a situação da cobrança. É
+    // ele, e não `Profile.plan`, que abre e fecha recurso (ver src/assinatura.ts).
+    const plan: Plan = planoVigente(current as any)
     // Fonte da verdade dos limites por plano.
-    this.enforceCharLimits(data, plan)
-    const slug = await this.resolveSlug(data.name, plan, data.slug, userId)
+    this.enforceCharLimits(data, plan, textoAtual(current))
+    // O endereço candidato no Free é o GRAVADO, nunca o do corpo (perk pago).
+    const slug = await this.resolveSlug(
+      data.name,
+      plan,
+      data.slug,
+      userId,
+      false,
+      (current as any)?.slug,
+    )
 
     // Fonte da verdade da conformidade: bloqueia publicação com texto irregular.
     // A lista do que é conferido vive em oab/compliance.ts (publicTexts) e cobre
@@ -773,6 +974,10 @@ export class ProfilesService {
       )
     }
 
+    // Cota das coleções filhas neste plano. Fora dela nada é lido nem tocado.
+    const limiteAreas = countLimit(AREA_LIMIT, plan)
+    const limiteFaqs = countLimit(FAQ_LIMIT, plan)
+
     const updated = await this.prisma.profile.update({
       where: { userId },
       data: {
@@ -797,12 +1002,18 @@ export class ProfilesService {
         // Tema é gated por plano: o editor deixa PROVAR um tema travado na
         // prévia, e é aqui que a prova para de ser prova.
         theme: resolveTheme(data.theme, plan),
-        // Só grava o vídeo no Max e só se o link for de um provedor aceito. Um
-        // link recusado limpa o campo em vez de persistir lixo.
-        videoUrl: canUseVideo(plan) ? normalizeVideoUrl(data.videoUrl) : null,
-        videoCaption: canUseVideo(plan)
-          ? String(data.videoCaption ?? '').slice(0, VIDEO_CAPTION_MAX)
-          : '',
+        // Vídeo é perk do Max, e fora dele a chave NEM ENTRA no update: a coluna
+        // fica como estava. Até 28/08/2026 esta linha gravava `null` fora do Max —
+        // então bastava um save qualquer depois de um rebaixamento (trocar o
+        // telefone servia) para o link do vídeo sumir do banco, contra a promessa
+        // escrita duas telas acima, em toApi. Dentro do Max, link de provedor não
+        // aceito continua limpando o campo, em vez de persistir lixo.
+        ...(canUseVideo(plan)
+          ? {
+              videoUrl: normalizeVideoUrl(data.videoUrl),
+              videoCaption: String(data.videoCaption ?? '').slice(0, VIDEO_CAPTION_MAX),
+            }
+          : {}),
         published: data.published,
         policyVersion: POLICY_VERSION,
         // Carimba a revisão vigente das regras (monitor normativo): ao salvar, o
@@ -812,16 +1023,36 @@ export class ProfilesService {
         // coluna fica como estava, e quem rebaixa e volta reencontra o cartão
         // montado (mesma regra do branding).
         ...(canUsePrintCard(plan) ? { card: this.cardCol(data.card) } : {}),
-        // Identidade própria (white-label) — persistida em colunas planas.
-        brandName: data.branding?.brandName ?? null,
-        brandAccent: data.branding?.accent ?? null,
-        brandHideWatermark: data.branding?.hideWatermark ?? false,
-        customDomain: data.branding?.customDomain ?? null,
-        // substitui coleções filhas (padrão simples; otimizável com upserts)
+        // Identidade própria (white-label) — perk do Max, mesma regra do vídeo e do
+        // cartão impresso: fora dele a chave não entra e as colunas ficam intactas.
+        //
+        // Este era o mais traiçoeiro dos três apagamentos. Fora do Max, buildBranding
+        // omite o objeto inteiro da resposta; o editor devolvia o perfil SEM
+        // `branding`, e estas quatro linhas liam `undefined` e gravavam `null`. Ou
+        // seja: quem rebaixava perdia a marca no primeiro save, sem ter tocado em
+        // nada relacionado a ela.
+        ...(plan === 'premium'
+          ? {
+              brandName: data.branding?.brandName ?? null,
+              brandAccent: data.branding?.accent ?? null,
+              brandHideWatermark: data.branding?.hideWatermark ?? false,
+              customDomain: data.branding?.customDomain ?? null,
+            }
+          : {}),
+        // Coleções filhas: o save substitui apenas o que está DENTRO da cota do
+        // plano (`order < limite`). O que está além — herdado de um plano maior —
+        // não é lido, não é reescrito e não é apagado; fica congelado esperando o
+        // plano voltar. Ver dentroDaCota, que é a mesma janela do lado da leitura.
+        //
+        // Era `deleteMany: {}`: limpava a tabela inteira e recriava só o que cabia
+        // no plano atual. Um Max com 20 áreas e 5 perguntas que caísse para o Free
+        // perdia 18 áreas e as 5 perguntas no primeiro save — e no Free
+        // `faqRows` devolvia lista vazia, então o `deleteMany` era a operação
+        // inteira: apagava tudo e não criava nada.
         areas: {
-          deleteMany: {},
+          deleteMany: { order: { lt: limiteAreas } },
           create: (data.areas ?? [])
-            .slice(0, countLimit(AREA_LIMIT, plan))
+            .slice(0, limiteAreas)
             .map((a: any, order: number) => ({
               label: a.label,
               description: a.description,
@@ -829,8 +1060,8 @@ export class ProfilesService {
             })),
         },
         faqs: {
-          deleteMany: {},
-          create: this.faqRows(data.faqs, plan),
+          deleteMany: { order: { lt: limiteFaqs } },
+          create: this.faqRows(data.faqs, limiteFaqs),
         },
         socials: {
           deleteMany: {},
@@ -860,14 +1091,17 @@ export class ProfilesService {
   }
 
   /**
-   * Troca o plano da assinatura. Hoje é uma ATIVAÇÃO SIMULADA (plataforma em teste,
-   * sem cobrança): o checkout do front confirma e chama aqui. Quando entrar o billing
-   * real, este é o único ponto que muda — o webhook do provedor chama este método.
+   * Troca o plano PEDIDA PELA PESSOA (checkout do front, hoje sem cobrança real).
    *
-   * É a ÚNICA porta que grava `Profile.plan`: o PUT /profiles/me ignora o plano do
-   * corpo. Ao rebaixar, o estado incompatível é reconciliado na hora (agendamento
-   * desligado no Free, endereço renumerado) para o perfil público nunca prometer o
-   * que o plano não entrega. Conteúdo (marca, artigos) é só ESCONDIDO na leitura.
+   * SUBIR vale na hora. DESCER é AGENDADO para o fim do período já pago — cobrar
+   * um mês de Max e entregar Pro no dia seguinte é vender o que não se entrega.
+   * Quem decide qual dos dois é o caso é aoTrocarPlano(), em src/assinatura.ts; o
+   * rebaixamento agendado fica em `planScheduled` e a varredura diária o aplica.
+   *
+   * Quando entrar a cobrança real, esta continua sendo a porta do USUÁRIO (ela
+   * chamará o provedor para efetivar). Quem manda no estado da assinatura passa a
+   * ser o webhook — src/billing/billing.service.ts —, e as duas portas gravam pelo
+   * mesmo caminho: aplicarAssinatura().
    */
   async setPlan(userId: string, plan: unknown) {
     if (typeof plan !== 'string' || !PLANS.includes(plan as Plan)) {
@@ -876,43 +1110,105 @@ export class ProfilesService {
     const next = plan as Plan
     const current = await this.prisma.profile.findUnique({
       where: { userId },
-      select: { plan: true, name: true, slug: true, schedulingMode: true, theme: true },
+      select: {
+        id: true,
+        plan: true,
+        planStatus: true,
+        currentPeriodEnd: true,
+        graceUntil: true,
+        planScheduled: true,
+      },
     })
     if (!current) throw new NotFoundException('Perfil não encontrado')
-    if (current.plan === next) {
+
+    const patch = aoTrocarPlano(current as any, next)
+    if (Object.keys(patch).length === 0) {
       const same = await this.prisma.profile.findUnique({ where: { userId }, include: relations })
       return this.toApi(same)
     }
 
-    // Endereço: o Free é sempre numerado; ao subir de plano o advogado ganha o nome
-    // limpo (se estiver livre). Reaproveita a mesma escada do save.
-    const slug = await this.resolveSlug(current.name, next, current.slug, userId, true)
+    const updated = await this.aplicarAssinatura(userId, patch, `${current.plan} → ${next}`)
+    return this.toApi(updated)
+  }
+
+  /**
+   * A ÚNICA porta que grava o estado da assinatura. Toda mudança de plano passa
+   * por aqui: o checkout do usuário, o webhook do provedor, a varredura diária, a
+   * entrada e a saída de escritório, e a exclusão de conta do dono.
+   *
+   * Por que uma porta só: antes havia quatro caminhos gravando `Profile.plan` com
+   * `prisma.profile.update` cru, e três deles esqueciam a reconciliação. Quem saía
+   * de um escritório voltava ao Free carregando tema do Max e botão de agendar
+   * ligados — o perfil público prometendo o que o plano não entrega — até o
+   * próximo save do editor, que podia nunca vir.
+   *
+   * O que é reconciliado AQUI é só o que o público veria errado (tema e
+   * agendamento). Conteúdo — vídeo, marca, cartão, perguntas, áreas além da cota —
+   * NÃO é tocado: some da leitura e volta inteiro quando o plano voltar.
+   *
+   * O ENDEREÇO NÃO É MEXIDO no rebaixamento. Só a SUBIDA de plano mexe nele, para
+   * entregar o perk do nome limpo; descer preserva o que já está impresso em
+   * cartão de visita e indexado no Google (ver resolveSlug).
+   */
+  private async aplicarAssinatura(userId: string, patch: PatchAssinatura, motivo: string) {
+    const antes = await this.prisma.profile.findUnique({
+      where: { userId },
+      select: { id: true, name: true, slug: true, plan: true, schedulingMode: true, theme: true,
+                planStatus: true, currentPeriodEnd: true, graceUntil: true, planScheduled: true },
+    })
+    if (!antes) throw new NotFoundException('Perfil não encontrado')
+
+    // O plano vigente ANTES e DEPOIS do patch — é a diferença entre os dois que
+    // diz o que reconciliar. Note que um rebaixamento AGENDADO não muda o vigente
+    // (o patch só grava `planScheduled`), e portanto não reconcilia nada: a pessoa
+    // segue com o que pagou até o período virar.
+    const antesVigente = planoVigente(antes as any)
+    const depois = planoVigente({ ...antes, ...patch } as any)
+    const subiu = ehRebaixamento(depois, antesVigente)
+
+    const dados: Record<string, unknown> = { ...patch }
+    // Agendamento é recurso pago: cair para o Free desliga o botão do perfil.
+    dados.schedulingMode = this.sanitizeMode(antes.schedulingMode, depois)
+    // Tema de plano superior não sobrevive ao rebaixamento — volta ao neutro.
+    dados.theme = resolveTheme(antes.theme, depois)
+    // Só ao SUBIR o endereço é reescrito, e só para tirar o número automático que
+    // o Free impõe — que é exatamente o perk que o Pro vende.
+    if (subiu) {
+      dados.slug = await this.resolveSlug(antes.name, depois, antes.slug, userId, true, antes.slug)
+    }
 
     const updated = await this.prisma.profile.update({
       where: { userId },
-      data: {
-        plan: next,
-        slug,
-        // Agendamento é recurso pago: cair para o Free desliga o botão do perfil.
-        schedulingMode: this.sanitizeMode(current.schedulingMode, next),
-        // Tema de plano superior não sobrevive ao downgrade — volta ao neutro.
-        theme: resolveTheme(current.theme, next),
-      },
+      data: dados,
       include: relations,
     })
 
-    // Trilha de auditoria: a mudança de plano altera o que o perfil pode exibir.
+    // Trilha de auditoria: a mudança de assinatura altera o que o perfil exibe.
     await this.prisma.auditLog.create({
       data: {
         profileId: updated.id,
         action: 'plan',
         complianceStatus: 'ok',
         policyVersion: POLICY_VERSION,
-        bioSnapshot: `${current.plan} → ${next}`,
+        bioSnapshot: motivo,
       },
     })
 
-    return this.toApi(updated)
+    return updated
+  }
+
+  /**
+   * Mesma porta, para quem não é o dono da conta: o webhook de cobrança, a
+   * varredura diária, o escritório e a moderação. Recebe o id do PERFIL (é o que
+   * essas rotas têm em mãos) e devolve o perfil já reconciliado.
+   */
+  async aplicarAssinaturaPorPerfil(profileId: string, patch: PatchAssinatura, motivo: string) {
+    const dono = await this.prisma.profile.findUnique({
+      where: { id: profileId },
+      select: { userId: true },
+    })
+    if (!dono) throw new NotFoundException('Perfil não encontrado')
+    return this.aplicarAssinatura(dono.userId, patch, motivo)
   }
 
   // A plataforma NÃO confere inscrições na OAB. O número é auto-declarado e o

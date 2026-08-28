@@ -16,6 +16,10 @@ function service(opts: { membership?: Qualquer; convidado?: Qualquer } = {}) {
     membershipCreate: [],
     membershipUpdate: [],
     membershipDelete: [],
+    // Mudança de plano NÃO é mais um profile.update cru: passa pela porta que
+    // reconcilia tema, agendamento e endereço (ProfilesService). O que se testa
+    // aqui é que o escritório chama essa porta com o plano certo.
+    assinatura: [],
   }
   const prisma: Qualquer = {
     firm: {
@@ -48,7 +52,13 @@ function service(opts: { membership?: Qualquer; convidado?: Qualquer } = {}) {
     // O aceite roda numa transação: aqui basta executar as promessas recebidas.
     $transaction: vi.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
   }
-  return { svc: new FirmsService(prisma as any), prisma, calls }
+  const profiles: Qualquer = {
+    aplicarAssinaturaPorPerfil: vi.fn((profileId: string, patch: Qualquer, motivo: string) => {
+      calls.assinatura.push({ profileId, patch, motivo })
+      return Promise.resolve({})
+    }),
+  }
+  return { svc: new FirmsService(prisma as any, profiles as any), prisma, calls, profiles }
 }
 
 describe('convite', () => {
@@ -110,13 +120,37 @@ describe('saída do escritório', () => {
   it('devolve o plano individual que o advogado tinha antes de entrar', async () => {
     const { svc, calls } = service({ membership: ativo })
     await svc.removeMember('u1', 'membership', 'm1')
-    expect(calls.profileUpdate[0]).toEqual({ where: { id: 'p2' }, data: { plan: 'pro' } })
+    expect(calls.assinatura[0].profileId).toBe('p2')
+    expect(calls.assinatura[0].patch.plan).toBe('pro')
   })
 
   it('sem plano guardado, quem sai volta para o free', async () => {
     const { svc, calls } = service({ membership: { ...ativo, previousPlan: null } })
     await svc.removeMember('u1', 'membership', 'm1')
-    expect(calls.profileUpdate[0]).toEqual({ where: { id: 'p2' }, data: { plan: 'free' } })
+    expect(calls.assinatura[0].patch.plan).toBe('free')
+  })
+
+  it('quem sai não leva o relógio de cobrança do escritório junto', async () => {
+    // Quem paga o escritório é o dono dele. Se o período pago do escritório
+    // ficasse gravado no perfil de quem saiu, o advogado seguiria com plano de
+    // graça até a data que OUTRA pessoa pagou.
+    const { svc, calls } = service({ membership: ativo })
+    await svc.removeMember('u1', 'membership', 'm1')
+    expect(calls.assinatura[0].patch).toMatchObject({
+      planStatus: 'active',
+      currentPeriodEnd: null,
+      graceUntil: null,
+      planScheduled: null,
+    })
+  })
+
+  it('a devolução passa pela porta que RECONCILIA, nunca por um update cru', async () => {
+    // Enquanto era `profile.update({ data: { plan } })`, quem saía voltava ao Free
+    // carregando tema do Max e botão de agendar ligados.
+    const { svc, calls } = service({ membership: ativo })
+    await svc.removeMember('u1', 'membership', 'm1')
+    expect(calls.profileUpdate).toHaveLength(0)
+    expect(calls.assinatura).toHaveLength(1)
   })
 
   it('quem nunca aceitou (convidado) sai sem mexer no plano', async () => {
@@ -125,6 +159,7 @@ describe('saída do escritório', () => {
     })
     await svc.removeMember('u1', 'membership', 'm1')
     expect(calls.profileUpdate).toHaveLength(0)
+    expect(calls.assinatura).toHaveLength(0)
   })
 
   it('o dono não pode ser removido do próprio escritório', async () => {
@@ -161,7 +196,13 @@ describe('aceite do convite', () => {
       where: { id: 'm1' },
       data: { status: 'active', previousPlan: 'pro' },
     })
-    expect(calls.profileUpdate[0]).toEqual({ where: { id: 'p2' }, data: { plan: 'premium' } })
+    // A subida também passa pela porta que reconcilia: entrar no escritório é
+    // upgrade, e upgrade tira o número automático do endereço do Free.
+    expect(calls.profileUpdate).toHaveLength(0)
+    expect(calls.assinatura[0]).toMatchObject({
+      profileId: 'p2',
+      patch: { plan: 'premium', planStatus: 'active' },
+    })
   })
 
   it('recusar apaga o vínculo e deixa o perfil intacto', async () => {

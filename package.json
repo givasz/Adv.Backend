@@ -14,7 +14,8 @@
     "prisma:studio": "prisma studio",
     "prisma:dev-schema": "node scripts/gen-dev-schema.mjs",
     "admin:create": "node dist/admin/admin-cli.js",
-    "retencao": "node dist/retencao/retencao-cli.js"
+    "retencao": "node dist/retencao/retencao-cli.js",
+    "assinaturas": "node dist/billing/assinaturas-cli.js"
   },
   "engines": {
     "node": ">=20"

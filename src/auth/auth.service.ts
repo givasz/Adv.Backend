@@ -13,6 +13,7 @@ import type { RequisicaoComAuth } from './session-context'
 import { passwordProblem } from '../password'
 import { clampText, EMAIL_MAX } from '../security/sanitize'
 import { NAME_MAX } from '../plans'
+import { planoVigente } from '../assinatura'
 
 // Formato de e-mail simples (o mesmo do front). A validação forte fica a cargo
 // da confirmação de e-mail (fora do escopo do protótipo).
@@ -104,7 +105,7 @@ export class AuthService {
       user.id,
       user.email,
       user.profile?.name || cleanName,
-      user.profile?.plan ?? 'free',
+      user.profile ? planoVigente(user.profile) : 'free',
       lembrar,
     )
   }
@@ -148,7 +149,18 @@ export class AuthService {
         suspendedReason: true,
         closedAt: true,
         closedReason: true,
-        profile: { select: { name: true, plan: true } },
+        // Plano VIGENTE, não o contratado: o retrato da sessão é o que a tela
+        // consulta antes de o perfil chegar, e um "premium" aqui destravaria por
+        // um instante o que a assinatura vencida não entrega mais.
+        profile: {
+          select: {
+            name: true,
+            plan: true,
+            planStatus: true,
+            currentPeriodEnd: true,
+            graceUntil: true,
+          },
+        },
       },
     })
     // E-mail inexistente também paga o preço de uma verificação de senha: sem
@@ -191,7 +203,7 @@ export class AuthService {
       user.id,
       user.email,
       user.profile?.name || undefined,
-      user.profile?.plan ?? 'free',
+      user.profile ? planoVigente(user.profile) : 'free',
       lembrar,
     )
   }
@@ -256,14 +268,28 @@ export class AuthService {
   async me(userId: string): Promise<AuthSession['user']> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, email: true, profile: { select: { name: true, plan: true } } },
+      select: {
+        id: true,
+        email: true,
+        // Vigente, não contratado — mesma razão do login: este é o retrato que a
+        // tela consulta ANTES de o perfil chegar (ver frontend lib/auth.ts).
+        profile: {
+          select: {
+            name: true,
+            plan: true,
+            planStatus: true,
+            currentPeriodEnd: true,
+            graceUntil: true,
+          },
+        },
+      },
     })
     if (!user) throw new UnauthorizedException('Sessão inválida.')
     return {
       id: user.id,
       email: user.email,
       name: user.profile?.name || undefined,
-      plan: user.profile?.plan ?? 'free',
+      plan: user.profile ? planoVigente(user.profile) : 'free',
     }
   }
 }
