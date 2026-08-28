@@ -179,8 +179,9 @@ depende de disciplina — está no banco.
 
 ## 6. A camada `bi` — o SQL
 
-Arquivo proposto: `backend/prisma/bi/bi.sql`, versionado, aplicado com `psql -f` depois
-de cada `prisma db push` que mexa nas colunas usadas aqui.
+No ar em [`backend/prisma/bi/bi.sql`](../backend/prisma/bi/bi.sql), versionado e aplicado com
+`psql -f` depois de cada `prisma db push` que mexa nas colunas usadas aqui. O usuário
+de leitura fica em [`bi_leitor.sql`](../backend/prisma/bi/bi_leitor.sql), que roda uma vez só.
 
 ### 6.1 Fuso horário — a armadilha
 
@@ -297,8 +298,8 @@ colapsados.
 
 ## 7. As duas tabelas novas no backend
 
-Únicas mudanças de schema do plano. Ambas exigem `prisma db push` na VPS, com dump
-antes (DEPLOY-VPS.md).
+Únicas mudanças de schema do plano — implementadas em [`backend/src/bi/`](../backend/src/bi/).
+Ambas exigem `prisma db push` na VPS (aditivo, sem `--accept-data-loss`), com dump antes.
 
 ### 7.1 `BiPerfilDia` — o retrato diário
 
@@ -453,12 +454,23 @@ nada de pizza com onze fatias.
 
 | Fase | Entrega | Toca no backend? | Dias |
 | --- | --- | --- | --- |
-| **1** | Esquema `bi`, funções de fuso, views de §6.2–6.4, usuário `bi_leitor`, túnel documentado, `.pbix` com a página 1 | só `prisma/bi/bi.sql` + trava de paridade | ~1,5 |
-| **2** | `BiPerfilDia` e `BiEventoMes`, rotina diária idempotente junto do expurgo, retenção de 800 dias, `db push` na VPS | sim (schema + `src/retencao`) | ~1,5 |
-| **3** | De-para de áreas e página de manutenção | `bi.sql` | ~0,5 |
-| **4** | Páginas 2 a 7 do relatório | não | ~2 |
+| **1** ✅ | Esquema `bi`, funções de fuso, views de §6.2–6.4, usuário `bi_leitor`, túnel documentado | `prisma/bi/bi.sql`, `bi_leitor.sql`, trava em `src/bi/bi-sql.spec.ts` | ~1,5 |
+| **2** ✅ | `BiPerfilDia` e `BiEventoMes`, rotina diária idempotente, retenção de 800 dias, `npm run bi` | `src/bi/` + schema | ~1,5 |
+| **3** ✅ | De-para de áreas e views de manutenção | `bi.sql` | ~0,5 |
+| **4** | O relatório em si — páginas de §9 | não (é o `.pbix`) | ~2,5 |
 | **5** | Painel admin (Fase 9 do plano-admin) passa a ler as mesmas views | sim | ~1 |
 | **6** | *Opcional* — atualização automática (§11) | não | ~1 |
+
+**Feito em 28/08/2026 (fases 1 a 3).** O que ficou pendente, e por quê:
+
+- **Aplicar na VPS.** `prisma db push` (aditivo, duas tabelas novas), `npm run bi`
+  e `psql -f prisma/bi/bi.sql` — roteiro em [DEPLOY-VPS.md](../DEPLOY-VPS.md) §12. O
+  `bi.sql` nunca foi executado contra um Postgres: não há um na máquina de
+  desenvolvimento, e rodar coisa nova direto em produção sem alguém olhando não é
+  jeito de estrear camada nenhuma.
+- **O `.pbix`.** Arquivo binário do Power BI, montado dentro do programa. As views,
+  o modelo em estrela (§8) e as medidas DAX estão especificados; quem abrir o Power
+  BI segue §8 e §9.
 
 Ordem: **1 → 2** é fundação, e a 2 é urgente por um motivo que não espera. Todo dia sem
 `BiPerfilDia` é um dia de história que não existirá nunca — o retrato de hoje não pode

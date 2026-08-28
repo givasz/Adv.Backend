@@ -10,3 +10,10 @@
 # normaliza a quebra de linha ao ler. Fixar LF aqui evita que o arquivo apareça
 # como modificado só por causa disso.
 *.prisma text eol=lf
+
+# Os .sql são aplicados com `psql -f` no Linux e lidos por um teste que casa
+# expressão regular no conteúdo (src/bi/bi-sql.spec.ts). CRLF entraria dentro dos
+# corpos de função `$$ ... $$` — que o Postgres guarda como texto, retorno de
+# carro e tudo — e faria a trava de paridade falhar por um motivo que ninguém
+# adivinha lendo a mensagem.
+*.sql text eol=lf

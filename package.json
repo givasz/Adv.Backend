@@ -15,7 +15,8 @@
     "prisma:dev-schema": "node scripts/gen-dev-schema.mjs",
     "admin:create": "node dist/admin/admin-cli.js",
     "retencao": "node dist/retencao/retencao-cli.js",
-    "assinaturas": "node dist/billing/assinaturas-cli.js"
+    "assinaturas": "node dist/billing/assinaturas-cli.js",
+    "bi": "node dist/bi/bi-cli.js"
   },
   "engines": {
     "node": ">=20"

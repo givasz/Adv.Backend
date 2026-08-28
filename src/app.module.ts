@@ -12,6 +12,7 @@ import { AccountModule } from './account/account.module'
 import { AnalyticsModule } from './analytics/analytics.module'
 import { RetencaoModule } from './retencao/retencao.module'
 import { BillingModule } from './billing/billing.module'
+import { BiModule } from './bi/bi.module'
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { BillingModule } from './billing/billing.module'
     AnalyticsModule,
     RetencaoModule,
     BillingModule,
+    BiModule,
   ],
   controllers: [HealthController],
 })
