@@ -63,6 +63,38 @@ export class FirmsController {
     return this.firms.removeMember(await this.resolveUser(req), kind, id)
   }
 
+  // ---- Advogados listados sem conta -----------------------------------------
+  //
+  // Montar a página exigia que cada advogado criasse conta e aceitasse convite
+  // antes de aparecer. Aqui o escritório lista quem é do quadro e a página fica
+  // pronta no mesmo dia; a conta de cada um vem depois. Ver firms.service.
+
+  // POST /api/firms/me/roster  → { name, oabNumber?, area? }
+  @Post('firms/me/roster')
+  async addRoster(
+    @Body() body: { name?: string; oabNumber?: string; area?: string },
+    @Req() req: RequisicaoComAuth,
+  ) {
+    return this.firms.addRosterLawyer(await this.resolveUser(req), body)
+  }
+
+  // POST /api/firms/me/roster/:id/email  → { email, role? }
+  // Associa um e-mail ao advogado listado: é o passo que lhe dá autonomia.
+  @Post('firms/me/roster/:id/email')
+  async linkRoster(
+    @Param('id') id: string,
+    @Body() body: { email?: string; role?: string },
+    @Req() req: RequisicaoComAuth,
+  ) {
+    return this.firms.linkRosterLawyer(await this.resolveUser(req), id, body?.email, body?.role)
+  }
+
+  // DELETE /api/firms/me/roster/:id → tira da lista (não há conta a mexer)
+  @Delete('firms/me/roster/:id')
+  async removeRoster(@Param('id') id: string, @Req() req: RequisicaoComAuth) {
+    return this.firms.removeRosterLawyer(await this.resolveUser(req), id)
+  }
+
   // ---- Lado de quem foi convidado -------------------------------------------
 
   // GET /api/firms/me/invites → convites pendentes dirigidos a quem está logado

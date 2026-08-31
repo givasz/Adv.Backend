@@ -33,6 +33,12 @@ const ABOUT_MAX = 2000
 const CITY_MAX = 80
 const STATE_MAX = 40
 
+// Advogado listado sem conta. O nome segue o teto do perfil individual; a área é
+// um rótulo curto, não uma descrição.
+const ROSTER_NAME_MAX = 70
+const ROSTER_OAB_MAX = 20
+const ROSTER_AREA_MAX = 60
+
 // Serviço do escritório (sociedade de advogados).
 //
 // Duas verdades que mandam no desenho:
@@ -53,6 +59,7 @@ export class FirmsService {
     const firm = await this.prisma.firm.findUnique({
       where: { slug },
       include: {
+        roster: { orderBy: { order: 'asc' } },
         members: {
           where: { status: 'active' },
           include: {
@@ -105,6 +112,7 @@ export class FirmsService {
       where: { id: firmId },
       include: {
         invites: true,
+        roster: { orderBy: { order: 'asc' } },
         members: {
           include: {
             profile: {
@@ -145,9 +153,26 @@ export class FirmsService {
         role: i.role,
         status: 'invited' as const,
       })),
+      // Listados sem conta. Entram na mesma lista porque, para quem administra,
+      // são o quadro do escritório como qualquer outro — o que muda é o que dá
+      // para fazer com cada um, e o `kind` é que diz isso à tela.
+      ...(firm.roster ?? []).map((r) => ({
+        id: r.id,
+        kind: 'roster' as const,
+        name: r.name,
+        email: r.email ?? undefined,
+        oabNumber: r.oabNumber || undefined,
+        area: r.area,
+        role: r.role,
+        status: (r.email ? 'invited' : 'listed') as 'invited' | 'listed',
+      })),
     ].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR')) // ordem neutra, aqui também
 
-    const ocupados = firm.members.length + firm.invites.length
+    // Listado sem conta ocupa assento (aparece no grid, que é o que o plano
+    // vende). Os que já receberam e-mail viraram convite e seriam contados duas
+    // vezes — ver syncSeats, que usa a mesma regra.
+    const listadosSemConta = (firm.roster ?? []).filter((r) => !r.email).length
+    const ocupados = firm.members.length + firm.invites.length + listadosSemConta
     return {
       ...publico,
       members,
@@ -254,12 +279,109 @@ export class FirmsService {
 
   // Assentos acompanham quem está dentro (ativos + convidados), com o mínimo do plano.
   private async syncSeats(firmId: string) {
-    const [members, invites] = await Promise.all([
+    const [members, invites, listados] = await Promise.all([
       this.prisma.firmMembership.count({ where: { firmId } }),
       this.prisma.firmInvite.count({ where: { firmId } }),
+      // Advogado listado sem conta OCUPA assento: ele aparece no grid público,
+      // que é o que o plano vende. Não contar seria deixar um escritório listar
+      // vinte pessoas pagando por cinco.
+      //
+      // Os que já têm e-mail associado viram convite (FirmInvite) e seriam
+      // contados duas vezes — por isso só entram os que ainda não têm.
+      this.prisma.firmRosterLawyer.count({ where: { firmId, email: null } }),
     ])
-    const seats = Math.max(FIRM_PRICING.includedSeats, members + invites)
+    const seats = Math.max(FIRM_PRICING.includedSeats, members + invites + listados)
     await this.prisma.firm.update({ where: { id: firmId }, data: { seatsPurchased: seats } })
+  }
+
+  // ---- Advogados listados sem conta (roster) --------------------------------
+  //
+  // Montar a página da sociedade exigia que cada advogado criasse conta e
+  // aceitasse convite ANTES de aparecer. Um escritório de doze pessoas ficava com
+  // a página vazia esperando doze cadastros — e o dono, sem ter o que mostrar,
+  // não tinha por que assinar. Aqui ele lista quem é do quadro e a página fica
+  // pronta no mesmo dia; a conta de cada um vem depois, se e quando vier.
+  //
+  // O dado é de TERCEIRO: nome e inscrição publicados sem a pessoa ter tocado em
+  // nada. Quem responde por isso é o escritório, e o editor diz isso com todas as
+  // letras. A plataforma não confere inscrição de ninguém (nem a individual) — o
+  // que existe é a consulta ao CNA no perfil público e a moderação por denúncia.
+
+  /** Acrescenta um advogado à lista da sociedade. Sem conta, sem convite. */
+  async addRosterLawyer(userId: string, d: any) {
+    const firm = await this.requireManagedFirm(userId)
+    const name = clampText(d?.name, ROSTER_NAME_MAX)
+    if (name.length < 2) throw new BadRequestException('Informe o nome do advogado.')
+
+    // O nome vai para uma página pública e passa pela MESMA checagem do resto:
+    // um "Dr. Fulano, o melhor do estado" entra por aqui se ninguém olhar.
+    if (hasBlockingIssue(name)) {
+      throw new BadRequestException(
+        'O nome contém termo vedado pelas normas de publicidade da OAB. Use o nome como ele consta na inscrição.',
+      )
+    }
+
+    const ultimo = await this.prisma.firmRosterLawyer.findFirst({
+      where: { firmId: firm.id },
+      orderBy: { order: 'desc' },
+      select: { order: true },
+    })
+    await this.prisma.firmRosterLawyer.create({
+      data: {
+        firmId: firm.id,
+        name,
+        oabNumber: clampText(d?.oabNumber, ROSTER_OAB_MAX),
+        area: clampText(d?.area, ROSTER_AREA_MAX),
+        order: (ultimo?.order ?? -1) + 1,
+      },
+    })
+    await this.syncSeats(firm.id)
+    return this.manageView(firm.id)
+  }
+
+  /**
+   * Associa um e-mail a um advogado já listado — o passo que lhe dá autonomia.
+   *
+   * NÃO é o mesmo que listar: listar é o escritório falando sobre a pessoa;
+   * associar é convidá-la a assumir o próprio espaço. Por isso cai no fluxo de
+   * convite que já existe (invite), com o papel escolhido: "admin" mexe na
+   * sociedade inteira, "member" só no próprio perfil.
+   *
+   * A linha da lista CONTINUA no ar enquanto o convite não é aceito. Tirá-la
+   * agora abriria um buraco na página até a pessoa se cadastrar — e ela pode
+   * nunca se cadastrar. Quem a remove é o aceite (ver auth.service).
+   */
+  async linkRosterLawyer(userId: string, id: string, emailRaw?: unknown, roleRaw?: unknown) {
+    const firm = await this.requireManagedFirm(userId)
+    const linha = await this.prisma.firmRosterLawyer.findUnique({
+      where: { id },
+      select: { id: true, firmId: true },
+    })
+    if (!linha || linha.firmId !== firm.id) throw new NotFoundException('Advogado não encontrado.')
+
+    const email = clampText(emailRaw, 200).toLowerCase()
+    if (!EMAIL_RE.test(email)) throw new BadRequestException('Informe um e-mail válido.')
+    const role = roleRaw === 'admin' ? ('admin' as const) : ('member' as const)
+
+    // O convite é a fonte da verdade do acesso; a linha só guarda o que foi
+    // pedido, para a tela poder mostrar "convite enviado para ___".
+    await this.invite(userId, email, role)
+    await this.prisma.firmRosterLawyer.update({ where: { id }, data: { email, role } })
+    await this.syncSeats(firm.id)
+    return this.manageView(firm.id)
+  }
+
+  /** Tira o advogado da lista. Não mexe em conta nenhuma — ele não tem conta. */
+  async removeRosterLawyer(userId: string, id: string) {
+    const firm = await this.requireManagedFirm(userId)
+    const linha = await this.prisma.firmRosterLawyer.findUnique({
+      where: { id },
+      select: { firmId: true },
+    })
+    if (!linha || linha.firmId !== firm.id) throw new NotFoundException('Advogado não encontrado.')
+    await this.prisma.firmRosterLawyer.delete({ where: { id } })
+    await this.syncSeats(firm.id)
+    return this.manageView(firm.id)
   }
 
   // ---- Convites -------------------------------------------------------------
@@ -424,6 +546,24 @@ export class FirmsService {
       { plan: m.firm.plan as Plan, planStatus: 'active', currentPeriodEnd: null, graceUntil: null, planScheduled: null },
       `entrada no escritório: ${m.firm.plan}`,
     )
+
+    // O advogado entrou de verdade: o Profile dele assume o lugar no grid, e a
+    // linha que o escritório havia listado à mão sai — senão o mesmo advogado
+    // apareceria DUAS vezes na página, uma com perfil e outra sem.
+    //
+    // A limpeza é aqui, no aceite, e não no cadastro: entre criar a conta e
+    // aceitar, a pessoa ainda pode recusar, e até lá a listagem do escritório
+    // continua sendo a única coisa que a página tem para mostrar.
+    const conta = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    })
+    if (conta?.email) {
+      await this.prisma.firmRosterLawyer
+        .deleteMany({ where: { firmId: m.firmId, email: conta.email } })
+        .catch(() => undefined)
+      await this.syncSeats(m.firmId)
+    }
     return { status: 'active' as const }
   }
 
@@ -486,6 +626,32 @@ export class FirmsService {
           whatsapp: p.whatsapp ?? undefined,
         }
       })
+      // Advogados LISTADOS pelo escritório, que ainda não têm conta. Entram na
+      // mesma lista e na mesma ordenação alfabética: para quem visita, são
+      // advogados da sociedade como os outros — o que muda é só o que a página
+      // consegue mostrar deles.
+      //
+      // `slug` vazio é o que diz ao card para não virar link: não há perfil para
+      // onde ir, e um card clicável que leva a lugar nenhum é pior do que um card
+      // que não convida ao clique.
+      .concat(
+        (firm.roster ?? [])
+          .filter((r: any) => (r.name ?? '').trim())
+          .map((r: any) => ({
+            id: r.id,
+            slug: '',
+            name: r.name,
+            oabNumber: r.oabNumber ?? '',
+            area: r.area ?? '',
+            bio: '',
+            avatarUrl: undefined,
+            linkedin: undefined,
+            // Sem WhatsApp: o assistente nunca encaminha para quem não tem conta,
+            // porque não há número dele aqui — cai no institucional, como já faz
+            // quando o advogado escolhido não tem número.
+            whatsapp: undefined,
+          })),
+      )
       // Ordem NEUTRA (alfabética) — sem hierarquia por senioridade/destaque.
       .sort((a: any, b: any) => a.name.localeCompare(b.name, 'pt-BR'))
 
