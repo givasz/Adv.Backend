@@ -44,6 +44,8 @@ import {
   clampList,
   clampOrNull,
   clampText,
+  enderecoCols,
+  enderecoDaLinha,
   oneOf,
   safeEmail,
   safeHexColor,
@@ -437,6 +439,7 @@ export class ProfilesService {
       showWhatsapp: bool(c.showWhatsapp, true),
       showEmail: bool(c.showEmail, true),
       showCity: bool(c.showCity, true),
+      showAddress: bool(c.showAddress, true),
       showAreas: bool(c.showAreas, true),
       tagline: clampText(c.tagline, CARD_TAGLINE_MAX),
     })
@@ -475,6 +478,12 @@ export class ProfilesService {
       avatarUrl: p.avatarUrl ?? undefined,
       city: p.city ?? '',
       state: p.state ?? '',
+      // Endereço vai INTEIRO para o dono e para o público. O interruptor
+      // `publico` viaja junto porque quem esconde o endereço tem de continuar
+      // vendo o que escondeu — e quem decide não desenhar é a página
+      // (enderecoVisivel, em lib/endereco.ts), não a censura da resposta: o
+      // cartão de contato que o próprio visitante salva usa o mesmo objeto.
+      address: enderecoDaLinha(p),
       regionNote: p.regionNote ?? undefined,
       serviceMode: { inPerson: !!p.inPerson, online: !!p.online },
       // Áreas e FAQ são CORTADAS no limite do plano vigente, e cortadas aqui — na
@@ -870,6 +879,8 @@ export class ProfilesService {
       avatarUrl: safeImageSrc(d.avatarUrl),
       city: clampText(d.city, CITY_MAX),
       state: clampText(d.state, STATE_MAX),
+      // Já sai como as seis colunas planas do Prisma — o update só espalha.
+      addressCols: enderecoCols(d.address),
       regionNote: clampOrNull(d.regionNote, REGION_MAX),
       serviceMode: {
         inPerson: !!d.serviceMode?.inPerson,
@@ -997,6 +1008,7 @@ export class ProfilesService {
         avatarUrl: data.avatarUrl,
         city: data.city,
         state: data.state,
+        ...data.addressCols,
         regionNote: data.regionNote,
         inPerson: data.serviceMode?.inPerson,
         online: data.serviceMode?.online,

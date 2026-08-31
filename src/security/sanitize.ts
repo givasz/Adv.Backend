@@ -107,3 +107,81 @@ export function oneOf<T extends string>(value: unknown, permitidos: readonly T[]
     ? (value as T)
     : padrao
 }
+
+// ---------------------------------------------------------------------------
+// Endereço do escritório
+//
+// Fica aqui, e não em profiles/ ou firms/, porque os dois gravam as MESMAS seis
+// colunas: um advogado tem endereço e a sociedade dele também. Duas cópias da
+// mesma regra é a forma mais confiável de um dos lados aceitar um CEP com
+// letras seis meses depois de o outro deixar de aceitar.
+// ---------------------------------------------------------------------------
+
+const CEP_DIGITOS = 8
+const RUA_MAX = 120
+const NUMERO_MAX = 20
+const COMPLEMENTO_MAX = 60
+const BAIRRO_MAX = 80
+
+/** Colunas planas do endereço, como o Prisma as espera. */
+export interface ColunasDeEndereco {
+  addressZip: string | null
+  addressStreet: string | null
+  addressNumber: string | null
+  addressComplement: string | null
+  addressDistrict: string | null
+  addressPublic: boolean
+}
+
+/**
+ * O objeto `address` do corpo → as seis colunas.
+ *
+ * O CEP é gravado SÓ COM DÍGITOS. Formatação é decisão de quem exibe, e guardar
+ * "01310-100" ao lado de "01310100" no mesmo banco faz qualquer busca por CEP
+ * encontrar metade das linhas. Um CEP incompleto vira null em vez de entrar
+ * pela metade — meio CEP não leva ninguém a lugar nenhum.
+ *
+ * `publico` ausente conta como `true`: quem preenche endereço no editor está
+ * preenchendo para aparecer. Desligar é o ato deliberado, não o padrão.
+ */
+export function enderecoCols(value: unknown): ColunasDeEndereco {
+  const e = value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+  const cepDigitos = typeof e.cep === 'string' ? e.cep.replace(/\D/g, '') : ''
+  return {
+    addressZip: cepDigitos.length === CEP_DIGITOS ? cepDigitos : null,
+    addressStreet: clampOrNull(e.rua, RUA_MAX),
+    addressNumber: clampOrNull(e.numero, NUMERO_MAX),
+    addressComplement: clampOrNull(e.complemento, COMPLEMENTO_MAX),
+    addressDistrict: clampOrNull(e.bairro, BAIRRO_MAX),
+    addressPublic: e.publico !== false,
+  }
+}
+
+/** As colunas de volta ao objeto `address` do frontend. Sem nada, `undefined`. */
+export function enderecoDaLinha(p: {
+  addressZip?: string | null
+  addressStreet?: string | null
+  addressNumber?: string | null
+  addressComplement?: string | null
+  addressDistrict?: string | null
+  addressPublic?: boolean | null
+}): {
+  cep?: string
+  rua?: string
+  numero?: string
+  complemento?: string
+  bairro?: string
+  publico: boolean
+} | undefined {
+  const cheio =
+    p.addressZip || p.addressStreet || p.addressNumber || p.addressComplement || p.addressDistrict
+  if (!cheio) return undefined
+  return {
+    ...(p.addressZip ? { cep: p.addressZip } : {}),
+    ...(p.addressStreet ? { rua: p.addressStreet } : {}),
+    ...(p.addressNumber ? { numero: p.addressNumber } : {}),
+    ...(p.addressComplement ? { complemento: p.addressComplement } : {}),
+    ...(p.addressDistrict ? { bairro: p.addressDistrict } : {}),
+    publico: p.addressPublic !== false,
+  }
+}

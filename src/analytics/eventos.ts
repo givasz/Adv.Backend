@@ -34,6 +34,7 @@ export const EVENTOS = [
   'assistente', // abriu a conversa guiada de agendamento
   'email', // tocou no e-mail
   'cartao', // salvou o contato (vCard) ou abriu o QR
+  'endereco', // abriu o endereço do escritório no mapa
   'rede:instagram',
   'rede:linkedin',
   'rede:website',
@@ -51,6 +52,11 @@ export const EVENTOS_DE_CONTATO: Evento[] = [
   'assistente',
   'email',
   'cartao',
+  // Abrir o mapa é intenção de ir até o escritório — a forma mais forte de
+  // procurar alguém, e a que mais depende de o endereço estar certo. Deixá-la
+  // fora da conta faria o relatório dizer que ninguém procurou o advogado
+  // justamente no dia em que três pessoas foram até a porta dele.
+  'endereco',
 ]
 
 export function ehEvento(valor: unknown): valor is Evento {
