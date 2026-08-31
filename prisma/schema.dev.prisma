@@ -170,6 +170,8 @@ model Firm {
   ownerUser   User             @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
   members     FirmMembership[]
   invites     FirmInvite[]
+  // Advogados listados pelo escritório que ainda não têm conta — ver o modelo.
+  roster      FirmRosterLawyer[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -198,6 +200,43 @@ model FirmMembership {
   profile   Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
 
   @@index([firmId, status])
+}
+
+// Advogado LISTADO pelo escritório que ainda não tem conta na plataforma.
+//
+// Por que um modelo próprio, e não um Profile: `Profile.userId` é obrigatório e
+// único — perfil pressupõe conta. Montar a página da sociedade exigia, até aqui,
+// que cada advogado criasse conta e aceitasse convite ANTES de aparecer. Um
+// escritório de doze pessoas ficava com a página vazia esperando doze cadastros.
+//
+// O que esta linha NÃO é: um perfil. Ela não tem endereço próprio, não tem bio,
+// não recebe contato e não abre página nenhuma — é o nome, a OAB e a área
+// aparecendo no grid da sociedade. Quando a pessoa entra de verdade (aceita o
+// convite pelo e-mail associado), o Profile dela assume e esta linha é apagada,
+// para o mesmo advogado nunca aparecer duas vezes.
+//
+// RESPONSABILIDADE: quem insere é o escritório, e o dado é de um TERCEIRO — nome
+// e número de inscrição publicados sem a pessoa ter clicado em nada. Listar quem
+// não é do quadro é declaração falsa de quem listou; a plataforma não conferе
+// (mesma regra da OAB individual, ver Profile.oabNumber) e avisa disso no editor.
+model FirmRosterLawyer {
+  id        String   @id @default(cuid())
+  name      String
+  oabNumber String   @default("")
+  area      String   @default("")
+  // E-mail associado DEPOIS, quando o escritório quer dar autonomia à pessoa.
+  // Enquanto é nulo, o advogado só consta na página — não tem acesso a nada.
+  email     String?
+  // Autonomia pretendida quando ele aceitar: `admin` mexe na sociedade inteira,
+  // `member` só no próprio perfil.
+  role      String @default("member")
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+
+  firmId String
+  firm   Firm   @relation(fields: [firmId], references: [id], onDelete: Cascade)
+
+  @@index([firmId])
 }
 
 // Convite feito para um e-mail que AINDA NÃO tem conta. FirmMembership exige um
