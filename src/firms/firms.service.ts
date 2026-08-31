@@ -11,6 +11,8 @@ import { ProfilesService } from '../profiles/profiles.service'
 import {
   clampOrNull,
   clampText,
+  enderecoCols,
+  enderecoDaLinha,
   safeEmail,
   safeHexColor,
   safeHostname,
@@ -249,6 +251,9 @@ export class FirmsService {
       about,
       city: clampText(d.city, CITY_MAX),
       state: clampText(d.state, STATE_MAX),
+      // Endereço da sede — as seis colunas, saneadas do mesmo jeito que as do
+      // perfil individual (ver security/sanitize.ts).
+      ...enderecoCols(d.address),
       phone: safePhone(c.phone),
       email: safeEmail(c.email),
       whatsapp: safePhone(c.whatsapp),
@@ -676,6 +681,7 @@ export class FirmsService {
       about: firm.about,
       city: firm.city,
       state: firm.state,
+      address: enderecoDaLinha(firm),
       contact: {
         phone: firm.phone ?? undefined,
         email: firm.email ?? undefined,

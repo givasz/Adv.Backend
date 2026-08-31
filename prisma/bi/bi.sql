@@ -137,7 +137,7 @@ select
   bi.dia_local(e."createdAt")  as dia,
   bi.hora_local(e."createdAt") as hora,
   e.kind                       as evento,
-  (e.kind in ('whatsapp', 'agendamento', 'assistente', 'email', 'cartao')) as e_contato,
+  (e.kind in ('whatsapp', 'agendamento', 'assistente', 'email', 'cartao', 'endereco')) as e_contato,
   count(*)                     as total
 from "LinkEvent" e
 group by 1, 2, 3, 4, 5;
@@ -176,7 +176,7 @@ select
   m.mes::date   as mes,
   m.evento,
   m.total,
-  (m.evento in ('whatsapp', 'agendamento', 'assistente', 'email', 'cartao')) as e_contato
+  (m.evento in ('whatsapp', 'agendamento', 'assistente', 'email', 'cartao', 'endereco')) as e_contato
 from "BiEventoMes" m;
 
 comment on view bi.fato_evento_mes is
