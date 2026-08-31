@@ -325,3 +325,47 @@ describe('associar e-mail dá autonomia ao listado', () => {
     await expect(svc.removeRosterLawyer('u1', 'r1')).rejects.toThrow(/não encontrado/i)
   })
 })
+
+describe('a mesma pessoa nunca aparece duas vezes', () => {
+  it('convite de quem já está listado não vira linha própria', async () => {
+    const { svc, prisma } = service()
+    // Depois de associar o e-mail, existem DOIS registros para a mesma pessoa: a
+    // linha do roster (com o nome) e o FirmInvite (com o endereço). Mostrar os
+    // dois punha "Marina Sales" e "marina@..." lado a lado, sem nada dizendo que
+    // são a mesma — quem representa os dois é a linha que tem o nome.
+    prisma.firm.findUnique.mockResolvedValue({
+      id: 'firm1',
+      slug: 'x',
+      seatsPurchased: 5,
+      members: [],
+      invites: [{ id: 'i1', email: 'marina@exemplo.com', role: 'admin' }],
+      roster: [
+        {
+          id: 'r1',
+          name: 'Marina Sales',
+          email: 'marina@exemplo.com',
+          role: 'admin',
+          oabNumber: '',
+          area: '',
+        },
+      ],
+    })
+    const view: Qualquer = await svc.getMine('u1')
+    const nomes = view.members.map((m: Qualquer) => `${m.kind}:${m.name}`)
+    expect(nomes).toEqual(['roster:Marina Sales'])
+  })
+
+  it('convite SEM linha listada continua aparecendo', async () => {
+    const { svc, prisma } = service()
+    prisma.firm.findUnique.mockResolvedValue({
+      id: 'firm1',
+      slug: 'x',
+      seatsPurchased: 5,
+      members: [],
+      invites: [{ id: 'i1', email: 'outro@exemplo.com', role: 'member' }],
+      roster: [],
+    })
+    const view: Qualquer = await svc.getMine('u1')
+    expect(view.members.map((m: Qualquer) => m.kind)).toEqual(['invite'])
+  })
+})

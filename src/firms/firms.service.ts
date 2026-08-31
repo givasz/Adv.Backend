@@ -145,14 +145,20 @@ export class FirmsService {
         status: m.status,
         profileSlug: m.profile.slug,
       })),
-      ...firm.invites.map((i) => ({
-        id: i.id,
-        kind: 'invite' as const,
-        name: i.email,
-        email: i.email,
-        role: i.role,
-        status: 'invited' as const,
-      })),
+      // Convite cujo e-mail já pertence a alguém LISTADO não vira linha própria:
+      // seria a mesma pessoa duas vezes na tela do dono — uma pelo nome ("Marina
+      // Sales") e outra pelo endereço ("marina@..."), sem nada dizendo que são a
+      // mesma. Quem representa os dois é a linha do roster, que tem o nome.
+      ...firm.invites
+        .filter((i) => !(firm.roster ?? []).some((r) => r.email === i.email))
+        .map((i) => ({
+          id: i.id,
+          kind: 'invite' as const,
+          name: i.email,
+          email: i.email,
+          role: i.role,
+          status: 'invited' as const,
+        })),
       // Listados sem conta. Entram na mesma lista porque, para quem administra,
       // são o quadro do escritório como qualquer outro — o que muda é o que dá
       // para fazer com cada um, e o `kind` é que diz isso à tela.
