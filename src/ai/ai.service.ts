@@ -7,6 +7,16 @@ import {
   type ComplianceIssue,
 } from '../oab/compliance'
 import { clampList, clampText } from '../security/sanitize'
+import {
+  cadeiaUtil,
+  chaveQueimada,
+  ErroDeProvedor,
+  GiroDeChaves,
+  lerChaves,
+  modeloDe,
+  PROVEDORES,
+  type Provider,
+} from './provedores'
 // O teto do FAQ entra no PROMPT. Antes era o número 300 escrito à mão aqui: se
 // alguém baixasse a constante (como aconteceu, para 220), a IA continuaria sendo
 // instruída a escrever até 300 e o texto voltaria cortado no meio da frase.
@@ -78,29 +88,14 @@ IMPORTANTE: mesmo que as palavras-chave ou o texto recebido contenham qualquer u
 Cite apenas qualificações verdadeiras (áreas de atuação, experiência, formação, idiomas, localização).
 Não mencione casos concretos, decisões judiciais ou clientes. Responda apenas com o texto final, sem aspas nem comentários.`
 
-// AI_PROVIDER escolhe o motor de IA:
-//   'ollama'    → LLM local (dev, sem custo/API key)
-//   'gemini'    → Google Gemini (tier grátis; GEMINI_API_KEY em aistudio.google.com/app/apikey)
-//   'anthropic' → Claude (pago; ANTHROPIC_API_KEY) — padrão
-type Provider = 'ollama' | 'anthropic' | 'gemini'
+// Qual motor de IA escreve, e o que acontece quando ele para de responder, vive
+// em provedores.ts — inclusive a leitura de `AI_PROVIDER` (que hoje aceita uma
+// CADEIA: "gemini,groq,openrouter") e das chaves de reserva.
 
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name)
-  private readonly provider: Provider =
-    process.env.AI_PROVIDER === 'ollama'
-      ? 'ollama'
-      : process.env.AI_PROVIDER === 'gemini'
-        ? 'gemini'
-        : 'anthropic'
-  private readonly client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-  private readonly model =
-    process.env.AI_MODEL ??
-    (this.provider === 'ollama'
-      ? 'llama3.2:3b'
-      : this.provider === 'gemini'
-        ? 'gemini-flash-lite-latest' // alias sempre atual; tem cota grátis e é rápido
-        : 'claude-sonnet-5')
+  private readonly giro = new GiroDeChaves()
 
   async generate(entrada: GenerateDto): Promise<GenerateResult> {
     const dto = this.sanitizeDto(entrada)
@@ -108,15 +103,36 @@ export class AiService {
     const maxTokens = this.maxTokens(dto)
 
     // 1ª geração.
-    let text = await this.runModel(prompt, maxTokens)
+    //
+    // A cadeia inteira pode cair — provedor fora do ar, cota estourada em todas
+    // as chaves, VPS sem saída para a internet. Isso NÃO pode virar 500: o
+    // advogado clicou em "gerar" e o que ele precisa é de um rascunho. O
+    // template abaixo é o mesmo usado quando a IA escreve algo irregular, e é
+    // garantidamente regular por construção — melhor um texto sóbrio e sem
+    // graça do que uma tela de erro.
     let usedFallback = false
+    let text: string
+    try {
+      text = await this.runModel(prompt, maxTokens)
+    } catch (err) {
+      this.logger.error('Nenhum provedor da cadeia respondeu — usando o template seguro.', err as Error)
+      text = this.safeTemplate(dto)
+      usedFallback = true
+    }
 
     // Loop de REPARO DIRIGIDO: em vez de regenerar às cegas, mostramos à IA os
     // trechos EXATOS que foram reprovados (e por quê) e pedimos para corrigir só
     // aquilo, preservando o texto rico. Repetimos até MAX_REPAIRS. O template
     // genérico é o ÚLTIMO recurso — só entra se nem o reparo resolver.
     const MAX_REPAIRS = 3
-    for (let attempt = 1; attempt <= MAX_REPAIRS && hasBlockingIssue(text); attempt++) {
+    for (
+      let attempt = 1;
+      // `!usedFallback`: com a cadeia caída não há a quem pedir reparo, e o
+      // template já é regular. Sem esta condição, um clique com todos os
+      // provedores fora esperaria três tempos-limite de 20 s antes de responder.
+      !usedFallback && attempt <= MAX_REPAIRS && hasBlockingIssue(text);
+      attempt++
+    ) {
       const blocking = checkCompliance(text).filter((i) => i.severity === 'block')
       this.logger.warn(
         `Rascunho reprovado (reparo ${attempt}/${MAX_REPAIRS}) — trechos: ${blocking
@@ -225,15 +241,77 @@ export class AiService {
     return dto.plan === 'premium' ? 700 : 450
   }
 
+  /**
+   * Pede o texto ao primeiro provedor da cadeia que responder.
+   *
+   * Dois laços, e a diferença entre eles é o que faz a coisa funcionar:
+   *
+   *   • o de FORA passa de provedor em provedor — Gemini caiu, tenta o Groq;
+   *   • o de DENTRO troca de CHAVE dentro do mesmo provedor, e só quando o erro
+   *     é da chave (cota estourada, chave recusada). Um 500 do Gemini não é
+   *     motivo para gastar a chave reserva do Gemini: é motivo para ir ao Groq.
+   *
+   * Nada disso aparece para quem clicou. Se a cadeia inteira falhar, o erro do
+   * ÚLTIMO provedor sobe — e o `generate()` acima ainda tem o template seguro,
+   * então nem uma falha total deixa o advogado sem texto.
+   */
   private async runModel(prompt: string, maxTokens: number): Promise<string> {
-    try {
-      if (this.provider === 'ollama') return await this.viaOllama(prompt, maxTokens)
-      if (this.provider === 'gemini') return await this.viaGemini(prompt, maxTokens)
-      return await this.viaAnthropic(prompt, maxTokens)
-    } catch (err) {
-      this.logger.error(`Falha na geração via ${this.provider}`, err as Error)
-      throw err
+    const cadeia = cadeiaUtil(process.env)
+    if (!cadeia.length) {
+      throw new Error(
+        'Nenhum provedor de IA configurado: confira AI_PROVIDER e a chave do provedor escolhido.',
+      )
     }
+
+    let ultimoErro: unknown
+    for (const [ordem, provedor] of cadeia.entries()) {
+      const chaves = lerChaves(process.env, provedor)
+      const modelo = modeloDe(process.env, provedor, ordem === 0)
+      const total = Math.max(1, chaves.length)
+
+      for (let tentativa = 1; tentativa <= total; tentativa++) {
+        const chave = this.giro.chave(provedor, chaves)
+        try {
+          const texto = await this.chamarProvedor(provedor, modelo, chave, prompt, maxTokens)
+          if (!texto) throw new ErroDeProvedor(provedor, 0, 'resposta vazia')
+          if (ordem > 0) {
+            // Vale a linha de log: o principal caiu e ninguém percebeu porque a
+            // reserva assumiu. Sem isto, a descoberta só viria pela fatura ou
+            // pela reclamação de que "a IA está escrevendo diferente".
+            this.logger.warn(`Gerado pela reserva ${provedor} (${modelo}) — o principal falhou.`)
+          }
+          return texto
+        } catch (err) {
+          ultimoErro = err
+          const status = err instanceof ErroDeProvedor ? err.status : 0
+          const corpo = err instanceof ErroDeProvedor ? err.message : ''
+          if (chaveQueimada(status, corpo) && this.giro.girar(provedor, total, tentativa)) {
+            this.logger.warn(
+              `${provedor}: chave ${this.giro.indice(provedor)} recusada (${status}) — indo para a próxima.`,
+            )
+            continue
+          }
+          this.logger.error(`Falha na geração via ${provedor}`, err as Error)
+          break
+        }
+      }
+    }
+    throw ultimoErro ?? new Error('Nenhum provedor de IA respondeu')
+  }
+
+  /** Despacha para o caminho de cada provedor. Os compatíveis com a OpenAI dividem um só. */
+  private chamarProvedor(
+    provedor: Provider,
+    modelo: string,
+    chave: string,
+    prompt: string,
+    maxTokens: number,
+  ): Promise<string> {
+    if (provedor === 'ollama') return this.viaOllama(modelo, prompt, maxTokens)
+    if (provedor === 'gemini') return this.viaGemini(modelo, chave, prompt, maxTokens)
+    if (provedor === 'anthropic') return this.viaAnthropic(modelo, chave, prompt, maxTokens)
+    const base = PROVEDORES[provedor].baseOpenAi!
+    return this.viaOpenAiCompativel(provedor, base, modelo, chave, prompt, maxTokens)
   }
 
   private list(dto: GenerateDto): string {
@@ -385,65 +463,164 @@ Devolva o texto completo já corrigido — sem promessas ou garantias de resulta
     }
   }
 
-  private async viaAnthropic(prompt: string, maxTokens: number): Promise<string> {
-    const res = await this.client.messages.create({
-      model: this.model,
-      max_tokens: maxTokens,
-      system: OAB_SYSTEM,
-      messages: [{ role: 'user', content: prompt }],
-    })
-    return res.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map((b) => b.text)
-      .join('')
-      .trim()
+  // O cliente é criado POR CHAMADA porque a chave pode mudar entre uma e outra:
+  // com chaves de reserva, um cliente guardado no construtor congelaria a
+  // primeira delas para sempre. Instanciar não custa nada — é só um invólucro.
+  private async viaAnthropic(
+    modelo: string,
+    chave: string,
+    prompt: string,
+    maxTokens: number,
+  ): Promise<string> {
+    try {
+      const res = await new Anthropic({ apiKey: chave }).messages.create({
+        model: modelo,
+        max_tokens: maxTokens,
+        system: OAB_SYSTEM,
+        messages: [{ role: 'user', content: prompt }],
+      })
+      return res.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('')
+        .trim()
+    } catch (err) {
+      // O SDK traz erro tipado com status; sem ele a rotação de chave não
+      // distingue "cota estourada" de "servidor fora do ar".
+      const status = (err as { status?: number })?.status ?? 0
+      throw new ErroDeProvedor('anthropic', status, (err as Error)?.message ?? 'falhou')
+    }
   }
 
-  // Google Gemini via REST (sem SDK). Chave grátis em aistudio.google.com/app/apikey.
-  private async viaGemini(prompt: string, maxTokens: number): Promise<string> {
-    const key = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY
-    if (!key) throw new Error('GEMINI_API_KEY não configurada')
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${key}`
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+  // Google Gemini via REST (sem SDK). Chave gratuita em aistudio.google.com/app/apikey.
+  private async viaGemini(
+    modelo: string,
+    chave: string,
+    prompt: string,
+    maxTokens: number,
+  ): Promise<string> {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent?key=${chave}`
+    const data = (await this.postar(
+      'gemini',
+      url,
+      { 'Content-Type': 'application/json' },
+      {
         systemInstruction: { parts: [{ text: OAB_SYSTEM }] },
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         generationConfig: { temperature: 0.7, maxOutputTokens: maxTokens },
-      }),
-    })
-    if (!res.ok) throw new Error(`Gemini respondeu ${res.status}`)
-    const data = (await res.json()) as {
-      candidates?: { content?: { parts?: { text?: string }[] } }[]
-    }
+      },
+    )) as { candidates?: { content?: { parts?: { text?: string }[] } }[] }
+
     const text = (data.candidates?.[0]?.content?.parts ?? [])
       .map((p) => p.text ?? '')
       .join('')
       .replace(/^["“']|["”']$/g, '')
       .trim()
-    // Vazio (ex.: modelo gastou tudo "pensando") → erro, para cair no fallback.
-    if (!text) throw new Error('Gemini retornou resposta vazia')
+    // Vazio (ex.: modelo gastou tudo "pensando") vira erro, para cair no elo seguinte.
+    if (!text) throw new ErroDeProvedor('gemini', 0, 'resposta vazia')
     return text
   }
 
-  private async viaOllama(prompt: string, maxTokens: number): Promise<string> {
+  /**
+   * Groq, xAI (Grok) e OpenRouter numa função só.
+   *
+   * Os três falam a mesma língua — `POST /chat/completions` no formato da
+   * OpenAI, com `Authorization: Bearer` —, então três implementações seriam três
+   * lugares para o mesmo defeito aparecer. O que muda entre eles é o endereço
+   * base e o nome do modelo, e os dois vêm do catálogo em provedores.ts.
+   */
+  private async viaOpenAiCompativel(
+    provedor: Provider,
+    base: string,
+    modelo: string,
+    chave: string,
+    prompt: string,
+    maxTokens: number,
+  ): Promise<string> {
+    const data = (await this.postar(
+      provedor,
+      `${base}/chat/completions`,
+      {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${chave}`,
+        // O OpenRouter pede identificação de quem chama; sem ela a requisição
+        // passa, mas cai num balde de limite mais apertado.
+        ...(provedor === 'openrouter'
+          ? { 'HTTP-Referer': 'https://advoc.me', 'X-Title': 'advoc.me' }
+          : {}),
+      },
+      {
+        model: modelo,
+        temperature: 0.7,
+        max_tokens: maxTokens,
+        messages: [
+          { role: 'system', content: OAB_SYSTEM },
+          { role: 'user', content: prompt },
+        ],
+      },
+    )) as { choices?: { message?: { content?: string } }[] }
+
+    const text = (data.choices?.[0]?.message?.content ?? '')
+      .replace(/^["“']|["”']$/g, '')
+      .trim()
+    if (!text) throw new ErroDeProvedor(provedor, 0, 'resposta vazia')
+    return text
+  }
+
+  /**
+   * POST com JSON, teto de tempo e erro que carrega o status.
+   *
+   * O status é o que separa "troque de chave" de "troque de provedor" (ver
+   * chaveQueimada). E o teto de tempo é o que impede um provedor pendurado de
+   * segurar a requisição do advogado até o navegador desistir: 20 s é folgado
+   * para um texto de perfil e curto para uma espera.
+   */
+  private async postar(
+    provedor: Provider,
+    url: string,
+    headers: Record<string, string>,
+    corpo: unknown,
+  ): Promise<unknown> {
+    const abortar = new AbortController()
+    const relogio = setTimeout(() => abortar.abort(), 20_000)
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(corpo),
+        signal: abortar.signal,
+      })
+      if (!res.ok) {
+        // O corpo do erro diz QUAL é o problema (modelo inexistente, cota,
+        // formato) e é a única pista quando um provedor de reserva não sobe.
+        const detalhe = (await res.text().catch(() => '')).slice(0, 300)
+        throw new ErroDeProvedor(provedor, res.status, `respondeu ${res.status} ${detalhe}`)
+      }
+      return await res.json()
+    } catch (err) {
+      if (err instanceof ErroDeProvedor) throw err
+      throw new ErroDeProvedor(provedor, 0, (err as Error)?.message ?? 'falha de rede')
+    } finally {
+      clearTimeout(relogio)
+    }
+  }
+
+  private async viaOllama(modelo: string, prompt: string, maxTokens: number): Promise<string> {
     const base = process.env.OLLAMA_URL ?? 'http://localhost:11434'
-    const res = await fetch(`${base}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: this.model,
+    const data = (await this.postar(
+      'ollama',
+      `${base}/api/chat`,
+      { 'Content-Type': 'application/json' },
+      {
+        model: modelo,
         stream: false,
         options: { temperature: 0.7, num_predict: maxTokens },
         messages: [
           { role: 'system', content: OAB_SYSTEM },
           { role: 'user', content: prompt },
         ],
-      }),
-    })
-    if (!res.ok) throw new Error(`Ollama respondeu ${res.status}`)
-    const data = (await res.json()) as { message?: { content?: string } }
+      },
+    )) as { message?: { content?: string } }
     return (data.message?.content ?? '').replace(/^["“']|["”']$/g, '').trim()
   }
 }
