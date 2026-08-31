@@ -14,6 +14,7 @@ import {
   safeEmail,
   safeHexColor,
   safeHostname,
+  safeImageSrc,
   safePhone,
   safeUrl,
 } from '../security/sanitize'
@@ -207,6 +208,12 @@ export class FirmsService {
       slug,
       oabRegistry: clampText(d.oabRegistry, REGISTRY_MAX),
       monogram: clampText(d.monogram, MONOGRAM_MAX),
+      // A coluna existia desde o começo e NADA a gravava: o editor não
+      // oferecia o campo e esta lista não a incluía, então todo escritório
+      // ficava nas duas letras do monograma, sem caminho para trocar.
+      //  é o mesmo saneamento da foto do advogado — só data
+      // URI de imagem ou link https entram.
+      logoUrl: safeImageSrc(d.logoUrl),
       tagline,
       about,
       city: clampText(d.city, CITY_MAX),
@@ -492,6 +499,7 @@ export class FirmsService {
       name: firm.name,
       oabRegistry: firm.oabRegistry,
       monogram: firm.monogram,
+      logoUrl: firm.logoUrl ?? undefined,
       tagline: firm.tagline,
       about: firm.about,
       city: firm.city,
