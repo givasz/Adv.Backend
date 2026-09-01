@@ -1,4 +1,226 @@
-# Segurança — auditoria de 21/08/2026
+# Segurança — auditoria de 01/09/2026
+
+Terceira passagem de `vulnerabilidades.md` (OWASP Top 10 + race conditions +
+validação + privacidade) sobre o código do ADVOC.ME. As duas primeiras (21/08 e
+27/08) estão preservadas abaixo, a partir de "Auditoria de 21/08/2026".
+
+Esta rodada olhou o que nasceu **depois** da anterior — cadeia de IA, consulta de
+CEP, endereço do escritório, camada de BI, ciclo da assinatura, prévia de link na
+borda, métricas — e refez a varredura geral em cima do que já existia.
+
+> 🚨 **Leia primeiro o item 1.** Ele exige ação sua num servidor, e nenhuma linha
+> de código conserta o que ele descreve.
+
+---
+
+## 1. 🚨 Os segredos de produção estavam num arquivo de texto — CRÍTICO
+
+`DEPLOY-VPS.md`, na raiz do projeto, trazia **em texto puro**:
+
+| O quê | O que ele abre |
+|---|---|
+| Chave SSH privada (ed25519, **sem senha**) | a VPS inteira — e é o **único** caminho de entrada desde 25/08 |
+| Senha do root | `sudo`, `su` e o console de recuperação do provedor |
+| `AUTH_SESSION_SECRET` | deriva o token anti-CSRF de **qualquer** sessão |
+| `ADMIN_SESSION_SECRET`, `ADMIN_PASSWORD`, `ADMIN_TOKEN` | o painel de moderação |
+| Senha do Postgres | a base inteira (mitigado: escuta só em `127.0.0.1`) |
+| `GEMINI_API_KEY` | a conta de IA, e a fatura dela |
+
+Nenhum deles estava versionado — o arquivo mora só na máquina local, e os
+`DEPLOY.md` dos dois repositórios estão limpos (conferido). Mas a regra 5 de
+`vulnerabilidades.md` fala em código, comentário, log e mensagem de erro, e o
+documento de deploy é o quinto lugar — o mais fácil de esquecer justamente porque
+não é código, e o que mais circula de um projeto: vai por mensagem, entra em
+anexo de chamado, é colado inteiro numa conversa com IA e sobe junto no dia em que
+alguém versionar a pasta raiz.
+
+A ironia que marca o ponto: a chave privada estava logo abaixo de um aviso que
+pedia "guarde uma cópia desta chave **fora deste arquivo**".
+
+**O que foi feito.** Os valores saíram do projeto e foram para
+`~/.advocme-secrets/` (`vpskey`, `producao.env`, `LEIA-ME.md`), com uma cópia
+íntegra do documento original ao lado — nada se perdeu, e a chave foi conferida
+com `ssh-keygen -y` antes de o original ser tocado. O `DEPLOY-VPS.md` ficou com o
+PROCEDIMENTO e com a FORMA do `.env` (nome de cada variável e o que ela decide),
+que é o que precisa ser lido e compartilhado.
+
+**O que falta, e só você pode fazer.** Tirar um segredo do arquivo não o torna
+secreto de novo: eles estiveram legíveis por meses, e não há como saber por onde
+o arquivo passou. `~/.advocme-secrets/LEIA-ME.md` traz a ordem completa. Em
+resumo, e nesta ordem:
+
+1. **Chave SSH** — gerar par novo, testar a entrada com ele **ainda com o antigo
+   funcionando**, e só então remover a linha velha do `authorized_keys`.
+2. **Senha do root** (`passwd`) — ela ainda vale para o console do provedor.
+3. **`AUTH_SESSION_SECRET`** — desloga todo mundo uma vez, e é o certo.
+4. **`ADMIN_SESSION_SECRET`** e **`ADMIN_PASSWORD`**.
+5. **`ADMIN_TOKEN`** — apagar a linha. Em produção o código já não o aceita
+   (`tokenEstaticoConfere`); mantê-lo é guardar um segredo que não protege nada.
+6. **`GEMINI_API_KEY`** — revogar e gerar outra.
+7. **Senha do Postgres** — a menos urgente (só `127.0.0.1`), mas na lista.
+
+A chave da VPS não está nesta máquina, então o deploy da API não sai daqui: a
+rotação é sua, pelo console do provedor ou de onde a chave estiver.
+
+---
+
+## 2. A busca pública mostrava perfil que a moderação tirou do ar
+
+`GET /api/directory` montava o `where` espalhando dois objetos:
+
+```ts
+{ ...this.visivelAoPublico(),          // OR: [não restrito, prazo vencido]
+  ...(termo ? { OR: [nome, cidade, área] } : {}) }
+```
+
+Duas chaves `OR` no mesmo objeto literal — **a segunda sobrescreve a primeira**.
+Sem termo de busca a condição de moderação valia; **com** termo ela sumia, e um
+perfil restringido voltava a aparecer para quem digitasse o nome dele. Que é
+exatamente como se procura um advogado específico.
+
+O cabeçalho de `visivelAoPublico()` avisava que bastava uma consulta esquecer o
+`moderationStatus` para a medida se desfazer. Não foi esquecimento: foi uma
+colisão de chave que os dois caminhos escondiam um do outro — o código parecia o
+mesmo, e nenhum teste separava "com termo" de "sem termo".
+
+Agora as condições são itens de um `AND`, que não tem como colidir. O teste
+compara a FORMA da consulta nos dois caminhos.
+`backend/src/profiles/profiles.service.ts`
+
+> Foi encontrado por um teste que eu escrevi para outra coisa (o teto do termo de
+> busca) e que falhou por um motivo que eu não esperava. Vale registrar: a
+> asserção "sem termo, nenhum filtro de texto" só falha se houver um `OR` que não
+> deveria estar ali.
+
+---
+
+## 3. Redirecionamento aberto no nosso domínio, por conta grátis
+
+`GET /api/profiles/:slug/avatar` respondia `302` para `avatarUrl` quando a foto
+era uma URL https — o outro formato que o saneamento aceita, para quem prefere
+hospedar a imagem fora.
+
+Criar conta é grátis. Bastava salvar `avatarUrl: "https://site-do-golpe/…"`,
+publicar o perfil, e `advoc.me/api/profiles/<slug>/avatar` passava a levar a
+qualquer lugar — com o link exibindo **o nosso domínio**, que é justamente o que
+um filtro de e-mail, um antivírus e a própria pessoa conferem antes de clicar. De
+quebra, todo visitante da prévia entregava IP e User-Agent a um terceiro que ele
+não escolheu, com a nossa origem de intermediária.
+
+A correção **não** é buscar a imagem por conta própria: isso trocaria um
+redirecionamento aberto por um proxy de saída, com SSRF junto. É notar que a rota
+nunca precisou desse caso — uma foto que já é uma URL pública já é buscável pelo
+robô do mensageiro, e o `og:image` agora aponta direto para ela. A rota serve só
+o que é nosso: os bytes que existem apenas no nosso banco.
+`backend/src/profiles/profiles.service.ts` + `frontend/src/lib/ogTags.ts`
+
+---
+
+## 4. O e-mail do advogado ia parar no log de segurança
+
+`audit-log.ts` foi escrito para nunca gravar e-mail: o campo `subject` leva uma
+impressão digital curta, que correlaciona tentativas contra a mesma conta sem
+guardar o endereço.
+
+O furo estava do outro lado. Quando um limite estoura, `enforceRateLimit` grava
+uma linha com a **chave do limitador** dentro (`resource`) — e a chave do login
+por e-mail era montada com o e-mail cru:
+
+```ts
+[`login:email:${email}`, AUTH_RATE_RULES.loginPerEmail]
+```
+
+Oito senhas erradas e o endereço ficava escrito no log da API — que sobrevive em
+backup, sai em anexo de chamado e vai inteiro para o coletor. Um arquivo de log
+com e-mails é a mesma lista de clientes que a proteção contra enumeração existe
+para não entregar.
+
+A chave passou a levar a impressão digital. Como ela é determinística, o limite
+continua contando por conta, exatamente como antes.
+`backend/src/auth/auth.controller.ts`
+
+---
+
+## 5. Qualquer estranho desligava o painel de moderação em 40 requisições
+
+O login do painel tinha dois tetos: 6 por IP e **40 globais**, ambos em 15
+minutos. O global existia contra a varredura distribuída — e criava um problema
+maior do que resolvia: quarenta tentativas erradas, de qualquer lugar, trancavam
+**todos** os administradores por quinze minutos. Sem conhecer um usuário, sem
+saber uma senha, e renovável indefinidamente.
+
+Num painel cuja função é tirar conteúdo irregular do ar, deixar que um estranho o
+desligue de fora é falha de disponibilidade tão séria quanto a de acesso — e era
+a mais barata de explorar que havia aqui.
+
+Entrou um teto **por conta** (8/15min, pela impressão digital do usuário — é ele
+que faz o trabalho fino contra dicionário, que trocar de IP não resolve), e o
+global subiu para 400: volume que nenhum uso legítimo alcança, e que deixou de
+ser alavanca. O por-IP não mudou.
+`backend/src/security/rate-limit.ts` + `backend/src/admin/admin.controller.ts`
+
+---
+
+## 6. A busca pública devolvia megabytes de foto embutida
+
+`GET /api/directory` trazia `avatarUrl` como veio do banco — data URI de até
+~300 KB por perfil, 40 perfis por resposta. Rota pública, sem sessão e sem teto:
+uma requisição barata devolvendo megabytes é amplificação de graça, e a conta do
+tráfego é da VPS. O cabeçalho do `sitemap()` já tinha notado o problema para o
+mapa do site; a busca ficou como estava.
+
+Agora sai o **endereço** da foto (`/api/profiles/:slug/avatar`, que o navegador
+busca sob demanda e guarda por uma hora), o termo de busca tem teto de 120
+caracteres — acima disso não é busca, é varredura de tabela — e o corte de 40
+resultados virou constante com nome.
+
+⚠️ **Esta rota não é chamada por nenhuma tela.** `searchDirectory` existe em
+`frontend/src/lib/api.ts` e ninguém a usa. Enquanto existir, é superfície pública
+que precisa se defender sozinha (A02 pede remover o que não se usa). Se a decisão
+for que não haverá diretório público, o certo é **remover a rota** — não deixá-la
+de porta aberta esperando uma tela que talvez não venha.
+
+---
+
+## Verificado e considerado em ordem
+
+O que foi lido nesta passagem e **não** virou correção, com o motivo — para a
+próxima auditoria não refazer o caminho:
+
+| Área | Conclusão |
+|---|---|
+| `GET /api/geo/cep/:cep` | Sem SSRF: só dígitos, dois hosts fixos, teto de tempo, nada gravado. Teto por IP já existia. |
+| Cadeia de IA (`provedores.ts`) | Chave nunca sai em resposta nem em log; plano lido do banco; entrada com teto de itens e caracteres. O giro de chaves é memória de processo, não dado. |
+| Webhook de cobrança | HMAC sobre o corpo **cru**, comparação em tempo constante, comprimento conferido antes, falha fechada sem segredo. Corpo cru preservado só nessa rota. |
+| Sessão (cookie, CSRF, renovação) | Falha fechada em todos os ramos; cache invalidado no logout **e** no logout-all; teto absoluto de pé. |
+| `escapeHtml`/`jsonLdSeguro` na borda | Cobrem atributo, corpo e o `</script` dentro do JSON-LD. A edge function falha para o lado seguro. |
+| SVG do cartão de visita | Todo texto de usuário passa por `esc()`; o `dangerouslySetInnerHTML` recebe só o que o nosso gerador montou. |
+| SQL | Nenhum `queryRaw`/`executeRaw` no código. O `bi_leitor.sql` recebe a senha por `-v`, não escrita no arquivo. |
+| Escritório (`firms`) | Toda rota confere que o recurso é do escritório que o usuário administra, antes de mexer. Sem IDOR. |
+| Paginação do painel | Teto de 100 por página, cursor no histórico, desempate por id. |
+| `target="_blank"` sem `rel` | Os quatro casos são `<Link>` interno (mesma origem). Sem exposição de `window.opener`. |
+| `BILLING_WEBHOOK_SECRET` fora do `assertSecureConfig` | Deixado de fora **de propósito**: a rota já falha fechada sem ele, e torná-lo obrigatório no boot derrubaria a API em produção por um segredo que hoje não protege tráfego nenhum. Entra na lista quando a cobrança for ligada. |
+
+---
+
+## Continua em aberto
+
+Os itens 1 a 5 e 7 da auditoria anterior seguem válidos (enumeração no cadastro,
+cookie de terceiros, cobrança simulada, `connect-src https:`, honeypots,
+recuperação de senha do painel). Somam-se:
+
+8. **A rotação dos segredos do item 1.** É a única pendência **crítica** desta
+   auditoria, e não há código que a resolva.
+
+9. **`GET /api/directory` sem tela e sem limite de tentativas.** Está mais magra
+   e mais rígida, mas continua sendo uma rota pública que ninguém chama. Decidir:
+   remover, ou dar-lhe teto por IP quando a tela de busca nascer.
+
+---
+---
+
+# Auditoria de 21/08/2026
+
 
 Aplicação das regras de `vulnerabilidades.md` (OWASP Top 10 + race conditions +
 validação + privacidade) ao código do ADVOC.ME. Este arquivo registra **o que

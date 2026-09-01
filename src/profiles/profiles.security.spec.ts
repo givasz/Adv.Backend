@@ -237,3 +237,122 @@ describe('ordem das redes', () => {
     ])
   })
 })
+
+// ---------------------------------------------------------------------------
+// A rota da foto e a busca pública — auditoria de 01/09/2026.
+//
+// As duas devolvem coisa ao mundo inteiro, sem sessão. Estes testes travam o que
+// elas NÃO podem voltar a fazer.
+// ---------------------------------------------------------------------------
+
+function servicoDeLeitura(avatarUrl: string | null, extras: Qualquer = {}) {
+  const prisma: Qualquer = {
+    profile: {
+      findFirst: vi.fn().mockResolvedValue(avatarUrl === null && !extras.linhas ? null : { avatarUrl, ...extras }),
+      findMany: vi.fn().mockResolvedValue(extras.linhas ?? []),
+    },
+  }
+  return { svc: new ProfilesService(prisma as any), prisma }
+}
+
+describe('GET /profiles/:slug/avatar', () => {
+  it('devolve os bytes quando a foto é a imagem embutida que guardamos', async () => {
+    // 1x1 PNG transparente.
+    const b64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+    const { svc } = servicoDeLeitura(`data:image/png;base64,${b64}`)
+    const foto = await svc.avatarBySlug('marina')
+    expect(foto.contentType).toBe('image/png')
+    // Os bytes de um PNG começam sempre com esta assinatura.
+    expect(foto.bytes.subarray(0, 4)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+  })
+
+  it('NÃO redireciona para a foto hospedada fora — seria redirecionamento aberto', async () => {
+    // O cenário do atacante: conta grátis, foto apontada para onde ele quiser, e
+    // um link do NOSSO domínio levando à página dele. Criar a conta é o único
+    // custo, e ele é zero.
+    const { svc } = servicoDeLeitura('https://site-do-golpe.example/pagina')
+    await expect(svc.avatarBySlug('marina')).rejects.toThrow(/Sem foto/)
+  })
+
+  it('recusa esquema que não é https nem data (o que já estiver gravado, também)', async () => {
+    const { svc } = servicoDeLeitura('javascript:alert(1)')
+    await expect(svc.avatarBySlug('marina')).rejects.toThrow(/Sem foto/)
+  })
+})
+
+describe('GET /directory', () => {
+  const linha = (slug: string, avatarUrl: string | null) => ({
+    slug,
+    name: `Advogado ${slug}`,
+    oabNumber: 'OAB/SP 1',
+    headline: '',
+    city: 'São Paulo',
+    state: 'SP',
+    avatarUrl,
+    areas: [],
+  })
+
+  it('devolve o ENDEREÇO da foto, nunca os bytes embutidos', async () => {
+    // 40 fotos de ~300 KB numa rota pública e sem sessão eram megabytes por
+    // requisição — tráfego de graça para quem quisesse pedir em laço.
+    const gordo = `data:image/png;base64,${'A'.repeat(5000)}`
+    const { svc } = servicoDeLeitura(null, { linhas: [linha('marina', gordo)] })
+    const [r] = await svc.search()
+    expect(r.avatarUrl).toBe('/api/profiles/marina/avatar')
+    expect(JSON.stringify(r).length).toBeLessThan(500)
+  })
+
+  it('foto hospedada fora sai como está — ela já é um endereço público', async () => {
+    const { svc } = servicoDeLeitura(null, {
+      linhas: [linha('marina', 'https://cdn.exemplo/foto.jpg')],
+    })
+    const [r] = await svc.search()
+    expect(r.avatarUrl).toBe('https://cdn.exemplo/foto.jpg')
+  })
+
+
+  it('corta o termo de busca antes de mandá-lo ao banco', async () => {
+    const { svc, prisma } = servicoDeLeitura(null, { linhas: [] })
+    await svc.search('a'.repeat(50_000))
+    // `.find(c => c.OR)` não serve: a condição de moderação também é um `OR`.
+    const busca = prisma.profile.findMany.mock.calls[0][0].where.AND.find(
+      (c: Qualquer) => c.OR?.[0]?.name,
+    )
+    expect(busca.OR[0].name.contains.length).toBeLessThanOrEqual(120)
+  })
+
+  /**
+   * A trava do vazamento de moderação.
+   *
+   * O `where` era um objeto só, com a condição de moderação e a de texto
+   * disputando a MESMA chave `OR` — e a segunda vencia. O efeito: perfil tirado
+   * do ar reaparecia na busca pública para quem digitasse o nome dele.
+   *
+   * O teste é sobre a FORMA da consulta, não sobre o resultado, porque não há
+   * banco aqui: verifica que a condição de moderação continua na consulta
+   * também quando há termo de busca. É o que uma dublê consegue provar — e é o
+   * bastante, porque o defeito era exatamente ela sumir.
+   */
+  it('mantém o filtro de moderação quando há termo de busca', async () => {
+    const { svc, prisma } = servicoDeLeitura(null, { linhas: [] })
+    await svc.search('marina')
+    const cond = prisma.profile.findMany.mock.calls[0][0].where.AND
+    const moderacao = cond.find((c: Qualquer) => c.published === true)
+    expect(moderacao).toBeDefined()
+    expect(moderacao.OR).toEqual([
+      { moderationStatus: { not: 'restricted' } },
+      { moderationUntil: { lte: expect.any(Date) } },
+    ])
+    // E a busca por texto continua lá, como condição SEPARADA.
+    expect(cond.some((c: Qualquer) => c.OR?.[0]?.name)).toBe(true)
+  })
+
+  it('sem termo, a consulta leva só a condição de moderação', async () => {
+    const { svc, prisma } = servicoDeLeitura(null, { linhas: [] })
+    await svc.search('   ')
+    const cond = prisma.profile.findMany.mock.calls[0][0].where.AND
+    expect(cond).toHaveLength(1)
+    expect(cond[0].published).toBe(true)
+  })
+})

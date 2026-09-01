@@ -215,17 +215,37 @@ export class ProfilesService {
    * por HTTP, num processo que nem abre a página. Enquanto a única forma da foto
    * era o data URI, todo perfil compartilhado saía sem rosto.
    *
-   * Devolve os bytes decodificados com o tipo certo. Quando a foto já é uma URL
-   * https (o outro formato que o saneamento aceita), devolve a URL para o
-   * chamador redirecionar — não buscamos imagem de terceiro por conta própria,
-   * que seria transformar a API num proxy aberto de saída.
+   * Devolve os bytes decodificados com o tipo certo — e SÓ isso.
+   *
+   * ---------------------------------------------------------------------------
+   * POR QUE ESTA ROTA NÃO REDIRECIONA MAIS (auditoria de 01/09/2026)
+   *
+   * Ela devolvia `{ kind: 'redirect' }` quando a foto era uma URL https (o outro
+   * formato que o saneamento aceita, para quem prefere hospedar a imagem fora).
+   * O controller respondia `302` para o endereço gravado.
+   *
+   * Isso era um REDIRECIONAMENTO ABERTO na nossa origem. Criar conta é grátis:
+   * bastava salvar `avatarUrl: "https://site-do-golpe/…"`, publicar o perfil, e
+   * `advoc.me/api/profiles/<slug>/avatar` passava a levar a qualquer lugar. O
+   * link para mandar à vítima é do domínio da plataforma — que é exatamente o que
+   * um filtro de e-mail, um antivírus e a própria pessoa olham antes de clicar.
+   * De quebra, todo visitante da prévia entregava IP e User-Agent a um terceiro
+   * que ele não escolheu, com a nossa origem servindo de intermediária.
+   *
+   * A correção não é buscar a imagem por conta própria (isso seria trocar um
+   * redirecionamento aberto por um proxy de saída, com SSRF junto). É reconhecer
+   * que a rota nunca precisou desse caso: quando a foto JÁ é uma URL https
+   * pública, ela já é buscável pelo robô do mensageiro, e o `og:image` aponta
+   * direto para ela (ver frontend/src/lib/ogTags.ts, ogImageUrl). Não há nada que
+   * a nossa origem no meio acrescente — só o que ela empresta.
+   *
+   * Sobra o caso que é de verdade nosso: os bytes que só existem no nosso banco.
+   * ---------------------------------------------------------------------------
    *
    * Não incrementa visita: quem carrega a prévia é o robô do mensageiro, não uma
    * pessoa. Contar isso inflaria a métrica do advogado com robô.
    */
-  async avatarBySlug(slug: string): Promise<
-    { kind: 'bytes'; bytes: Buffer; contentType: string } | { kind: 'redirect'; url: string }
-  > {
+  async avatarBySlug(slug: string): Promise<{ bytes: Buffer; contentType: string }> {
     const profile = await this.prisma.profile.findFirst({
       where: { slug, ...this.visivelAoPublico() },
       select: { avatarUrl: true },
@@ -234,12 +254,12 @@ export class ProfilesService {
     if (!src) throw new NotFoundException('Sem foto')
 
     const m = /^data:(image\/(?:png|jpeg|jpg|webp|gif));base64,([A-Za-z0-9+/=]+)$/.exec(src)
-    if (m) {
-      const contentType = m[1] === 'image/jpg' ? 'image/jpeg' : m[1]
-      return { kind: 'bytes', bytes: Buffer.from(m[2], 'base64'), contentType }
-    }
-    if (src.startsWith('https://')) return { kind: 'redirect', url: src }
-    throw new NotFoundException('Sem foto')
+    // Foto hospedada fora: 404 aqui de propósito. Quem a serve é o host dela, e
+    // o og:image aponta para lá — esta rota só entrega o que é nosso.
+    if (!m) throw new NotFoundException('Sem foto')
+
+    const contentType = m[1] === 'image/jpg' ? 'image/jpeg' : m[1]
+    return { bytes: Buffer.from(m[2], 'base64'), contentType }
   }
 
   /**
@@ -1285,29 +1305,79 @@ export class ProfilesService {
     return pagina(itens, total, take, skip)
   }
 
+  /**
+   * GET /api/directory — busca pública de advogados.
+   *
+   * Rota SEM sessão, e o que ela devolve chega a qualquer um. Três cuidados que
+   * ela não tinha antes da auditoria de 01/09/2026:
+   *
+   * 1. **A foto sai como ENDEREÇO, não como os bytes.** `avatarUrl` é um data URI
+   *    de até ~300 KB (ver security/sanitize.ts). Quarenta perfis com foto eram
+   *    até 12 MB de resposta numa rota pública, sem sessão e sem teto — um laço
+   *    de terminal que custa uma requisição de nada e devolve megabytes é
+   *    amplificação de graça, e a conta do tráfego é da VPS. Agora vai o endereço
+   *    de `/api/profiles/:slug/avatar`, que o navegador busca sob demanda, guarda
+   *    em cache por uma hora e só para quem ele de fato desenhar.
+   *
+   * 2. **Teto no termo de busca.** `q` ia inteiro para um `contains`. Um termo de
+   *    dezenas de milhares de caracteres não encontra nada — só faz o banco
+   *    varrer a tabela três vezes por requisição.
+   *
+   * 3. **Teto de resultados exposto.** Continua 40, agora numa constante com
+   *    nome: é o número que separa "busca" de "baixar a base de advogados".
+   *
+   * ⚠️ Esta rota não é chamada por nenhuma tela hoje (`searchDirectory` existe em
+   * frontend/src/lib/api.ts e ninguém a usa). Enquanto ela existir, é superfície
+   * pública que precisa se defender sozinha — e no dia em que a tela de busca
+   * nascer, ela já nasce assim. Se a decisão for que não haverá diretório
+   * público, o certo é REMOVER a rota, não deixá-la de porta aberta.
+   */
   async search(q?: string, area?: string) {
+    const termo = typeof q === 'string' ? q.trim().slice(0, DIRECTORY_Q_MAX) : ''
+    const filtroArea = typeof area === 'string' ? area.trim().slice(0, 80) : ''
     const rows = await this.prisma.profile.findMany({
+      // `AND` explícito, e não um espalhamento de objetos.
+      //
+      // ⚠️ Isto JÁ FOI um vazamento de moderação, encontrado pelo teste abaixo em
+      // 01/09/2026. O `where` era montado assim:
+      //
+      //     { ...this.visivelAoPublico(),        // traz OR: [não restrito, prazo vencido]
+      //       ...(termo ? { OR: [nome, cidade, área] } : {}) }
+      //
+      // Duas chaves `OR` no mesmo objeto literal: a segunda SOBRESCREVE a
+      // primeira. Sem termo de busca, a condição de moderação valia; com termo,
+      // ela desaparecia — e um perfil tirado do ar voltava a aparecer na busca
+      // pública para quem digitasse o nome dele. Que é exatamente como alguém
+      // procura um advogado específico.
+      //
+      // Nada na tela denunciava isso, e nenhum teste pegava: os dois caminhos
+      // pareciam o mesmo código. `AND` torna a composição impossível de colidir —
+      // cada condição é um item da lista, e lista não sobrescreve item.
       where: {
-        ...this.visivelAoPublico(),
-        ...(area ? { areas: { some: { label: area } } } : {}),
-        // `contains` portável entre SQLite (dev) e Postgres. No SQLite o LIKE já é
-        // case-insensitive p/ ASCII; em produção Postgres, use índice lower()/citext
-        // para busca acento/caixa-insensível sem depender de `mode` (provider-specific).
-        ...(q
-          ? {
-              OR: [
-                { name: { contains: q } },
-                { city: { contains: q } },
-                { areas: { some: { label: { contains: q } } } },
-              ],
-            }
-          : {}),
+        AND: [
+          this.visivelAoPublico(),
+          ...(filtroArea ? [{ areas: { some: { label: filtroArea } } }] : []),
+          // `contains` portável entre SQLite (dev) e Postgres. No SQLite o LIKE já é
+          // case-insensitive p/ ASCII; em produção Postgres, use índice lower()/citext
+          // para busca acento/caixa-insensível sem depender de `mode` (provider-specific).
+          ...(termo
+            ? [
+                {
+                  OR: [
+                    { name: { contains: termo } },
+                    { city: { contains: termo } },
+                    { areas: { some: { label: { contains: termo } } } },
+                  ],
+                },
+              ]
+            : []),
+        ],
       },
       // Ordenação por critério objetivo e não-comercial (alfabético por nome).
       // Prov. 205/2021 Art.5º §1º veda pagamento por destaque/posição em rankings —
       // por isso NÃO ordenamos por plano de assinatura. Ver REGRAS.md §3.
       orderBy: [{ name: 'asc' }],
-      take: 40,
+      take: DIRECTORY_MAX,
       select: {
         slug: true,
         name: true,
@@ -1319,7 +1389,29 @@ export class ProfilesService {
         areas: { select: { label: true }, orderBy: { order: 'asc' } },
       },
     })
-    // DirectoryResult espera `areas: string[]` (não objetos).
-    return rows.map((r) => ({ ...r, areas: r.areas.map((a) => a.label) }))
+    return rows.map((r) => ({
+      ...r,
+      // DirectoryResult espera `areas: string[]` (não objetos).
+      areas: r.areas.map((a) => a.label),
+      avatarUrl: avatarParaLista(r.slug, r.avatarUrl),
+    }))
   }
+}
+
+/** Teto de resultados da busca pública. */
+const DIRECTORY_MAX = 40
+/** Teto do termo de busca. Acima disto não é busca, é carga sobre o banco. */
+const DIRECTORY_Q_MAX = 120
+
+/**
+ * A foto de um item de lista — sempre um ENDEREÇO, nunca os bytes.
+ *
+ * O data URI vira o caminho da nossa rota de avatar (que serve os bytes com
+ * cache de uma hora); a foto hospedada fora segue como está, porque já é um
+ * endereço público e a nossa origem não tem o que acrescentar no meio dela.
+ */
+function avatarParaLista(slug: string, avatarUrl: string | null): string | undefined {
+  if (!avatarUrl) return undefined
+  if (avatarUrl.startsWith('data:')) return `/api/profiles/${encodeURIComponent(slug)}/avatar`
+  return avatarUrl.startsWith('https://') ? avatarUrl : undefined
 }

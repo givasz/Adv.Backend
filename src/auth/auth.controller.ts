@@ -95,7 +95,19 @@ export class AuthController {
     enforceRateLimit(
       [
         [`login:ip:${endereco}`, AUTH_RATE_RULES.loginPerIp],
-        [`login:email:${email}`, AUTH_RATE_RULES.loginPerEmail],
+        // A chave leva a IMPRESSÃO DIGITAL do e-mail, não o e-mail.
+        //
+        // Não é preciosismo: quando um limite estoura, `enforceRateLimit` grava
+        // uma linha de auditoria com a chave dentro (`resource`). Com o e-mail
+        // cru ali, bastava alguém errar a senha oito vezes para o endereço dele
+        // ficar escrito no log — e um arquivo de log com e-mails é a mesma lista
+        // de clientes que a proteção contra enumeração existe para não entregar.
+        // O resto deste arquivo já usava `fingerprint` pelo mesmo motivo; a chave
+        // do limitador tinha ficado de fora.
+        //
+        // A função do limite não muda: a impressão digital é determinística, logo
+        // continua sendo a MESMA chave para o mesmo e-mail.
+        [`login:email:${subject ?? 'sem-email'}`, AUTH_RATE_RULES.loginPerEmail],
       ],
       'Muitas tentativas de entrada. Aguarde alguns minutos e tente novamente.',
     )

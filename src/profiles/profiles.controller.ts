@@ -20,7 +20,6 @@ import {
  */
 interface RespostaHttp {
   setHeader(nome: string, valor: string): void
-  redirect(status: number, url: string): void
   end(corpo?: Buffer): void
 }
 import { ProfilesService } from './profiles.service'
@@ -117,8 +116,11 @@ export class ProfilesController {
    */
   @Get('profiles/:slug/avatar')
   async avatar(@Param('slug') slug: string, @Res() res: RespostaHttp) {
+    // Só bytes. A rota NÃO redireciona: enquanto redirecionava para a foto
+    // hospedada fora, ela era um redirecionamento aberto na nossa origem — conta
+    // grátis, `avatarUrl` apontando para onde o dono quisesse, e um link do
+    // domínio da plataforma levando a qualquer lugar. Ver ProfilesService.
     const foto = await this.profiles.avatarBySlug(slug)
-    if (foto.kind === 'redirect') return res.redirect(302, foto.url)
     res.setHeader('Content-Type', foto.contentType)
     res.setHeader('Cache-Control', 'public, max-age=3600')
     // A foto é imagem, e só. Sem isto, um arquivo forjado que passasse pelo

@@ -75,9 +75,22 @@ export const AUTH_RATE_RULES = {
   loginPerIp: { windowMs: 10 * 60 * 1000, max: 20 } as Rule,
   loginPerEmail: { windowMs: 15 * 60 * 1000, max: 8 } as Rule,
   signupPerIp: { windowMs: 60 * 60 * 1000, max: 8 } as Rule,
-  // Painel de moderação: uma senha só, então o teto é bem mais apertado.
+  // Painel de moderação: o teto é bem mais apertado que o do advogado.
   adminLoginPerIp: { windowMs: 15 * 60 * 1000, max: 6 } as Rule,
-  adminLoginGlobal: { windowMs: 15 * 60 * 1000, max: 40 } as Rule,
+  // Por CONTA do painel — o dicionário contra UM administrador, que trocar de IP
+  // não resolve. É o teto que faz o trabalho fino, e é o que permitiu afrouxar o
+  // global abaixo sem perder proteção.
+  adminLoginPerAccount: { windowMs: 15 * 60 * 1000, max: 8 } as Rule,
+  // Backstop contra varredura distribuída, e SÓ isso.
+  //
+  // Era 40. Com 40, qualquer pessoa de fora derrubava o acesso de TODOS os
+  // administradores por quinze minutos gastando quarenta requisições — sem
+  // conhecer um usuário, sem saber uma senha. Num painel cuja função é tirar
+  // conteúdo irregular do ar, esse desligamento remoto era a falha mais barata
+  // de explorar que havia aqui. 400 continua sendo um volume que nenhum uso
+  // legítimo alcança (são no máximo um punhado de administradores), e agora ele
+  // é a última linha, não a primeira.
+  adminLoginGlobal: { windowMs: 15 * 60 * 1000, max: 400 } as Rule,
 }
 
 // Geração de texto por IA: cada chamada custa dinheiro num provedor pago. Sem

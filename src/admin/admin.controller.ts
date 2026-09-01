@@ -11,6 +11,7 @@ import { ROLE_DESCRICAO, ROLE_LABEL, ADMIN_ROLES } from './admin-roles'
 import type { RequisicaoComAuth } from '../auth/session-context'
 import { clientIp } from '../security/net'
 import { AUTH_RATE_RULES, enforceRateLimit } from '../security/rate-limit'
+import { fingerprint } from '../security/audit-log'
 
 @Controller('admin')
 export class AdminController {
@@ -34,10 +35,29 @@ export class AdminController {
   ) {
     const endereco = clientIp(ip, forwardedFor)
     // Sem teto de tentativas, uma senha que protege o painel inteiro é só questão
-    // de tempo. O limite global segura a mesma varredura vinda de muitos IPs.
+    // de tempo. São três chaves, e a do meio é nova (auditoria de 01/09/2026):
+    //
+    //   • por IP — o caminho normal da força bruta;
+    //   • por CONTA — o dicionário contra UMA pessoa, que trocar de IP não
+    //     resolve. Vai pela impressão digital do usuário, nunca pelo usuário em
+    //     si: a chave acaba no registro de auditoria quando o limite estoura.
+    //   • global — a rede de segurança contra a varredura distribuída.
+    //
+    // O global sozinho tinha um efeito perverso: em 40 tentativas erradas
+    // qualquer pessoa TRANCAVA O PAINEL INTEIRO por quinze minutos, sem saber
+    // uma senha e sem conhecer um usuário. Num painel que existe para tirar
+    // conteúdo irregular do ar, deixar que um estranho o desligue de fora é uma
+    // falha de disponibilidade tão séria quanto a de acesso — e mais fácil de
+    // explorar. O teto por conta é o que faz o trabalho fino, então o global
+    // pôde subir para o que ele sempre deveria ter sido: um backstop que só
+    // reage a um volume que não tem explicação legítima.
     enforceRateLimit(
       [
         [`admin-login:${endereco}`, AUTH_RATE_RULES.adminLoginPerIp],
+        [
+          `admin-login:conta:${fingerprint(body?.username) ?? 'sem-usuario'}`,
+          AUTH_RATE_RULES.adminLoginPerAccount,
+        ],
         ['admin-login:global', AUTH_RATE_RULES.adminLoginGlobal],
       ],
       'Muitas tentativas. Aguarde alguns minutos.',
