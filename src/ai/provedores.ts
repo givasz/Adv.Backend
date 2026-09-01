@@ -55,6 +55,46 @@ export interface Provedor {
   semChave?: boolean
   /** Como está a gratuidade hoje. Só documentação: nada no código lê isto. */
   custo: 'gratis' | 'credito-de-teste' | 'local' | 'pago'
+  /**
+   * O provedor pode TREINAR com o que mandamos?
+   *
+   * -------------------------------------------------------------------------
+   * POR QUE ESTE CAMPO EXISTE (auditoria de 01/09/2026)
+   *
+   * A Política de IA publicada em /legal/ia afirma, sem ressalva:
+   *
+   *     "Não usamos os seus dados para treinar modelos de terceiros."
+   *
+   * E o que sai daqui não é anônimo: vai o NOME do advogado (headline e bio), a
+   * CIDADE/UF e as ÁREAS no plano Max, e o TEXTO QUE ELE JÁ ESCREVEU (bio ou
+   * resposta de FAQ, até 2000 caracteres) quando ele pede para melhorar.
+   *
+   * Essa promessa não é nossa para cumprir sozinhos: quem decide se treina é o
+   * provedor, nos termos DELE. E a cadeia montada hoje é feita de tier grátis —
+   * que é, historicamente, onde os provedores se reservam esse direito, e é
+   * justamente o que se troca pelo preço zero. O próprio catálogo abaixo já
+   * dizia isso de um deles em voz alta ("crédito mensal em troca de deixar a
+   * xAI treinar com o tráfego") sem que nada no código levasse o fato em conta.
+   *
+   * Então o fato passa a ser um campo, e não um comentário: quem monta
+   * `AI_PROVIDER` vê o que está escolhendo, e `avisarSobreTreinoDeIa()` reclama
+   * no boot quando a cadeia configurada contradiz a política publicada.
+   *
+   * ⚠️ NÃO é um bloqueio. Derrubar a IA em produção por causa disto seria trocar
+   * um problema de privacidade por uma indisponibilidade — e a decisão de qual
+   * provedor é aceitável é de quem responde pela plataforma, não do código. O
+   * código informa; a escolha continua sendo humana.
+   *
+   * ⚠️ Como `custo`, isto ENVELHECE: é termo de terceiro e muda sem aviso.
+   * Confira no contrato do provedor antes de confiar. Conferido em 01/09/2026.
+   * -------------------------------------------------------------------------
+   *
+   *   'nao'    — o contrato diz que não treina com o que entra pela API.
+   *   'talvez' — depende do tier ou de uma opção da conta. Trate como 'sim'
+   *              até alguém ler o contrato daquela conta e concluir o contrário.
+   *   'local'  — não sai da nossa máquina; não há terceiro nenhum.
+   */
+  treinaComOsDados: 'nao' | 'talvez' | 'local'
 }
 
 /**
@@ -71,6 +111,10 @@ export const PROVEDORES: Record<Provider, Provedor> = {
     envs: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
     modeloPadrao: 'gemini-flash-lite-latest',
     custo: 'gratis',
+    // O tier grátis do Gemini (chave do AI Studio) e o pago tratam o conteúdo de
+    // forma diferente — o grátis é o que se paga com os dados. Confira o termo
+    // vigente da SUA chave antes de tratar como 'nao'.
+    treinaComOsDados: 'talvez',
   },
   // GroqCloud (console.groq.com) — NÃO é o Grok da xAI, apesar do nome.
   // É o melhor reserva que existe hoje: tier grátis de verdade, sem cartão,
@@ -81,6 +125,7 @@ export const PROVEDORES: Record<Provider, Provedor> = {
     baseOpenAi: 'https://api.groq.com/openai/v1',
     modeloPadrao: 'llama-3.3-70b-versatile',
     custo: 'gratis',
+    treinaComOsDados: 'talvez',
   },
   // OpenRouter (openrouter.ai) — um endereço, dezenas de modelos, e um punhado
   // deles com sufixo ":free". Reserva do reserva: se um modelo grátis sai do ar,
@@ -94,6 +139,11 @@ export const PROVEDORES: Record<Provider, Provedor> = {
     baseOpenAi: 'https://openrouter.ai/api/v1',
     modeloPadrao: 'google/gemma-4-31b-it:free',
     custo: 'gratis',
+    // Os modelos ":free" do OpenRouter costumam vir atrelados a uma opção de
+    // compartilhar o tráfego — é o que os torna grátis. Um modelo PAGO do mesmo
+    // OpenRouter não tem a mesma condição: aqui o que decide é o modelo, não só
+    // o provedor.
+    treinaComOsDados: 'talvez',
   },
   // xAI — o Grok de verdade (console.x.ai). Entra aqui porque foi pedido, mas
   // com o aviso: ele NÃO tem tier grátis permanente. O que existe é crédito de
@@ -109,6 +159,9 @@ export const PROVEDORES: Record<Provider, Provedor> = {
     // AI_MODEL_XAI sem mexer em código.
     modeloPadrao: 'grok-4-fast-non-reasoning',
     custo: 'credito-de-teste',
+    // O próprio comentário acima já dizia: em algumas janelas o crédito mensal é
+    // dado EM TROCA de deixar a xAI treinar com o tráfego.
+    treinaComOsDados: 'talvez',
   },
   // Claude — pago, e é por isso que ele NUNCA entra na cadeia sozinho: ninguém
   // deve descobrir que a cota grátis acabou pela fatura.
@@ -117,6 +170,10 @@ export const PROVEDORES: Record<Provider, Provedor> = {
     envs: ['ANTHROPIC_API_KEY'],
     modeloPadrao: 'claude-sonnet-5',
     custo: 'pago',
+    // O termo da API paga da Anthropic não treina com o que entra pela API. É o
+    // único da lista que sustenta a promessa de /legal/ia sem ressalva — e custa
+    // dinheiro, que é exatamente a troca.
+    treinaComOsDados: 'nao',
   },
   // LLM local (desenvolvimento). Sem chave e sem custo — mas só existe onde o
   // Ollama estiver rodando, então na VPS ele nunca deveria ser o primeiro.
@@ -126,6 +183,8 @@ export const PROVEDORES: Record<Provider, Provedor> = {
     modeloPadrao: 'llama3.2:3b',
     semChave: true,
     custo: 'local',
+    // Não sai da máquina: não há terceiro para treinar com nada.
+    treinaComOsDados: 'local',
   },
 }
 
@@ -176,6 +235,49 @@ export function cadeiaConfigurada(env: NodeJS.ProcessEnv): Provider[] {
 export function cadeiaUtil(env: NodeJS.ProcessEnv): Provider[] {
   return cadeiaConfigurada(env).filter(
     (p) => PROVEDORES[p].semChave || lerChaves(env, p).length > 0,
+  )
+}
+
+/**
+ * Provedores da cadeia atual que PODEM treinar com o que mandamos.
+ *
+ * Vazio é o estado que a Política de IA descreve; qualquer outra coisa é uma
+ * diferença entre o que está publicado e o que está configurado.
+ */
+export function provedoresQueTreinam(env: NodeJS.ProcessEnv): Provider[] {
+  return cadeiaUtil(env).filter((p) => PROVEDORES[p].treinaComOsDados === 'talvez')
+}
+
+/**
+ * Aviso de boot: a cadeia configurada sustenta o que /legal/ia promete?
+ *
+ * A política diz "Não usamos os seus dados para treinar modelos de terceiros", e
+ * o que sai daqui tem nome, cidade e o texto que o advogado escreveu. Quando a
+ * cadeia tem um provedor de tier grátis, essa frase depende de um contrato de
+ * terceiro que ninguém conferiu — e uma promessa de privacidade que a
+ * configuração não sustenta é pior do que não ter feito a promessa.
+ *
+ * AVISA, não derruba. Bloquear aqui trocaria um problema de privacidade por uma
+ * indisponibilidade, e qual provedor é aceitável é decisão de quem responde pela
+ * plataforma. O código põe o fato na frente de quem decide; a escolha é humana.
+ *
+ * `AI_TREINO_CIENTE=1` cala o aviso — para quem leu o contrato da própria chave
+ * e concluiu que está tudo certo. É opt-in explícito, e não o padrão, porque o
+ * silêncio por padrão é como esta diferença passou despercebida até aqui.
+ */
+export function avisarSobreTreinoDeIa(
+  env: NodeJS.ProcessEnv = process.env,
+  avisar: (msg: string) => void = console.warn,
+): void {
+  if (env.AI_TREINO_CIENTE === '1' || env.AI_TREINO_CIENTE === 'true') return
+  const treinam = provedoresQueTreinam(env)
+  if (!treinam.length) return
+  avisar(
+    `[privacidade] A cadeia de IA usa ${treinam.join(', ')} — tier em que o provedor ` +
+      'pode treinar com o que enviamos (nome, cidade e o texto do advogado).\n' +
+      '  /legal/ia promete "Não usamos os seus dados para treinar modelos de terceiros".\n' +
+      '  Confira o contrato da sua chave. Se estiver certo, AI_TREINO_CIENTE=1 cala este aviso;\n' +
+      '  se não, troque a cadeia (ver treinaComOsDados em ai/provedores.ts) ou ajuste a política.',
   )
 }
 

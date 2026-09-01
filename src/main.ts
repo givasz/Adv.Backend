@@ -4,6 +4,7 @@ import { ValidationPipe } from '@nestjs/common'
 import type { NestExpressApplication } from '@nestjs/platform-express'
 import { AppModule } from './app.module'
 import { assertSecureConfig } from './security/config'
+import { avisarSobreTreinoDeIa } from './ai/provedores'
 import { securityHeaders } from './security/headers'
 import { sessionContext } from './auth/session-context'
 import { CSRF_HEADER, origemPermitida } from './auth/csrf'
@@ -17,6 +18,10 @@ async function bootstrap() {
   // Antes de qualquer rota existir: segredo de desenvolvimento em produção é
   // sessão forjável. Aqui o processo morre com a lista do que falta.
   assertSecureConfig()
+  // E aqui só reclama: a cadeia de IA configurada sustenta o que /legal/ia
+  // promete sobre treinamento? O que sai daqui leva nome, cidade e o texto do
+  // advogado. Ver ai/provedores.ts.
+  avisarSobreTreinoDeIa()
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bodyParser: true,

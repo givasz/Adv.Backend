@@ -8,6 +8,8 @@ import {
   lerChaves,
   modeloDe,
   PROVEDORES,
+  provedoresQueTreinam,
+  avisarSobreTreinoDeIa,
   type Provider,
 } from './provedores'
 
@@ -214,5 +216,74 @@ describe('o catálogo', () => {
     // puser aqui um provedor pago sem chave configurada, a conta chega antes do
     // aviso — daí a trava: o padrão tem de ser um provedor só e explícito.
     expect(CADEIA_PADRAO).toHaveLength(1)
+  })
+})
+
+// O que mandamos para a IA é dado do advogado — e a política publicada faz uma
+// promessa sobre ele.
+//
+// /legal/ia diz: "Não usamos os seus dados para treinar modelos de terceiros".
+// O prompt leva o NOME (headline e bio), a CIDADE/UF e as ÁREAS no Max, e o
+// TEXTO QUE O ADVOGADO ESCREVEU quando ele pede para melhorar. Quem decide se
+// treina é o provedor, no contrato dele — então a promessa depende da cadeia
+// configurada, e é isso que estes testes mantêm visível.
+describe('treinamento com dados do advogado', () => {
+  it('todo provedor declara a própria postura', () => {
+    for (const [nome, def] of Object.entries(PROVEDORES)) {
+      expect(
+        ['nao', 'talvez', 'local'],
+        `${nome} não diz se o provedor pode treinar com o que mandamos`,
+      ).toContain(def.treinaComOsDados)
+    }
+  })
+
+  it('o LLM local não conta como terceiro', () => {
+    expect(PROVEDORES.ollama.treinaComOsDados).toBe('local')
+  })
+
+  it('avisa quando a cadeia configurada contradiz a política publicada', () => {
+    const avisos: string[] = []
+    avisarSobreTreinoDeIa(
+      { AI_PROVIDER: 'gemini,groq', GEMINI_API_KEY: 'k', GROQ_API_KEY: 'k' } as never,
+      (m) => avisos.push(m),
+    )
+    expect(avisos).toHaveLength(1)
+    expect(avisos[0]).toContain('gemini')
+    expect(avisos[0]).toContain('groq')
+    // O aviso precisa dizer o que está em jogo, senão vira ruído que se ignora.
+    expect(avisos[0]).toMatch(/nome, cidade e o texto do advogado/)
+  })
+
+  it('cala quando a cadeia sustenta a promessa sozinha', () => {
+    const avisos: string[] = []
+    avisarSobreTreinoDeIa({ AI_PROVIDER: 'anthropic', ANTHROPIC_API_KEY: 'k' } as never, (m) =>
+      avisos.push(m),
+    )
+    expect(avisos).toEqual([])
+  })
+
+  it('provedor sem chave não gera aviso — ele não está na cadeia útil', () => {
+    // `AI_PROVIDER` pode listar reservas cuja chave ainda não chegou. Avisar
+    // sobre um provedor que nunca vai ser chamado é o começo do aviso ignorado.
+    const avisos: string[] = []
+    avisarSobreTreinoDeIa(
+      { AI_PROVIDER: 'anthropic,openrouter', ANTHROPIC_API_KEY: 'k' } as never,
+      (m) => avisos.push(m),
+    )
+    expect(avisos).toEqual([])
+  })
+
+  it('AI_TREINO_CIENTE=1 cala, e é opt-in explícito', () => {
+    const avisos: string[] = []
+    avisarSobreTreinoDeIa(
+      { AI_PROVIDER: 'gemini', GEMINI_API_KEY: 'k', AI_TREINO_CIENTE: '1' } as never,
+      (m) => avisos.push(m),
+    )
+    expect(avisos).toEqual([])
+  })
+
+  it('provedoresQueTreinam nomeia exatamente quem está em uso', () => {
+    const env = { AI_PROVIDER: 'anthropic,gemini', ANTHROPIC_API_KEY: 'k', GEMINI_API_KEY: 'k' }
+    expect(provedoresQueTreinam(env as never)).toEqual(['gemini'])
   })
 })
