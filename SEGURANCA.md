@@ -300,6 +300,100 @@ no controller de perfis é recusada.
 
 ---
 
+---
+
+## Por onde os dados do advogado saem — 01/09/2026 (terceira parte)
+
+As duas primeiras partes olharam o código e as rotas. Esta seguiu o **dado**: de
+cada campo que o advogado nos confia, para onde ele vai — inclusive pelos canais
+que não são HTTP.
+
+### 11. A promessa sobre treinamento de IA depende de um contrato que ninguém leu
+
+`/legal/ia` afirma, sem ressalva:
+
+> *"Não usamos os seus dados para treinar modelos de terceiros."*
+
+E o que sai daqui não é anônimo. O prompt leva:
+
+| Campo | Quando |
+|---|---|
+| **Nome** do advogado | frase de apresentação e bio |
+| **Cidade/UF** e **áreas** | plano Max ("enriquecimento") |
+| **O texto que ele já escreveu** (até 2000 caracteres) | ao pedir "melhorar" a bio ou uma resposta de FAQ |
+| Palavras-chave e a pergunta do FAQ | sempre |
+
+O problema não é o envio — é que **a promessa não é nossa para cumprir**. Quem
+decide se treina é o provedor, no contrato dele. E a cadeia de produção
+(`AI_PROVIDER=gemini,groq,openrouter`) é inteira de tier grátis, que é
+historicamente onde o provedor se reserva esse direito — é o que se troca pelo
+preço zero. O próprio catálogo já dizia isso de um deles em voz alta, sobre a
+xAI: *"crédito mensal em troca de deixar a xAI treinar com o tráfego"*. O fato
+estava escrito num comentário e nada no código o levava em conta.
+
+**O que foi feito.** A postura virou um campo do catálogo
+(`treinaComOsDados: 'nao' | 'talvez' | 'local'`), e `avisarSobreTreinoDeIa()`
+reclama no boot quando a cadeia configurada contradiz a política publicada:
+
+```
+[privacidade] A cadeia de IA usa gemini — tier em que o provedor pode treinar
+com o que enviamos (nome, cidade e o texto do advogado).
+  /legal/ia promete "Não usamos os seus dados para treinar modelos de terceiros".
+```
+
+**AVISA, não bloqueia** — e isso é deliberado. Derrubar a IA em produção trocaria
+um problema de privacidade por uma indisponibilidade, e *qual provedor é
+aceitável* é decisão de quem responde pela plataforma, não do código.
+`AI_TREINO_CIENTE=1` cala o aviso, para quem leu o contrato da própria chave.
+
+**A decisão continua aberta**, e é de negócio, não de engenharia. Três saídas,
+em ordem de custo:
+
+1. **Ler o contrato da chave atual.** Se o tier em uso não treina, `AI_TREINO_CIENTE=1`
+   e está encerrado — anote a data, porque termo de terceiro muda.
+2. **Trocar a cadeia** por um provedor cujo contrato sustente a frase. Hoje o
+   único do catálogo marcado como `'nao'` é a Anthropic, e ela é paga: é
+   exatamente essa a troca.
+3. **Ajustar a política** para dizer o que de fato acontece. É a saída honesta se
+   a 1 e a 2 não couberem — mas é ela que eu **não** faria sem você mandar:
+   enfraquecer uma promessa de privacidade publicada não é correção de bug.
+
+⚠️ `treinaComOsDados` **envelhece**, como `custo`. É termo de terceiro, conferido
+em 01/09/2026, e muda sem aviso.
+
+### 12. O perfil de exemplo carrega um número de OAB de aparência real
+
+`sampleProfile` (`frontend/src/lib/mockData.ts`) é renderizado na home, em
+produção, como um perfil de advogado funcionando: nome **Marina Sales**, inscrição
+**OAB/SP 214.870**, foto de uma pessoa real (Unsplash) e o `CnaLink` — o botão que
+manda consultar a inscrição no Cadastro Nacional dos Advogados.
+
+Não verifiquei se esse número pertence a alguém, e é justamente esse o ponto: se
+pertencer, a home publica um perfil fabricado com a inscrição de um terceiro, e o
+botão de consulta leva o visitante ao registro real dessa pessoa. O risco é
+assimétrico — usar um número inequivocamente fictício não custa nada.
+
+**Não mexi**: é decisão de produto sobre a vitrine, e mudar o texto da home sem
+você pedir passa do que a auditoria deve fazer. A recomendação é trocar por um
+número que não possa existir (uma faixa reservada, ou `OAB/SP 000.000`), ou
+marcar o card como exemplo de forma visível no próprio perfil — hoje só o BOTÃO
+da home diz "Ver um exemplo"; o perfil renderizado não diz nada.
+
+### Os canais conferidos, e o que cada um deixa passar
+
+| Canal | O que sai | Veredito |
+|---|---|---|
+| **Camada de BI** (`bi.dim_perfil` e afins) | slug, cidade/UF, plano, situação, contagens e **booleanos** (`tem_bio`, `tem_foto`), `length(bio)` | Minimizada de verdade: sem nome, e-mail, WhatsApp, endereço ou o texto da bio. `bi_leitor` tem `select` só no schema `bi` — nunca em `public`, logo nunca em `User` nem `Session`. |
+| **Retenção** | eventos 400d, auditoria 365d, cobrança 365d | Prazos definidos e aplicados por rotina do próprio processo. |
+| **Log de segurança** | impressão digital do e-mail, IP, User-Agent cortado | Corrigido na primeira parte desta auditoria (item 4). |
+| **`localStorage`** | rascunho anônimo e o retrato de quem está logado | Com conta, o perfil vem só do servidor: `saveProfile` em modo real devolve `res.json()` e não grava nada. |
+| **Prévia de link (borda)** | título, descrição, foto, JSON-LD | Endereço só entra no JSON-LD quando o advogado mandou aparecer — e agora a API também respeita isso (item 7). |
+| **`/api/sitemap`** | slug e data | É o mapa do site: existir é o objetivo. |
+| **Erros da API** | mensagem genérica | Nenhum controller ecoa `error.message`; o filtro padrão do Nest não devolve stack. |
+| **Consulta de CEP** | o CEP digitado, a dois provedores públicos | Atravessa e não é gravado; passa pela nossa origem justamente para não entregar IP e origem do advogado a terceiro. |
+
+---
+
 ## Verificado e considerado em ordem
 
 O que foi lido nesta passagem e **não** virou correção, com o motivo — para a
