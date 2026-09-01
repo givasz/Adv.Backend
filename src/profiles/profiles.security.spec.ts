@@ -138,6 +138,34 @@ describe('tamanho e tipo', () => {
   })
 })
 
+// O balão de conversa no canto do perfil (assistant.floating).
+//
+// É um elemento que segue o visitante pela página — o oposto da sobriedade que
+// o Prov. 205/2021 pede — e por isso nasce desligado e é perk de plano pago.
+// Duas travas, e as duas são do SERVIDOR: o front pode se enganar, o corpo da
+// requisição pode vir de qualquer lugar.
+describe('balão de conversa', () => {
+  it('só `true` liga — corpo malformado não liga um elemento que persegue', async () => {
+    for (const lixo of ['true', 1, 'sim', {}, [], null]) {
+      const { svc, gravado } = service()
+      await svc.update('u1', { ...base, assistant: { floating: lixo } })
+      expect(gravado[0].assistantFloating, `"${JSON.stringify(lixo)}" ligou o balão`).toBe(false)
+    }
+  })
+
+  it('grava ligado quando o advogado ligou de verdade', async () => {
+    const { svc, gravado } = service()
+    await svc.update('u1', { ...base, assistant: { floating: true } })
+    expect(gravado[0].assistantFloating).toBe(true)
+  })
+
+  it('ausente é desligado — o padrão nunca é aparecer', async () => {
+    const { svc, gravado } = service()
+    await svc.update('u1', { ...base, assistant: {} })
+    expect(gravado[0].assistantFloating).toBe(false)
+  })
+})
+
 describe('plano', () => {
   it('o plano do corpo é ignorado — quem manda é a assinatura do banco', async () => {
     const { svc, gravado } = service('free')

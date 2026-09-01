@@ -374,11 +374,21 @@ export class ProfilesService {
       assistantLeadHours: clampInt(a?.leadHours, 0, 168, 12),
       assistantHorizonDays: clampInt(a?.horizonDays, 1, 90, 14),
       assistantGreeting: String(a?.greeting ?? '').slice(0, 180),
+      // Só `true` liga. Qualquer outra coisa (ausente, string, número) desliga:
+      // um elemento que segue o visitante pela página não pode nascer de um
+      // corpo malformado — ligar é ato deliberado do advogado.
+      assistantFloating: a?.floating === true,
     }
   }
 
   // Colunas planas → objeto `assistant` do frontend.
-  private buildAssistant(p: any) {
+  //
+  // `plano` entra aqui por causa do balão flutuante, que é perk de plano pago: a
+  // trava vale na LEITURA, como a do vídeo e a do FAQ. Entre o dia em que a
+  // assinatura vence e a passagem da varredura que reconcilia o banco existe uma
+  // janela — se a leitura não fechasse a porta, o perfil seguiria com o balão
+  // dentro dela.
+  private buildAssistant(p: any, plano: Plan) {
     let days: { weekday: number; times: string[] }[] = []
     try {
       const parsed = JSON.parse(typeof p.assistantDays === 'string' ? p.assistantDays : '[]')
@@ -392,6 +402,7 @@ export class ProfilesService {
       leadHours: p.assistantLeadHours ?? 12,
       horizonDays: p.assistantHorizonDays ?? 14,
       greeting: p.assistantGreeting ?? '',
+      floating: canUseScheduling(plano) && p.assistantFloating === true,
     }
   }
 
@@ -541,7 +552,7 @@ export class ProfilesService {
         leadHours: p.bookingLeadHours ?? 12,
         horizonDays: p.bookingHorizonDays ?? 30,
       },
-      assistant: this.buildAssistant(p),
+      assistant: this.buildAssistant(p, plano),
       plan: plano,
       theme: resolveTheme(p.theme, plano),
       published: p.published,
