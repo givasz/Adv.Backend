@@ -356,3 +356,81 @@ describe('GET /directory', () => {
     expect(cond[0].published).toBe(true)
   })
 })
+
+describe('GET /profiles/:slug — endereço escondido', () => {
+  // O interruptor do editor promete, com estas palavras: "O endereço fica só com
+  // você — não aparece na página nem no cartão de contato que o visitante
+  // salva". E a dica diz para quem ele foi feito: "Quem atende em casa costuma
+  // deixar desligado". O dado em jogo é endereço residencial.
+  //
+  // Quem cumpria a promessa era o React. A API mandava tudo, e um `curl` no
+  // perfil público devolvia rua, número, complemento, bairro e CEP.
+  const linhaCom = (addressPublic: boolean) => ({
+    id: 'p1',
+    slug: 'marina-sales',
+    name: 'Marina Sales',
+    oabNumber: 'OAB/SP 1',
+    plan: 'premium',
+    planStatus: 'active',
+    published: true,
+    moderationStatus: 'active',
+    hiddenSections: '[]',
+    city: 'São Paulo',
+    state: 'SP',
+    addressZip: '01310100',
+    addressStreet: 'Rua de Casa',
+    addressNumber: '404',
+    addressComplement: 'Apto 72',
+    addressDistrict: 'Bela Vista',
+    addressPublic,
+    areas: [],
+    faqs: [],
+    socials: [],
+  })
+
+  function servicoDePerfil(linha: Qualquer) {
+    const prisma: Qualquer = {
+      profile: { findFirst: vi.fn().mockResolvedValue(linha), findUnique: vi.fn().mockResolvedValue(linha) },
+      linkEvent: { create: vi.fn(() => ({ catch: () => undefined })) },
+    }
+    return new ProfilesService(prisma as any)
+  }
+
+  it('não manda rua, número, complemento, bairro nem CEP ao visitante', async () => {
+    const svc = servicoDePerfil(linhaCom(false))
+    const publico = await svc.getBySlug('marina-sales')
+    expect(publico.address).toBeUndefined()
+    // A prova que interessa é sobre a resposta INTEIRA: não basta o campo
+    // `address` sumir se o endereço reaparecer em outro lugar do JSON.
+    const json = JSON.stringify(publico)
+    for (const pedaco of ['Rua de Casa', '404', 'Apto 72', 'Bela Vista', '01310100']) {
+      expect(json, `"${pedaco}" vazou na resposta pública`).not.toContain(pedaco)
+    }
+  })
+
+  it('cidade e estado continuam — foro geográfico é público por desenho', async () => {
+    const svc = servicoDePerfil(linhaCom(false))
+    const publico = await svc.getBySlug('marina-sales')
+    expect(publico.city).toBe('São Paulo')
+    expect(publico.state).toBe('SP')
+  })
+
+  it('com o interruptor ligado, o endereço vai inteiro (é o que o dono pediu)', async () => {
+    const svc = servicoDePerfil(linhaCom(true))
+    const publico = await svc.getBySlug('marina-sales')
+    expect(publico.address).toMatchObject({
+      rua: 'Rua de Casa',
+      numero: '404',
+      complemento: 'Apto 72',
+      bairro: 'Bela Vista',
+      cep: '01310100',
+      publico: true,
+    })
+  })
+
+  it('o DONO continua vendo o que escondeu — senão o campo se apaga na tela dele', async () => {
+    const svc = servicoDePerfil(linhaCom(false))
+    const meu = await svc.getMine('u1')
+    expect(meu!.address).toMatchObject({ rua: 'Rua de Casa', numero: '404', publico: false })
+  })
+})

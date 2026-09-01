@@ -369,3 +369,60 @@ describe('a mesma pessoa nunca aparece duas vezes', () => {
     expect(view.members.map((m: Qualquer) => m.kind)).toEqual(['invite'])
   })
 })
+
+// A página pública do escritório era a porta dos fundos da moderação.
+//
+// `GET /api/firms/:slug` não tem sessão e listava TODO membro ativo, sem olhar o
+// perfil de cada um. Então um advogado restringido saía do ar em `/:slug` e
+// continuava inteiro na página da sociedade — nome, foto, bio, OAB e WhatsApp —,
+// e o rascunho de quem nunca publicou ia junto.
+//
+// O teste é sobre a CONSULTA, não sobre o resultado: sem banco, o que dá para
+// provar é que a condição de visibilidade foi levada ao Prisma. É o bastante,
+// porque o defeito era ela não existir.
+describe('página pública do escritório', () => {
+  function servicoPublico() {
+    const prisma: Qualquer = {
+      firm: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ id: 'firm1', slug: 'andrade-vieira', members: [], roster: [] }),
+      },
+    }
+    return { svc: new FirmsService(prisma as any, {} as any), prisma }
+  }
+
+  it('só lista membro cujo perfil está publicado e não restringido', async () => {
+    const { svc, prisma } = servicoPublico()
+    await svc.getBySlug('andrade-vieira')
+    const filtro = prisma.firm.findUnique.mock.calls[0][0].include.members.where
+    expect(filtro.status).toBe('active')
+    // A mesma regra da página de perfil, da foto e do sitemap.
+    expect(filtro.profile.published).toBe(true)
+    expect(filtro.profile.OR).toEqual([
+      { moderationStatus: { not: 'restricted' } },
+      { moderationUntil: { lte: expect.any(Date) } },
+    ])
+  })
+
+  it('o EDITOR continua vendo todo mundo — inclusive quem está fora do ar', async () => {
+    // Quem administra precisa enxergar o membro restrito ou por publicar; é o que
+    // lhe permite cobrar a regularização em vez de ficar sem entender por que a
+    // página tem um card a menos.
+    const { svc, prisma } = servicoPublico()
+    prisma.firm.findFirst = vi.fn().mockResolvedValue({ id: 'firm1' })
+    prisma.firm.findUnique = vi.fn().mockResolvedValue({
+      id: 'firm1',
+      slug: 'andrade-vieira',
+      members: [],
+      invites: [],
+      roster: [],
+    })
+    prisma.firmMembership = { count: vi.fn().mockResolvedValue(0) }
+    prisma.firmInvite = { count: vi.fn().mockResolvedValue(0) }
+    prisma.firmRosterLawyer = { count: vi.fn().mockResolvedValue(0) }
+    await svc.getMine('u1')
+    const filtro = prisma.firm.findUnique.mock.calls[0][0].include.members.where
+    expect(filtro).toBeUndefined()
+  })
+})

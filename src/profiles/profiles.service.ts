@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
+import { perfilVisivelAoPublico } from './visibilidade'
 import { faixa, pagina } from '../admin/paginacao'
 import { blockingFields, POLICY_VERSION, publicStatus, RULESET_REV } from '../oab/compliance'
 import {
@@ -151,28 +152,15 @@ export class ProfilesService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * A regra de "este perfil aparece para o público" — FONTE ÚNICA.
+   * A regra de "este perfil aparece para o público" — FONTE ÚNICA, agora em
+   * profiles/visibilidade.ts.
    *
-   * Perfil restrito pela moderação some do público (equiparado a não publicado)
-   * — mas só enquanto a medida VALER. O prazo é conferido na leitura, e não
-   * por uma varredura agendada: sem cron para esquecer de rodar, e sem uma
-   * restrição vencida continuar de pé porque o servidor reiniciou na hora
-   * errada. Ver admin/sancoes.ts.
-   *
-   * Virou método porque agora TRÊS portas devolvem perfil ao público: a página
-   * (getBySlug), a foto que alimenta a prévia de link (avatarBySlug) e o mapa do
-   * site (sitemap). Se as três escrevessem a condição à mão, bastaria uma
-   * esquecer o `moderationStatus` para um perfil restrito voltar a circular pelo
-   * WhatsApp — justamente onde a medida menos se desfaz.
+   * Saiu daqui porque a QUARTA porta que devolve perfil ao público mora em outro
+   * serviço (a página do escritório, em firms/), e um método privado não a
+   * alcançava — então ela não filtrava nada. Ver o cabeçalho daquele arquivo.
    */
   private visivelAoPublico() {
-    return {
-      published: true,
-      OR: [
-        { moderationStatus: { not: 'restricted' as const } },
-        { moderationUntil: { lte: new Date() } },
-      ],
-    }
+    return perfilVisivelAoPublico()
   }
 
   async getBySlug(slug: string) {
@@ -293,13 +281,16 @@ export class ProfilesService {
       regionNote?: string | null
       areas?: { id: string }[]
       socials?: unknown[]
+      /** o interruptor "Mostrar o endereço no perfil" — ver semEnderecoEscondido */
+      addressPublic?: boolean | null
     },
   >(profile: T) {
     // Campos do DONO saem aqui: a nota do moderador é conversa entre a plataforma
     // e o advogado — nunca vai ao visitante.
-    const { hiddenSections, moderationNote, moderationStatus, ...rest } = profile as T & {
+    const { hiddenSections, moderationNote, moderationStatus, ...cru } = profile as T & {
       moderationNote?: string
     }
+    const rest = semEnderecoEscondido(cru)
     // Censura parcial vencida devolve as seções sozinha, pelo mesmo motivo.
     if (moderationStatus !== 'partial') return rest
     const ate = (profile as { moderationUntil?: Date | null }).moderationUntil
@@ -1414,4 +1405,51 @@ function avatarParaLista(slug: string, avatarUrl: string | null): string | undef
   if (!avatarUrl) return undefined
   if (avatarUrl.startsWith('data:')) return `/api/profiles/${encodeURIComponent(slug)}/avatar`
   return avatarUrl.startsWith('https://') ? avatarUrl : undefined
+}
+
+/**
+ * Tira do perfil as colunas do endereço quando o advogado mandou escondê-lo.
+ *
+ * ---------------------------------------------------------------------------
+ * ISTO ERA UM VAZAMENTO DE ENDEREÇO RESIDENCIAL (auditoria de 01/09/2026)
+ *
+ * O interruptor "Mostrar o endereço no perfil" existe no editor e promete, com
+ * estas palavras: *"O endereço fica só com você — não aparece na página nem no
+ * cartão de contato que o visitante salva."* A dica logo abaixo diz para quem
+ * ele foi feito: *"Quem atende em casa costuma deixar desligado."*
+ *
+ * Só que quem o cumpria era a PÁGINA. A API mandava rua, número, complemento,
+ * bairro e CEP para qualquer visitante, junto do interruptor, e o React é que
+ * decidia não desenhar (`enderecoVisivel`, em lib/endereco.ts). Um `curl` no
+ * perfil público devolvia o endereço inteiro:
+ *
+ *     curl https://advoc.me/api/profiles/<slug> | jq .address
+ *
+ * O dado exposto é, pela própria dica do editor, o endereço de CASA de um
+ * advogado que pediu para escondê-lo — de uma profissão que acumula
+ * desafetos por ofício. É a definição de controle de privacidade que só
+ * existe no cliente, e o cliente nunca foi barreira.
+ *
+ * O cuidado já existia nos dois lugares DERIVADOS do endereço — o JSON-LD da
+ * prévia de link e o vCard — cada um com um comentário explicando que um
+ * endereço escondido não pode vazar por ali. Faltava na fonte dos dois.
+ *
+ * Fica em `toPublic`, e não em `toApi`, porque `toApi` serve o dono também: o
+ * dono PRECISA continuar vendo o que escondeu, senão o campo se apaga sozinho
+ * na tela dele. `toPublic` é a única passagem por onde só o visitante entra.
+ * ---------------------------------------------------------------------------
+ */
+function semEnderecoEscondido<T extends { addressPublic?: boolean | null }>(p: T): T {
+  if (p.addressPublic !== false) return p
+  // As mesmas colunas que `enderecoCols` grava (security/sanitize.ts). Zeradas
+  // todas, `enderecoDaLinha` devolve `undefined` e o campo `address` some da
+  // resposta — em vez de ir vazio, que contaria que existe um endereço oculto.
+  return {
+    ...p,
+    addressZip: null,
+    addressStreet: null,
+    addressNumber: null,
+    addressComplement: null,
+    addressDistrict: null,
+  }
 }

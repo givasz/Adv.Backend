@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service'
 import { FIRM_PRICING, firmMonthlyPrice, slugify, type Plan } from '../plans'
 import { ProfilesService } from '../profiles/profiles.service'
+import { perfilVisivelAoPublico } from '../profiles/visibilidade'
 import {
   clampOrNull,
   clampText,
@@ -57,13 +58,38 @@ export class FirmsService {
 
   // ---- Leitura pública ------------------------------------------------------
 
+  /**
+   * A página institucional do escritório — PÚBLICA, sem sessão.
+   *
+   * O filtro dos membros tem duas metades, e a segunda faltava até a auditoria de
+   * 01/09/2026:
+   *
+   *   • `status: 'active'` — quem de fato é do quadro (não o convite pendente).
+   *   • `profile: perfilVisivelAoPublico()` — e o perfil dele pode ser visto.
+   *
+   * Sem a segunda, esta página era a porta dos fundos da moderação: um perfil
+   * RESTRINGIDO saía do ar em `/:slug` e continuava aqui, inteiro — nome, foto,
+   * bio, OAB e WhatsApp. A sanção tirava o advogado do ar e a sociedade seguia
+   * publicando o mesmo conteúdo, no mesmo domínio. Junto vinha o rascunho de quem
+   * aceitou o convite e nunca publicou o próprio perfil: `published: false` não
+   * era conferido, então a página do escritório publicava por ele.
+   *
+   * A regra é a mesma função que a página de perfil, a foto e o sitemap usam
+   * (profiles/visibilidade.ts) — era um método privado de outro serviço, que é
+   * exatamente por que esta porta ficou de fora.
+   *
+   * ⚠️ Vale só aqui. `manageView` (o editor) mostra TODO MUNDO de propósito: quem
+   * administra precisa ver o membro cujo perfil está restrito ou por publicar —
+   * é o que lhe permite cobrar a regularização em vez de ficar sem entender por
+   * que a página tem um card a menos.
+   */
   async getBySlug(slug: string) {
     const firm = await this.prisma.firm.findUnique({
       where: { slug },
       include: {
         roster: { orderBy: { order: 'asc' } },
         members: {
-          where: { status: 'active' },
+          where: { status: 'active', profile: perfilVisivelAoPublico() },
           include: {
             profile: {
               include: {

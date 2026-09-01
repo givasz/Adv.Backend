@@ -182,6 +182,124 @@ de porta aberta esperando uma tela que talvez não venha.
 
 ---
 
+---
+
+## Varredura das 60 rotas — 01/09/2026 (segunda parte)
+
+A primeira parte olhou o código por assunto. Esta percorreu **uma rota por vez**,
+perguntando de cada: quem pode chamar, o que ela devolve, e se algo que não
+deveria sair sai. As 60 estão classificadas em `backend/src/rotas.spec.ts`.
+
+### 7. O endereço que o advogado mandou esconder ia para todo visitante
+
+O editor tem um interruptor, "Mostrar o endereço no perfil", que promete com
+estas palavras: *"O endereço fica só com você — não aparece na página nem no
+cartão de contato que o visitante salva."* A dica abaixo dele diz para quem foi
+feito: *"Quem atende em casa costuma deixar desligado."*
+
+Quem cumpria a promessa era o React. A API mandava rua, número, complemento,
+bairro e CEP para qualquer pessoa, junto do próprio interruptor, e o front é que
+decidia não desenhar (`enderecoVisivel`, em `lib/endereco.ts`):
+
+```bash
+curl https://advoc.me/api/profiles/<slug> | jq .address
+```
+
+O dado exposto é, pela dica do próprio editor, o **endereço residencial** de um
+advogado que pediu para escondê-lo. É controle de privacidade que só existe no
+cliente — e cliente nunca foi barreira.
+
+O cuidado já existia nos dois lugares DERIVADOS do endereço — o JSON-LD da prévia
+de link e o vCard —, cada um com um comentário explicando que um endereço que a
+página esconde não pode vazar por ali. Faltava na fonte dos dois.
+
+A censura entrou em `toPublic`, que é a única passagem por onde só o visitante
+passa. `toApi` não servia: ele atende o dono também, e o dono precisa continuar
+vendo o que escondeu — senão o campo se apaga sozinho na tela dele.
+`backend/src/profiles/profiles.service.ts`
+
+### 8. A página do escritório era a porta dos fundos da moderação
+
+`GET /api/firms/:slug` é pública e listava todo membro com vínculo ativo, sem
+olhar o perfil de cada um. Duas consequências:
+
+- **Perfil RESTRINGIDO continuava no ar.** A sanção tirava o advogado de
+  `/:slug` e a página da sociedade seguia publicando nome, foto, bio, OAB e
+  WhatsApp dele — no mesmo domínio, a um clique de distância.
+- **Rascunho nunca publicado ia junto.** Quem aceitou o convite e não terminou o
+  perfil tinha os próprios dados publicados pela página do escritório.
+
+A causa é uma frase do próprio código. O comentário de `visivelAoPublico()` dizia:
+
+> *"Virou método porque agora TRÊS portas devolvem perfil ao público (…). Se as
+> três escrevessem a condição à mão, bastaria uma esquecer o `moderationStatus`
+> para um perfil restrito voltar a circular pelo WhatsApp."*
+
+O raciocínio estava certo e o número estava errado: as portas eram QUATRO. A
+quarta mora em outro serviço — e por ser um método **privado**, ela não tinha
+como chamá-lo. Então não filtrava nada.
+
+Um método privado não é fronteira: ele protege quem consegue chamá-lo. A regra
+virou `profiles/visibilidade.ts`, função exportada, que é a única forma de a
+quinta porta nascer certa. O editor do escritório continua mostrando todo mundo,
+de propósito: quem administra precisa ver o membro fora do ar para cobrar a
+regularização.
+`backend/src/firms/firms.service.ts` + `backend/src/profiles/visibilidade.ts`
+
+### 9. O canal de contestação também se desligava de fora
+
+Mesmo defeito do login do painel (item 5), no lugar em que dói mais.
+`POST /api/appeals/contestar` é a porta de quem a suspensão impediu de entrar —
+a única. O teto global era 60 em 15 minutos: sessenta requisições de qualquer
+estranho fechavam o canal de contestar sanção para todo mundo.
+
+Entrou teto por conta (8/15min, pela impressão digital do e-mail) e o global
+subiu para 600. O teto por IP não mudou.
+`backend/src/moderation/appeals.controller.ts`
+
+### 10. Nada obrigava uma rota nova a ter porta
+
+`admin-rotas.spec.ts` já cobrava que toda rota do PAINEL pedisse permissão
+nomeada. **Fora do painel não havia nada.** Uma rota nova de advogado que
+esquecesse `requireUser` entraria em produção respondendo a qualquer um, e
+nenhum teste diria uma palavra.
+
+`backend/src/rotas.spec.ts` fecha isso: lê os controllers, classifica cada rota
+pela porta que ela usa, e exige que **toda rota sem porta esteja declarada em
+`PUBLICAS` com o motivo escrito**. Ser pública passou a ser uma decisão que se
+escreve, e não um esquecimento que se parece com uma.
+
+Ele cobra mais quatro coisas:
+
+- justificativa órfã falha (descrever uma rota que não existe mais é pior que não
+  descrever nada — a próxima pessoa lê como se descrevesse);
+- toda rota pública que ESCREVE precisa de uma barreira própria — assinatura HMAC,
+  teto de tentativas, ou credencial conferida na mão;
+- nenhum controller menciona `passwordHash`, `tokenHash`, `totpSecret` ou
+  `password: true` no código (comentários que descrevem o corpo da requisição
+  saem antes: receber senha é o trabalho do login);
+- a lista tem de achar mais de 40 rotas, para o teste não passar por não achar
+  nada.
+
+Conferido que a trava falha de verdade: uma rota sem porta plantada de propósito
+no controller de perfis é recusada.
+
+### O que a varredura NÃO encontrou
+
+| Conferido | Resultado |
+|---|---|
+| Hash de senha, `tokenHash`, `totpSecret` em resposta | Nenhum. Todas as consultas de `User` e `AdminUser` usam `select` explícito. |
+| `GET /auth/me` | id, e-mail e o plano vigente. O `csrfToken` sai aqui de propósito — sem o cookie ele não autentica nada. |
+| `POST /admin/me/totp/start` | Devolve o segredo TOTP, e só para o próprio admin, sobre a própria conta. É o passo de configurá-lo. |
+| `POST /admin/admins`, `GET /admin/admins` | `select` explícito; a senha vem do corpo e nunca volta. |
+| `GET /profiles/:slug` | `toApi` é whitelist campo a campo: `userId`, situação de cobrança e nota de moderação não saem. |
+| `POST /appeals/contestar` | Erro genérico único, `burnPasswordTime` no caminho "não existe". Sem enumeração. |
+| `POST /profiles/:slug/evento` | 204 sempre, inclusive ao recusar — não vira oráculo de quais slugs existem. |
+| Escrita pública sem barreira | Nenhuma. Webhook por HMAC, denúncia e contestação por teto, logout pela própria credencial. |
+| `POST /account/anonymize` | Parecia sem porta na varredura automática; delega para `remove()`, que exige sessão **e** a senha. |
+
+---
+
 ## Verificado e considerado em ordem
 
 O que foi lido nesta passagem e **não** virou correção, com o motivo — para a
