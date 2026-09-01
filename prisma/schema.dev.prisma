@@ -316,6 +316,11 @@ model Profile {
   assistantLeadHours    Int              @default(12) // antecedência mínima para oferecer um horário
   assistantHorizonDays  Int              @default(14) // até quantos dias à frente sugerir datas
   assistantGreeting     String           @default("") // frase de abertura (passa pela checagem OAB)
+  // Balão no canto da página pública, que segue a rolagem e abre a conversa.
+  // Desligado por padrão DE PROPÓSITO: um elemento que persegue o visitante é o
+  // oposto da sobriedade que o Prov. 205/2021 exige, e quem o liga tem de ser o
+  // advogado, sabendo o que está ligando. Só Pro e Max (ver plans.ts).
+  assistantFloating     Boolean          @default(false)
   // ---- Vídeo de apresentação (plano Max) ----
   // Guardamos só o LINK (YouTube/Vimeo) já normalizado — nunca o arquivo. A
   // validação do provedor é do servidor: ver src/video.ts.
