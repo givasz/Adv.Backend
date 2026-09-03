@@ -203,10 +203,10 @@ export class AppealsService {
       select: { id: true, password: true, suspendedUntil: true, closedAt: true },
     })
     if (!user) {
-      burnPasswordTime(pass)
+      await burnPasswordTime(pass)
       throw generico
     }
-    if (!verifyPassword(pass, user.password)) throw generico
+    if (!(await verifyPassword(pass, user.password))) throw generico
 
     // Só quem está de fato impedido de entrar usa esta porta. Quem consegue
     // logar contesta pelo painel, onde há contexto.

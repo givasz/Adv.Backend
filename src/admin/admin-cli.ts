@@ -120,7 +120,7 @@ async function main(): Promise<number> {
       await prisma.adminUser.update({
         where: { email },
         data: {
-          ...(tem('reset') ? { passwordHash: hashPassword(senha) } : {}),
+          ...(tem('reset') ? { passwordHash: await hashPassword(senha) } : {}),
           ...(papel ? { role: papel as never } : {}),
           ...(arg('name') ? { name: (arg('name') as string).trim() } : {}),
         },
@@ -148,7 +148,7 @@ async function main(): Promise<number> {
     const nome = (arg('name') ?? '').trim() || email.split('@')[0]!
 
     await prisma.adminUser.create({
-      data: { email, name: nome, role: papel as never, passwordHash: hashPassword(senha) },
+      data: { email, name: nome, role: papel as never, passwordHash: await hashPassword(senha) },
     })
 
     console.log(`\nAdministrador criado.\n\n  usuário: ${email}\n  papel:   ${papel}`)

@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Headers,
+  Ip,
   Param,
   Post,
   Put,
@@ -10,6 +11,8 @@ import {
   Req,
   Res,
 } from '@nestjs/common'
+import { clientIp } from '../security/net'
+import { checkRateLimit } from '../security/rate-limit'
 
 /**
  * O mínimo de uma resposta HTTP para servir bytes de imagem.
@@ -47,11 +50,8 @@ export class ProfilesController {
     return this.sessions.requireUser(req, 'Entre na sua conta para salvar o perfil.')
   }
 
-  // GET /api/directory?q=&area=
-  @Get('directory')
-  search(@Query('q') q?: string, @Query('area') area?: string) {
-    return this.profiles.search(q, area)
-  }
+  // GET /api/directory foi removida (03/09/2026) — nunca teve tela, e superfície
+  // pública sem uso só acumula achado de auditoria. Ver profiles.service.ts.
 
   /**
    * GET /api/profiles/me — o perfil de quem está logado.
@@ -99,9 +99,23 @@ export class ProfilesController {
   }
 
   // GET /api/profiles/:slug  (público)
+  //
+  // O IP entra SÓ como chave do teto de gravação de visita, e some — nada dele é
+  // persistido (mesma regra de analytics/eventos.ts). O teto nunca bloqueia a
+  // página: estourou, a visita apenas não conta. Sem ele, um laço de terminal
+  // gravava uma linha de LinkEvent por requisição, para sempre — e "Quem visita
+  // você", que é métrica vendida no plano pago, virava número forjável de fora.
   @Get('profiles/:slug')
-  getBySlug(@Param('slug') slug: string) {
-    return this.profiles.getBySlug(slug)
+  getBySlug(
+    @Param('slug') slug: string,
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') forwardedFor?: string,
+  ) {
+    const chave = `view:${clientIp(ip, forwardedFor)}`
+    const contarVisita =
+      checkRateLimit(chave, { windowMs: 60_000, max: 60 }) &&
+      checkRateLimit(chave, { windowMs: 3_600_000, max: 600 })
+    return this.profiles.getBySlug(slug, contarVisita)
   }
 
   /**
@@ -112,14 +126,24 @@ export class ProfilesController {
    * URI. Ver ProfilesService.avatarBySlug.
    *
    * O prazo do cache depende de COMO a URL chegou:
-   *   • com `?v=` (o hash da foto, posto pelo getBySlug no JSON público): a URL
-   *     muda junto com a foto, então aqui cabe `immutable` — o navegador do
-   *     visitante recorrente nem pergunta de novo;
-   *   • sem versão (o `og:image` que os mensageiros buscam): uma hora, como
-   *     antes — os robôs pegam esta URL uma vez por compartilhamento, e sem
-   *     cache um perfil que circula vira uma consulta ao banco por leitor.
+   *   • com o `?v=` CERTO (o hash da foto, posto pelo getBySlug no JSON
+   *     público): a URL muda junto com a foto, então aqui cabe `immutable` —
+   *     o navegador do visitante recorrente nem pergunta de novo;
+   *   • sem versão (o `og:image` que os mensageiros buscam) ou com versão que
+   *     NÃO BATE: uma hora. A conferência é a diferença entre cache e arma
+   *     (auditoria de 03/09): quando só a PRESENÇA do parâmetro decidia,
+   *     qualquer um fixava a foto de qualquer perfil por um ano num cache
+   *     compartilhado com `?v=qualquercoisa` — e uma censura da moderação, ou a
+   *     exclusão da conta, não alcançava mais o que já estava fixado. Com a
+   *     conferência, só a versão VIGENTE ganha cache longo; quando a foto muda
+   *     ou some, a URL antiga simplesmente deixa de existir (404) e a atual é
+   *     outra.
    * O ETag (o mesmo hash) fecha o meio do caminho: cache vencido revalida com
    * um 304 vazio em vez de baixar a foto inteira outra vez.
+   *
+   * Teto por IP no mesmo espírito do /geo/cep: cada hit custa a coluna de até
+   * ~400 KB no banco + um sha256 — sem sessão e sem CSRF, isso precisa de um
+   * limite. 120/min acomoda a página de escritório cheia de fotos e sobra.
    */
   @Get('profiles/:slug/avatar')
   async avatar(
@@ -127,7 +151,18 @@ export class ProfilesController {
     @Query('v') v: string | undefined,
     @Headers('if-none-match') ifNoneMatch: string | undefined,
     @Res() res: RespostaHttp,
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') forwardedFor?: string,
   ) {
+    const chave = `avatar:${clientIp(ip, forwardedFor)}`
+    if (
+      !checkRateLimit(chave, { windowMs: 60_000, max: 120 }) ||
+      !checkRateLimit(chave, { windowMs: 3_600_000, max: 2000 })
+    ) {
+      res.statusCode = 429
+      res.setHeader('Retry-After', '60')
+      return res.end()
+    }
     // Só bytes. A rota NÃO redireciona: enquanto redirecionava para a foto
     // hospedada fora, ela era um redirecionamento aberto na nossa origem — conta
     // grátis, `avatarUrl` apontando para onde o dono quisesse, e um link do
@@ -137,7 +172,7 @@ export class ProfilesController {
     res.setHeader('ETag', etag)
     res.setHeader(
       'Cache-Control',
-      v ? 'public, max-age=31536000, immutable' : 'public, max-age=3600',
+      v === foto.versao ? 'public, max-age=31536000, immutable' : 'public, max-age=3600',
     )
     // A foto é imagem, e só. Sem isto, um arquivo forjado que passasse pelo
     // saneamento poderia ser servido como outra coisa pelo palpite do navegador.

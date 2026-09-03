@@ -7,8 +7,8 @@ import {
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { FIRM_PRICING, firmMonthlyPrice, slugify, type Plan } from '../plans'
-import { ProfilesService } from '../profiles/profiles.service'
-import { perfilVisivelAoPublico } from '../profiles/visibilidade'
+import { avatarPublico, ProfilesService } from '../profiles/profiles.service'
+import { perfilVisivelAoPublico, secoesCensuradas } from '../profiles/visibilidade'
 import {
   clampOrNull,
   clampText,
@@ -41,6 +41,10 @@ const STATE_MAX = 40
 const ROSTER_NAME_MAX = 70
 const ROSTER_OAB_MAX = 20
 const ROSTER_AREA_MAX = 60
+// Teto de LINHAS na lista. O dado é nome e OAB de terceiro numa página pública e
+// indexável: sem um limite, uma conta grátis publicava milhares de pessoas reais
+// em /firms/<slug>. 120 cobre com folga qualquer sociedade real desta plataforma.
+const ROSTER_MAX = 120
 
 // Serviço do escritório (sociedade de advogados).
 //
@@ -102,7 +106,13 @@ export class FirmsService {
       },
     })
     if (!firm) throw new NotFoundException('Escritório não encontrado')
-    return this.toApi(firm)
+    const out = this.toApi(firm)
+    // O interruptor "Mostrar o endereço" vale AQUI, na porta pública — não em
+    // toApi, porque toApi também serve o manageView e o DONO precisa continuar
+    // vendo (e editando) o endereço que escondeu. É a mesma divisão do perfil
+    // individual: semEnderecoEscondido mora em toPublic, nunca em toApi.
+    if (firm.addressPublic === false) delete (out as { address?: unknown }).address
+    return out
   }
 
   // ---- Leitura para quem administra ----------------------------------------
@@ -162,17 +172,29 @@ export class FirmsService {
     // Vínculos reais + convites por e-mail (quem ainda não tem conta) na MESMA
     // lista: para o dono, os dois são "gente que ele chamou".
     const members = [
-      ...firm.members.map((m: any) => ({
-        id: m.id,
-        kind: 'membership' as const,
-        name: m.profile.name || m.profile.user?.email || 'Advogado(a)',
-        email: m.profile.user?.email ?? undefined,
-        oabNumber: m.profile.oabNumber || undefined,
-        area: m.profile.areas?.[0]?.label ?? '',
-        role: m.role,
-        status: m.status,
-        profileSlug: m.profile.slug,
-      })),
+      ...firm.members.map((m: any) => {
+        // Enquanto o convite NÃO foi aceito, o convidado é só o e-mail que o
+        // dono digitou. Nome civil, OAB, área e endereço do perfil são DELE, e
+        // chegam à tela do escritório apenas com o aceite — antes disso,
+        // devolvê-los transformava o convite num oráculo: qualquer conta grátis
+        // digitava um e-mail e recebia de volta o perfil de quem o usa, inclusive
+        // rascunho nunca publicado (auditoria de 03/09). O e-mail pode voltar:
+        // foi o próprio chamador que o forneceu.
+        const aceitou = m.status === 'active'
+        return {
+          id: m.id,
+          kind: 'membership' as const,
+          name: aceitou
+            ? m.profile.name || m.profile.user?.email || 'Advogado(a)'
+            : (m.profile.user?.email ?? 'Convite pendente'),
+          email: m.profile.user?.email ?? undefined,
+          oabNumber: aceitou ? m.profile.oabNumber || undefined : undefined,
+          area: aceitou ? (m.profile.areas?.[0]?.label ?? '') : '',
+          role: m.role,
+          status: m.status,
+          profileSlug: aceitou ? m.profile.slug : undefined,
+        }
+      }),
       // Convite cujo e-mail já pertence a alguém LISTADO não vira linha própria:
       // seria a mesma pessoa duas vezes na tela do dono — uma pelo nome ("Marina
       // Sales") e outra pelo endereço ("marina@..."), sem nada dizendo que são a
@@ -349,6 +371,16 @@ export class FirmsService {
     const firm = await this.requireManagedFirm(userId)
     const name = clampText(d?.name, ROSTER_NAME_MAX)
     if (name.length < 2) throw new BadRequestException('Informe o nome do advogado.')
+
+    // Teto de linhas (ver ROSTER_MAX): é nome e OAB de terceiro numa página
+    // pública — quantidade sem limite não é quadro de sociedade, é lista de
+    // pessoas publicada em massa.
+    const linhas = await this.prisma.firmRosterLawyer.count({ where: { firmId: firm.id } })
+    if (linhas >= ROSTER_MAX) {
+      throw new BadRequestException(
+        `A lista chegou ao limite de ${ROSTER_MAX} advogados. Remova alguém antes de acrescentar outro.`,
+      )
+    }
 
     // O nome vai para uma página pública e passa pela MESMA checagem do resto:
     // um "Dr. Fulano, o melhor do estado" entra por aqui se ninguém olhar.
@@ -648,15 +680,30 @@ export class FirmsService {
       .filter((m: any) => (m.profile?.name ?? '').trim())
       .map((m: any) => {
         const p = m.profile
-        const linkedin = (p.socials ?? []).find((s: any) => s.kind === 'linkedin')?.url
+        // A censura PARCIAL da moderação vale aqui como vale em /profiles/:slug
+        // (auditoria de 03/09): antes, a bio e a foto que o moderador escondeu no
+        // perfil continuavam publicadas pela página da sociedade — mesmo domínio,
+        // um clique de distância. A regra é a MESMA função das outras portas
+        // (secoesCensuradas, em profiles/visibilidade.ts).
+        const censura = secoesCensuradas(p)
+        const primeiraArea = (p.areas ?? []).filter(
+          (a: any) => !censura.has(`area:${a.id}`),
+        )?.[0]?.label
+        const linkedin = censura.has('socials')
+          ? undefined
+          : (p.socials ?? []).find((s: any) => s.kind === 'linkedin')?.url
         return {
           id: p.id,
           slug: p.slug,
           name: p.name,
           oabNumber: p.oabNumber,
-          area: p.areas?.[0]?.label ?? '',
-          bio: p.bio ?? '',
-          avatarUrl: p.avatarUrl ?? undefined,
+          area: censura.has('areas') ? '' : (primeiraArea ?? ''),
+          bio: censura.has('bio') ? '' : (p.bio ?? ''),
+          // Como endereço (…/avatar?v=hash), nunca como o data URI: era a última
+          // porta pública que ainda devolvia até ~400 KB de foto embutida por
+          // membro, sem sessão e sem teto — o mesmo item 6 da auditoria de 01/09
+          // que já tinha sido fechado no restante.
+          avatarUrl: censura.has('avatar') ? undefined : avatarPublico(p.slug, p.avatarUrl),
           linkedin,
           // Só serve ao encaminhamento do assistente (assistantRoute: 'lawyer');
           // o card do grid não mostra o número de ninguém.

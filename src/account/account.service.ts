@@ -128,7 +128,7 @@ export class AccountService {
       select: { id: true, password: true },
     })
     if (!user) throw new UnauthorizedException('Sessão inválida.')
-    if (!senha || !verifyPassword(senha, user.password)) {
+    if (!senha || !(await verifyPassword(senha, user.password))) {
       throw new BadRequestException('Senha incorreta. A conta não foi excluída.')
     }
 

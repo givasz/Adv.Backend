@@ -143,9 +143,12 @@ export function assertCsrf(
   if (SEGUROS.has(pedido.method.toUpperCase())) return
 
   // 1. Origem: quando o navegador diz de onde veio, tem que ser de casa.
+  // A mensagem NÃO ecoa a origem recebida nem cita o nome da variável de
+  // ambiente: cabeçalho é entrada do cliente, e refleti-la de volta (para a
+  // resposta E para o log do Nest) só servia a quem estivesse sondando.
   if (!origemPermitida(pedido.origin)) {
     throw new ForbiddenException(
-      `Pedido bloqueado por segurança: a origem ${pedido.origin} não está em FRONTEND_ORIGIN.`,
+      'Pedido bloqueado por segurança: a origem da chamada não é reconhecida.',
     )
   }
 

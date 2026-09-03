@@ -18,8 +18,17 @@ interface Resposta {
 }
 
 export function securityHeaders(_req: unknown, res: Resposta, next: () => void): void {
-  // Resposta JSON não carrega nada nem pode ser enquadrada.
-  res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
+  // Resposta JSON não carrega nada nem pode ser enquadrada. `form-action` vai
+  // explícito porque ele NÃO herda de default-src — sem a linha, um HTML que
+  // escapasse por aqui poderia postar formulário para qualquer lugar.
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+  )
+  // O JSON cru destas rotas não é página para aparecer em busca: o perfil tem a
+  // PÁGINA dele (com og tags, sitemap e os controles todos) — indexar a API
+  // seria a mesma informação sem nenhum deles.
+  res.setHeader('X-Robots-Tag', 'noindex')
   res.setHeader('X-Content-Type-Options', 'nosniff')
   res.setHeader('X-Frame-Options', 'DENY')
   res.setHeader('Referrer-Policy', 'no-referrer')
