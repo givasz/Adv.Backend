@@ -11,6 +11,8 @@ import { degrau, exigeIdentificacao, venceEm } from '../admin/sancoes'
 import { POLICY_VERSION } from '../oab/compliance'
 import { isValidAction, isValidReason, type ModerationAction } from './moderation.constants'
 import { checkRateLimit, REPORT_RATE_RULES } from './rate-limit'
+import { perfilVisivelAoPublico } from '../profiles/visibilidade'
+import { safeEmail } from '../security/sanitize'
 
 // Mapeia a ação do admin para o novo estado de moderação do perfil.
 const ACTION_TO_STATUS: Record<ModerationAction, 'warned' | 'partial' | 'restricted' | 'active'> = {
@@ -53,7 +55,10 @@ export class ModerationService {
     if (input.reason === 'other' && details.length < 5) {
       throw new BadRequestException('Descreva o problema para enviar uma denúncia do tipo "Outro".')
     }
-    const email = (input.reporterEmail ?? '').trim().slice(0, 200) || null
+    // `safeEmail`, não "qualquer string não vazia": a regra abaixo existe para a
+    // acusação de identidade ter um acusador com rosto, e um `x` no campo a
+    // satisfazia (auditoria de 03/09). Formato inválido = não se identificou.
+    const email = safeEmail(input.reporterEmail)
 
     // Ninguém tem o próprio nome retirado do ar por reclamação de quem não se
     // identifica. Dizer que a inscrição é falsa, ou que o perfil se passa por
@@ -63,15 +68,15 @@ export class ModerationService {
     // profissão pequena e competitiva. Ver admin/sancoes.ts.
     if (exigeIdentificacao(input.reason) && !email) {
       throw new BadRequestException(
-        'Para denunciar registro falso ou perfil se passando por outra pessoa, informe seu e-mail. ' +
+        'Para denunciar registro falso ou perfil se passando por outra pessoa, informe um e-mail válido. ' +
           'Acusação sobre a identidade de alguém não é aceita de forma anônima.',
       )
     }
 
-    const profile = await this.prisma.profile.findUnique({ where: { slug }, select: { id: true } })
-    if (!profile) throw new NotFoundException('Perfil não encontrado')
-
-    // Rate-limit (anti-spam / anti-brigada). Não persistimos o IP — só o usamos aqui.
+    // Rate-limit ANTES de olhar o banco (anti-spam / anti-brigada — e é ele que
+    // impede a rota de virar consulta de existência a taxa livre). A chave por
+    // perfil usa o SLUG pedido, não o id, justamente para valer antes da busca.
+    // Não persistimos o IP — só o usamos aqui.
     const ip = input.ip || 'unknown'
     const tooMany = () =>
       new HttpException(
@@ -79,9 +84,21 @@ export class ModerationService {
         HttpStatus.TOO_MANY_REQUESTS,
       )
     if (!checkRateLimit(`report:ip:${ip}`, REPORT_RATE_RULES.perIp)) throw tooMany()
-    if (!checkRateLimit(`report:ip:${ip}:profile:${profile.id}`, REPORT_RATE_RULES.perIpProfile)) {
+    if (!checkRateLimit(`report:ip:${ip}:slug:${slug}`, REPORT_RATE_RULES.perIpProfile)) {
       throw tooMany()
     }
+
+    // A MESMA regra de visibilidade das outras portas públicas — e, quando o
+    // perfil não existe (ou é rascunho/restrito), a resposta é o MESMO corpo do
+    // sucesso. Um 404 aqui dizia a quem sondasse quais slugs existem, inclusive
+    // os dois estados que todo o resto do sistema esconde; a denúncia de um
+    // perfil que não está no ar não tem mesmo o que moderar (é o mesmo silêncio
+    // deliberado do POST /profiles/:slug/evento).
+    const profile = await this.prisma.profile.findFirst({
+      where: { slug, ...perfilVisivelAoPublico() },
+      select: { id: true },
+    })
+    if (!profile) return { ok: true }
 
     await this.prisma.report.create({
       data: { profileId: profile.id, reason: input.reason, details, reporterEmail: email },

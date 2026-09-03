@@ -186,7 +186,7 @@ async function criarConta(role: string, extra: Linha = {}) {
       email: `${role}@exemplo.com`,
       name: role,
       role,
-      passwordHash: hashPassword(SENHA),
+      passwordHash: await hashPassword(SENHA),
       ...extra,
     },
   })

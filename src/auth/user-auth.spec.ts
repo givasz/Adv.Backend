@@ -10,24 +10,25 @@ import {
 } from './user-auth'
 
 describe('senha', () => {
-  it('hash não guarda a senha e confere corretamente', () => {
-    const h = hashPassword('cavalo-bateria-grampo')
+  // async desde 03/09: o scrypt saiu do event loop (ver user-auth.ts, derive).
+  it('hash não guarda a senha e confere corretamente', async () => {
+    const h = await hashPassword('cavalo-bateria-grampo')
     expect(h).not.toContain('cavalo')
     expect(h.startsWith('scrypt$N=')).toBe(true)
-    expect(verifyPassword('cavalo-bateria-grampo', h)).toBe(true)
-    expect(verifyPassword('cavalo-bateria-grampa', h)).toBe(false)
+    expect(await verifyPassword('cavalo-bateria-grampo', h)).toBe(true)
+    expect(await verifyPassword('cavalo-bateria-grampa', h)).toBe(false)
   })
 
-  it('dois hashes da mesma senha são diferentes (salt aleatório)', () => {
-    expect(hashPassword('mesma-senha-aqui')).not.toBe(hashPassword('mesma-senha-aqui'))
+  it('dois hashes da mesma senha são diferentes (salt aleatório)', async () => {
+    expect(await hashPassword('mesma-senha-aqui')).not.toBe(await hashPassword('mesma-senha-aqui'))
   })
 
-  it('hash malformado ou adulterado nunca autentica', () => {
-    expect(verifyPassword('x', '')).toBe(false)
-    expect(verifyPassword('x', 'md5$abc$def')).toBe(false)
-    expect(verifyPassword('x', 'scrypt$sem-hash')).toBe(false)
+  it('hash malformado ou adulterado nunca autentica', async () => {
+    expect(await verifyPassword('x', '')).toBe(false)
+    expect(await verifyPassword('x', 'md5$abc$def')).toBe(false)
+    expect(await verifyPassword('x', 'scrypt$sem-hash')).toBe(false)
     // Parâmetros absurdos plantados no banco não podem pedir memória infinita.
-    expect(verifyPassword('x', 'scrypt$N=99999999,r=99,p=99$aa$bb')).toBe(false)
+    expect(await verifyPassword('x', 'scrypt$N=99999999,r=99,p=99$aa$bb')).toBe(false)
   })
 })
 

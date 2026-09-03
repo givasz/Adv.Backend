@@ -152,12 +152,12 @@ export class AdminService {
         return { ...aberta, name: label, role: 'owner', totpPendente: false }
       }
       // Gasta o tempo de uma verificação real antes de recusar.
-      burnPasswordTime(senha)
+      await burnPasswordTime(senha)
       logSecurityEvent({ event: 'admin_login_fail', ip: impressao, result: 'negado' })
       throw new UnauthorizedException('Usuário ou senha inválidos')
     }
 
-    const senhaOk = verifyPassword(senha, conta.passwordHash)
+    const senhaOk = await verifyPassword(senha, conta.passwordHash)
     // Conta desativada responde igual a senha errada: quem foi desligado não
     // descobre por aqui que a conta dele ainda existe.
     if (!senhaOk || !conta.active) {
@@ -876,7 +876,7 @@ export class AdminService {
     if (existe) throw new BadRequestException('Já existe um administrador com este e-mail.')
 
     const criado = await this.prisma.adminUser.create({
-      data: { email, name, role, passwordHash: hashPassword(senha) },
+      data: { email, name, role, passwordHash: await hashPassword(senha) },
       select: { id: true, email: true, name: true, role: true, active: true },
     })
     this.jaTemAdmin = true
@@ -983,13 +983,13 @@ export class AdminService {
   async trocarPropriaSenha(quem: AdminAtual, atual: string, nova: string, ip?: string) {
     if (!quem.id) throw new BadRequestException('A credencial de emergência não tem senha para trocar aqui.')
     const conta = await this.prisma.adminUser.findUnique({ where: { id: quem.id } })
-    if (!conta || !verifyPassword(atual ?? '', conta.passwordHash)) {
+    if (!conta || !(await verifyPassword(atual ?? '', conta.passwordHash))) {
       throw new UnauthorizedException('Senha atual incorreta.')
     }
     this.conferirSenha(nova, conta.email)
     await this.prisma.adminUser.update({
       where: { id: quem.id },
-      data: { passwordHash: hashPassword(nova) },
+      data: { passwordHash: await hashPassword(nova) },
     })
     await this.prisma.adminSession
       .deleteMany({ where: { adminId: quem.id, id: { not: quem.sessionId ?? '' } } })
@@ -1068,7 +1068,7 @@ export class AdminService {
   async desligarTotp(quem: AdminAtual, senha: string, codigo: string, ip?: string) {
     if (!quem.id) throw new BadRequestException('A credencial de emergência não tem segundo fator.')
     const conta = await this.prisma.adminUser.findUnique({ where: { id: quem.id } })
-    if (!conta || !verifyPassword(senha ?? '', conta.passwordHash)) {
+    if (!conta || !(await verifyPassword(senha ?? '', conta.passwordHash))) {
       throw new UnauthorizedException('Senha incorreta.')
     }
     if (!totpConfere(conta.totpSecret, codigo)) {

@@ -12,6 +12,7 @@ import {
 import { FirmsService } from './firms.service'
 import { SessionService } from '../auth/session.service'
 import type { RequisicaoComAuth } from '../auth/session-context'
+import { enforceRateLimit } from '../security/rate-limit'
 
 @Controller()
 export class FirmsController {
@@ -30,6 +31,21 @@ export class FirmsController {
     )
   }
 
+  // Escrita comum do escritório: teto POR USUÁRIO. Sessão é grátis (auditoria de
+  // 03/09) — sem isto, estas eram as únicas rotas de escrita da API sem limite
+  // nenhum. 60/h acomoda montar um escritório inteiro numa sentada e barra o laço.
+  private limitarEscrita(userId: string) {
+    enforceRateLimit([[`firm:escrita:${userId}`, { windowMs: 3_600_000, max: 60 }]])
+  }
+
+  // Convite tem teto PRÓPRIO e mais apertado: cada chamada consulta se um e-mail
+  // tem conta e escreve um convite no painel de outra pessoa. É o teto que fecha
+  // a enumeração em volume — o conteúdo da resposta já foi fechado no service
+  // (membro só vira nome/OAB/perfil DEPOIS do aceite).
+  private limitarConvite(userId: string) {
+    enforceRateLimit([[`firm:convite:${userId}`, { windowMs: 3_600_000, max: 20 }]])
+  }
+
   // GET /api/firms/me  → escritório que o usuário administra (para o editor); null se não existe
   @Get('firms/me')
   async getMine(@Req() req: RequisicaoComAuth) {
@@ -40,7 +56,9 @@ export class FirmsController {
   // A lista de advogados NÃO vem por aqui: membro entra por convite (POST members).
   @Put('firms/me')
   async saveMine(@Body() body: any, @Req() req: RequisicaoComAuth) {
-    return this.firms.createOrUpdate(await this.resolveUser(req), body)
+    const userId = await this.resolveUser(req)
+    this.limitarEscrita(userId)
+    return this.firms.createOrUpdate(userId, body)
   }
 
   // POST /api/firms/me/members  → { email, role? } convida um advogado
@@ -49,7 +67,9 @@ export class FirmsController {
     @Body() body: { email?: string; role?: string },
     @Req() req: RequisicaoComAuth,
   ) {
-    return this.firms.invite(await this.resolveUser(req), body?.email, body?.role)
+    const userId = await this.resolveUser(req)
+    this.limitarConvite(userId)
+    return this.firms.invite(userId, body?.email, body?.role)
   }
 
   // DELETE /api/firms/me/members/:kind/:id  → desfaz o vínculo (membership) ou
@@ -75,18 +95,23 @@ export class FirmsController {
     @Body() body: { name?: string; oabNumber?: string; area?: string },
     @Req() req: RequisicaoComAuth,
   ) {
-    return this.firms.addRosterLawyer(await this.resolveUser(req), body)
+    const userId = await this.resolveUser(req)
+    this.limitarEscrita(userId)
+    return this.firms.addRosterLawyer(userId, body)
   }
 
   // POST /api/firms/me/roster/:id/email  → { email, role? }
   // Associa um e-mail ao advogado listado: é o passo que lhe dá autonomia.
+  // Teto de CONVITE, não o de escrita comum: por baixo, é um convite.
   @Post('firms/me/roster/:id/email')
   async linkRoster(
     @Param('id') id: string,
     @Body() body: { email?: string; role?: string },
     @Req() req: RequisicaoComAuth,
   ) {
-    return this.firms.linkRosterLawyer(await this.resolveUser(req), id, body?.email, body?.role)
+    const userId = await this.resolveUser(req)
+    this.limitarConvite(userId)
+    return this.firms.linkRosterLawyer(userId, id, body?.email, body?.role)
   }
 
   // DELETE /api/firms/me/roster/:id → tira da lista (não há conta a mexer)

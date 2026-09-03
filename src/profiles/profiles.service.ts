@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common'
 import { createHash } from 'node:crypto'
 import { PrismaService } from '../prisma/prisma.service'
-import { perfilVisivelAoPublico } from './visibilidade'
+import { perfilVisivelAoPublico, secoesCensuradas } from './visibilidade'
 import { faixa, pagina } from '../admin/paginacao'
 import { blockingFields, POLICY_VERSION, publicStatus, RULESET_REV } from '../oab/compliance'
 import {
@@ -164,7 +164,13 @@ export class ProfilesService {
     return perfilVisivelAoPublico()
   }
 
-  async getBySlug(slug: string) {
+  /**
+   * `contarVisita` vem do controller, que é quem conhece o IP: a gravação da
+   * visita tem teto por IP (auditoria de 03/09) — sem ele, um laço de terminal
+   * inflava "Quem visita você" de qualquer perfil, de graça, para sempre. O teto
+   * NUNCA bloqueia a página: estourou, a visita só não é contada.
+   */
+  async getBySlug(slug: string, contarVisita = true) {
     const profile = await this.prisma.profile.findFirst({
       where: { slug, ...this.visivelAoPublico() },
       include: relations,
@@ -189,9 +195,11 @@ export class ProfilesService {
     // para LinkEvent o número continuava zero, porque não havia UMA linha de
     // visita no banco. Desde sempre. O mesmo zero silencioso aparecia na
     // exportação LGPD, que conta esta tabela (account.service.ts).
-    this.prisma.linkEvent
-      .create({ data: { profileId: profile.id, kind: 'view' } })
-      .catch(() => undefined)
+    if (contarVisita) {
+      this.prisma.linkEvent
+        .create({ data: { profileId: profile.id, kind: 'view' } })
+        .catch(() => undefined)
+    }
     const publico = this.toPublic(profile)
     const out = this.toApi(publico)
     // A foto do VISITANTE sai como ENDEREÇO (…/avatar?v=hash), não como o data
@@ -321,14 +329,10 @@ export class ProfilesService {
     const ate = (profile as { moderationUntil?: Date | null }).moderationUntil
     if (ate && ate.getTime() <= Date.now()) return rest
 
-    let hidden: string[] = []
-    try {
-      const parsed = JSON.parse(hiddenSections || '[]')
-      if (Array.isArray(parsed)) hidden = parsed.filter((s): s is string => typeof s === 'string')
-    } catch {
-      /* JSON inválido → nada censurado */
-    }
-    const set = new Set(hidden)
+    // A lista de seções escondidas vem da MESMA função que as outras portas
+    // públicas usam (visibilidade.ts) — duas implementações já divergiram uma
+    // vez, e foi assim que a censura valeu numa porta e não na outra.
+    const set = secoesCensuradas(profile)
     // Sinaliza ao público que há censura (sem revelar o quê nem a nota do admin).
     const out: any = { ...rest, contentModerated: true }
     if (set.has('avatar')) out.avatarUrl = null
@@ -1332,103 +1336,18 @@ export class ProfilesService {
     return pagina(itens, total, take, skip)
   }
 
-  /**
-   * GET /api/directory — busca pública de advogados.
-   *
-   * Rota SEM sessão, e o que ela devolve chega a qualquer um. Três cuidados que
-   * ela não tinha antes da auditoria de 01/09/2026:
-   *
-   * 1. **A foto sai como ENDEREÇO, não como os bytes.** `avatarUrl` é um data URI
-   *    de até ~300 KB (ver security/sanitize.ts). Quarenta perfis com foto eram
-   *    até 12 MB de resposta numa rota pública, sem sessão e sem teto — um laço
-   *    de terminal que custa uma requisição de nada e devolve megabytes é
-   *    amplificação de graça, e a conta do tráfego é da VPS. Agora vai o endereço
-   *    de `/api/profiles/:slug/avatar`, que o navegador busca sob demanda, guarda
-   *    em cache por uma hora e só para quem ele de fato desenhar.
-   *
-   * 2. **Teto no termo de busca.** `q` ia inteiro para um `contains`. Um termo de
-   *    dezenas de milhares de caracteres não encontra nada — só faz o banco
-   *    varrer a tabela três vezes por requisição.
-   *
-   * 3. **Teto de resultados exposto.** Continua 40, agora numa constante com
-   *    nome: é o número que separa "busca" de "baixar a base de advogados".
-   *
-   * ⚠️ Esta rota não é chamada por nenhuma tela hoje (`searchDirectory` existe em
-   * frontend/src/lib/api.ts e ninguém a usa). Enquanto ela existir, é superfície
-   * pública que precisa se defender sozinha — e no dia em que a tela de busca
-   * nascer, ela já nasce assim. Se a decisão for que não haverá diretório
-   * público, o certo é REMOVER a rota, não deixá-la de porta aberta.
-   */
-  async search(q?: string, area?: string) {
-    const termo = typeof q === 'string' ? q.trim().slice(0, DIRECTORY_Q_MAX) : ''
-    const filtroArea = typeof area === 'string' ? area.trim().slice(0, 80) : ''
-    const rows = await this.prisma.profile.findMany({
-      // `AND` explícito, e não um espalhamento de objetos.
-      //
-      // ⚠️ Isto JÁ FOI um vazamento de moderação, encontrado pelo teste abaixo em
-      // 01/09/2026. O `where` era montado assim:
-      //
-      //     { ...this.visivelAoPublico(),        // traz OR: [não restrito, prazo vencido]
-      //       ...(termo ? { OR: [nome, cidade, área] } : {}) }
-      //
-      // Duas chaves `OR` no mesmo objeto literal: a segunda SOBRESCREVE a
-      // primeira. Sem termo de busca, a condição de moderação valia; com termo,
-      // ela desaparecia — e um perfil tirado do ar voltava a aparecer na busca
-      // pública para quem digitasse o nome dele. Que é exatamente como alguém
-      // procura um advogado específico.
-      //
-      // Nada na tela denunciava isso, e nenhum teste pegava: os dois caminhos
-      // pareciam o mesmo código. `AND` torna a composição impossível de colidir —
-      // cada condição é um item da lista, e lista não sobrescreve item.
-      where: {
-        AND: [
-          this.visivelAoPublico(),
-          ...(filtroArea ? [{ areas: { some: { label: filtroArea } } }] : []),
-          // `contains` portável entre SQLite (dev) e Postgres. No SQLite o LIKE já é
-          // case-insensitive p/ ASCII; em produção Postgres, use índice lower()/citext
-          // para busca acento/caixa-insensível sem depender de `mode` (provider-specific).
-          ...(termo
-            ? [
-                {
-                  OR: [
-                    { name: { contains: termo } },
-                    { city: { contains: termo } },
-                    { areas: { some: { label: { contains: termo } } } },
-                  ],
-                },
-              ]
-            : []),
-        ],
-      },
-      // Ordenação por critério objetivo e não-comercial (alfabético por nome).
-      // Prov. 205/2021 Art.5º §1º veda pagamento por destaque/posição em rankings —
-      // por isso NÃO ordenamos por plano de assinatura. Ver REGRAS.md §3.
-      orderBy: [{ name: 'asc' }],
-      take: DIRECTORY_MAX,
-      select: {
-        slug: true,
-        name: true,
-        oabNumber: true,
-        headline: true,
-        city: true,
-        state: true,
-        avatarUrl: true,
-        areas: { select: { label: true }, orderBy: { order: 'asc' } },
-      },
-    })
-    return rows.map((r) => ({
-      ...r,
-      // DirectoryResult espera `areas: string[]` (não objetos).
-      areas: r.areas.map((a) => a.label),
-      avatarUrl: avatarPublico(r.slug, r.avatarUrl),
-    }))
-  }
+  // GET /api/directory foi REMOVIDA na auditoria de 03/09/2026.
+  //
+  // A rota nunca foi chamada por tela nenhuma, e a auditoria de 01/09 já tinha
+  // posto a escolha por escrito: "se a decisão for que não haverá diretório
+  // público, o certo é REMOVER a rota, não deixá-la de porta aberta" (A02 —
+  // remover o que não se usa). Enquanto existiu, cada varredura achou algo nela:
+  // primeiro os megabytes de foto embutida e a colisão de OR que desligava a
+  // moderação (01/09), depois o vazamento de headline/áreas censuradas e o custo
+  // de 40 hashes por requisição (03/09). Superfície pública sem uso é só isso —
+  // manutenção de risco sem cliente. Se a busca nascer um dia, o git guarda a
+  // última versão, e ela renasce por trás de teto por IP e do toPublic.
 }
-
-/** Teto de resultados da busca pública. */
-const DIRECTORY_MAX = 40
-/** Teto do termo de busca. Acima disto não é busca, é carga sobre o banco. */
-const DIRECTORY_Q_MAX = 120
 
 /**
  * Versão curta e estável da foto — muda quando a foto muda, e só então.
@@ -1447,9 +1366,10 @@ function versaoDaFoto(dataUri: string): string {
  * O data URI vira o caminho da nossa rota de avatar (com a versão, para o cache
  * poder ser longo); a foto hospedada fora segue como está, porque já é um
  * endereço público e a nossa origem não tem o que acrescentar no meio dela.
- * Vale para o perfil público (getBySlug) e para os itens de lista (search).
+ * Exportada porque a página do escritório (firms.service) publica a foto dos
+ * membros e precisa da MESMA regra — era lá que o data URI cru ainda saía.
  */
-function avatarPublico(slug: string, avatarUrl: string | null | undefined): string | undefined {
+export function avatarPublico(slug: string, avatarUrl: string | null | undefined): string | undefined {
   if (!avatarUrl) return undefined
   if (avatarUrl.startsWith('data:')) {
     return `/api/profiles/${encodeURIComponent(slug)}/avatar?v=${versaoDaFoto(avatarUrl)}`

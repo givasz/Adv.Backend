@@ -17,13 +17,12 @@ function service(opts: { firms?: Qualquer[]; user?: Qualquer | null } = {}) {
   const calls: Qualquer = { profileUpdate: [], userDelete: [], assinatura: [] }
   const prisma: Qualquer = {
     user: {
-      findUnique: vi.fn(() =>
-        Promise.resolve(
-          opts.user === undefined
+      findUnique: vi.fn(async () =>
+        opts.user === undefined
             ? {
                 id: 'u1',
                 email: 'marina@exemplo.com',
-                password: hashPassword(SENHA),
+                password: await hashPassword(SENHA),
                 createdAt: new Date('2026-01-01'),
                 profile: {
                   id: 'p1',
@@ -40,7 +39,6 @@ function service(opts: { firms?: Qualquer[]; user?: Qualquer | null } = {}) {
                 sessions: [],
               }
             : opts.user,
-        ),
       ),
       delete: vi.fn((a: Qualquer) => (calls.userDelete.push(a), Promise.resolve({}))),
     },

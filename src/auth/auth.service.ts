@@ -94,7 +94,7 @@ export class AuthService {
     const user = await this.prisma.user.create({
       data: {
         email: mail,
-        password: hashPassword(senha),
+        password: await hashPassword(senha),
         profile: { create: this.starterProfile(cleanName) },
       },
       select: { id: true, email: true, profile: { select: { id: true, name: true, plan: true } } },
@@ -167,10 +167,10 @@ export class AuthService {
     // isso, a diferença de tempo entre "não existe" e "senha errada" entrega quais
     // e-mails têm conta aqui. A mensagem já era única; o tempo agora também é.
     if (!user) {
-      burnPasswordTime(senha)
+      await burnPasswordTime(senha)
       throw new UnauthorizedException('E-mail ou senha incorretos.')
     }
-    if (!verifyPassword(senha, user.password)) {
+    if (!(await verifyPassword(senha, user.password))) {
       throw new UnauthorizedException('E-mail ou senha incorretos.')
     }
 
@@ -239,7 +239,7 @@ export class AuthService {
       select: { id: true, email: true, password: true },
     })
     if (!user) throw new UnauthorizedException('Entre na sua conta.')
-    if (!verifyPassword(senhaAtual, user.password)) {
+    if (!(await verifyPassword(senhaAtual, user.password))) {
       throw new UnauthorizedException('A senha atual não confere.')
     }
 
@@ -247,13 +247,13 @@ export class AuthService {
     // agora, e não uma antiga que já existe e não pode ser trancada do lado de fora.
     const problema = passwordProblem(senhaNova, user.email)
     if (problema) throw new BadRequestException(problema)
-    if (verifyPassword(senhaNova, user.password)) {
+    if (await verifyPassword(senhaNova, user.password)) {
       throw new BadRequestException('A senha nova precisa ser diferente da atual.')
     }
 
     await this.prisma.user.update({
       where: { id: user.id },
-      data: { password: hashPassword(senhaNova) },
+      data: { password: await hashPassword(senhaNova) },
     })
 
     // Derruba TUDO e reabre a sessão de quem está trocando. A ordem importa:

@@ -100,7 +100,8 @@ const PUBLICAS: Record<string, string> = {
     'a foto que alimenta a prévia de link; mesma regra de visibilidade, e serve bytes — nunca redireciona',
   'GET /firms/:slug':
     'a página institucional da sociedade; lista só membro cujo perfil passa em perfilVisivelAoPublico()',
-  'GET /directory': 'busca pública; devolve endereço de foto, nunca os bytes, e o termo tem teto',
+  // GET /directory saiu em 03/09/2026: rota pública que nenhuma tela chamava
+  // (A02 — remover o que não se usa; a decisão estava documentada em SEGURANCA.md).
   'GET /sitemap': 'só slug e data, para o /sitemap.xml da borda; mesma regra de visibilidade',
   'GET /health': 'sonda de disponibilidade; não lê banco nem devolve dado de ninguém',
 

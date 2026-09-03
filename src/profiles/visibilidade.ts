@@ -43,3 +43,32 @@ export function perfilVisivelAoPublico() {
     ],
   }
 }
+
+/**
+ * As seções que a censura PARCIAL manda esconder deste perfil, AGORA.
+ *
+ * É a irmã de campo da regra de linha acima, e mora aqui pelo MESMO motivo: a
+ * auditoria de 03/09 encontrou a censura parcial valendo em `/profiles/:slug`
+ * (via `ProfilesService.toPublic`, privado) e não valendo nas outras portas que
+ * publicam pedaços do mesmo perfil — a página do escritório e a busca. Um método
+ * privado não é fronteira; a função exportada é.
+ *
+ * Devolve o conjunto de seções escondidas (`bio`, `avatar`, `areas`,
+ * `area:<id>`, `headline`, `socials`, `faqs`, `video`, `regionNote`) — vazio
+ * quando não há censura em vigor ou o prazo dela já passou.
+ */
+export function secoesCensuradas(p: {
+  moderationStatus: string
+  moderationUntil?: Date | null
+  hiddenSections: string
+}): Set<string> {
+  if (p.moderationStatus !== 'partial') return new Set()
+  if (p.moderationUntil && p.moderationUntil.getTime() <= Date.now()) return new Set()
+  try {
+    const parsed = JSON.parse(p.hiddenSections || '[]')
+    if (!Array.isArray(parsed)) return new Set()
+    return new Set(parsed.filter((s): s is string => typeof s === 'string'))
+  } catch {
+    return new Set() // JSON inválido → nada censurado (mesma regra do toPublic)
+  }
+}

@@ -19,7 +19,7 @@
 //   AUTH_SESSION_MAX_DAYS       teto absoluto da sessão lembrada (padrão 180)
 //   AUTH_SESSION_SECRET         segredo do token anti-CSRF (ver csrf.ts)
 
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto'
 
 /** Comparação resistente a timing (buffers de mesmo tamanho). */
 function safeEqualBuf(a: Buffer, b: Buffer): boolean {
@@ -37,19 +37,34 @@ function safeEqualBuf(a: Buffer, b: Buffer): boolean {
 const SCRYPT = { N: 32768, r: 8, p: 3, keylen: 64, maxmem: 64 * 1024 * 1024 }
 const LEGACY = { N: 16384, r: 8, p: 1, keylen: 64, maxmem: 64 * 1024 * 1024 }
 
-function derive(password: string, salt: string, o: typeof SCRYPT): Buffer {
-  return scryptSync(password, salt, o.keylen, { N: o.N, r: o.r, p: o.p, maxmem: o.maxmem })
+// ASSÍNCRONO de propósito (auditoria de 03/09). O `scryptSync` rodava os ~33 MB
+// e as três passadas de CPU NO EVENT LOOP: enquanto uma senha era conferida, a
+// API inteira parava — processo único, e `burnPasswordTime` garante que nem é
+// preciso conhecer uma conta para cobrar esse preço. O `crypto.scrypt` com
+// callback roda no threadpool do Node: o custo por verificação continua o mesmo
+// (é ele que resiste a dicionário), mas deixa de ser um botão de indisponibilidade
+// ao alcance de qualquer laço de login.
+function derive(password: string, salt: string, o: typeof SCRYPT): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    scrypt(
+      password,
+      salt,
+      o.keylen,
+      { N: o.N, r: o.r, p: o.p, maxmem: o.maxmem },
+      (err, buf) => (err ? reject(err) : resolve(buf)),
+    )
+  })
 }
 
 /** Gera hash da senha: "scrypt$N=..,r=..,p=..$<salt hex>$<hash hex>". */
-export function hashPassword(password: string): string {
+export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16).toString('hex')
-  const hash = derive(password, salt, SCRYPT).toString('hex')
+  const hash = (await derive(password, salt, SCRYPT)).toString('hex')
   return `scrypt$N=${SCRYPT.N},r=${SCRYPT.r},p=${SCRYPT.p}$${salt}$${hash}`
 }
 
 /** Confere a senha contra o hash guardado (formato novo ou legado). */
-export function verifyPassword(password: string, stored: string): boolean {
+export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const partes = (stored || '').split('$')
   if (partes[0] !== 'scrypt') return false
 
@@ -74,7 +89,7 @@ export function verifyPassword(password: string, stored: string): boolean {
   if (!salt || !hash) return false
 
   try {
-    const test = derive(password, salt, opts)
+    const test = await derive(password, salt, opts)
     return safeEqualBuf(test, Buffer.from(hash, 'hex'))
   } catch {
     return false
@@ -84,11 +99,14 @@ export function verifyPassword(password: string, stored: string): boolean {
 // Hash descartável, só para gastar o MESMO tempo quando o e-mail não existe.
 // Sem isto, "login falhou rápido" significa "esta conta não existe" e a lista de
 // clientes da plataforma vira consulta pública (ver login em auth.service.ts).
-const DUMMY_HASH = hashPassword(randomBytes(24).toString('hex'))
+// É uma Promise (resolvida uma vez, no boot) porque hashPassword virou async.
+const DUMMY_HASH: Promise<string> = hashPassword(randomBytes(24).toString('hex'))
 
-/** Consome o tempo de uma verificação real. Sempre false. */
-export function burnPasswordTime(password: string): boolean {
-  return verifyPassword(password, DUMMY_HASH)
+/** Consome o tempo de uma verificação real. Sempre false. Quem chama PRECISA
+ *  aguardar (`await`) — disparar e seguir devolveria a resposta rápida de novo,
+ *  e a queima de tempo existe justamente para a resposta não ser rápida. */
+export async function burnPasswordTime(password: string): Promise<boolean> {
+  return verifyPassword(password, await DUMMY_HASH)
 }
 
 // ---- Duração da sessão ------------------------------------------------------

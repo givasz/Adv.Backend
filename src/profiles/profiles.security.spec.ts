@@ -6,7 +6,7 @@
 // verifica é o que o serviço MANDOU gravar.
 
 import { describe, expect, it, vi } from 'vitest'
-import { ProfilesService } from './profiles.service'
+import { avatarPublico, ProfilesService } from './profiles.service'
 
 type Qualquer = Record<string, any>
 
@@ -309,81 +309,40 @@ describe('GET /profiles/:slug/avatar', () => {
   })
 })
 
-describe('GET /directory', () => {
-  const linha = (slug: string, avatarUrl: string | null) => ({
-    slug,
-    name: `Advogado ${slug}`,
-    oabNumber: 'OAB/SP 1',
-    headline: '',
-    city: 'São Paulo',
-    state: 'SP',
-    avatarUrl,
-    areas: [],
-  })
+// GET /directory foi REMOVIDA (auditoria de 03/09/2026) — rota pública sem tela
+// que só acumulava achado (megabytes de foto, colisão de OR, vazamento de campo
+// censurado, 40 hashes por requisição). Os testes dela saíram junto; a ausência
+// da rota é cobrada por rotas.spec.ts, e o comportamento da foto pública — que
+// era o que valia a pena guardar daqui — está travado logo abaixo.
 
-  it('devolve o ENDEREÇO da foto, nunca os bytes embutidos', async () => {
-    // 40 fotos de ~300 KB numa rota pública e sem sessão eram megabytes por
-    // requisição — tráfego de graça para quem quisesse pedir em laço.
+describe('avatarPublico — a foto pública é ENDEREÇO, nunca os bytes', () => {
+  it('data URI vira a rota versionada (o ?v= é o hash: muda com a foto, e só)', () => {
     const gordo = `data:image/png;base64,${'A'.repeat(5000)}`
-    const { svc } = servicoDeLeitura(null, { linhas: [linha('marina', gordo)] })
-    const [r] = await svc.search()
-    // O `?v=` é o hash da foto: muda quando ela muda, e é o que permite à rota
-    // de avatar responder com cache imutável para o navegador do visitante.
-    expect(r.avatarUrl).toMatch(/^\/api\/profiles\/marina\/avatar\?v=[0-9a-f]{8}$/)
-    expect(JSON.stringify(r).length).toBeLessThan(500)
+    const url = avatarPublico('marina', gordo)
+    expect(url).toMatch(/^\/api\/profiles\/marina\/avatar\?v=[0-9a-f]{8}$/)
+    // Determinístico: o mesmo conteúdo dá a mesma versão (é o que o ETag usa).
+    expect(avatarPublico('marina', gordo)).toBe(url)
+    // E a versão acompanha o CONTEÚDO, não o slug.
+    expect(avatarPublico('marina', `data:image/png;base64,${'B'.repeat(5000)}`)).not.toBe(url)
   })
 
-  it('foto hospedada fora sai como está — ela já é um endereço público', async () => {
-    const { svc } = servicoDeLeitura(null, {
-      linhas: [linha('marina', 'https://cdn.exemplo/foto.jpg')],
-    })
-    const [r] = await svc.search()
-    expect(r.avatarUrl).toBe('https://cdn.exemplo/foto.jpg')
-  })
-
-
-  it('corta o termo de busca antes de mandá-lo ao banco', async () => {
-    const { svc, prisma } = servicoDeLeitura(null, { linhas: [] })
-    await svc.search('a'.repeat(50_000))
-    // `.find(c => c.OR)` não serve: a condição de moderação também é um `OR`.
-    const busca = prisma.profile.findMany.mock.calls[0][0].where.AND.find(
-      (c: Qualquer) => c.OR?.[0]?.name,
+  it('foto hospedada fora sai como está — ela já é um endereço público', () => {
+    expect(avatarPublico('marina', 'https://cdn.exemplo/foto.jpg')).toBe(
+      'https://cdn.exemplo/foto.jpg',
     )
-    expect(busca.OR[0].name.contains.length).toBeLessThanOrEqual(120)
   })
 
-  /**
-   * A trava do vazamento de moderação.
-   *
-   * O `where` era um objeto só, com a condição de moderação e a de texto
-   * disputando a MESMA chave `OR` — e a segunda vencia. O efeito: perfil tirado
-   * do ar reaparecia na busca pública para quem digitasse o nome dele.
-   *
-   * O teste é sobre a FORMA da consulta, não sobre o resultado, porque não há
-   * banco aqui: verifica que a condição de moderação continua na consulta
-   * também quando há termo de busca. É o que uma dublê consegue provar — e é o
-   * bastante, porque o defeito era exatamente ela sumir.
-   */
-  it('mantém o filtro de moderação quando há termo de busca', async () => {
-    const { svc, prisma } = servicoDeLeitura(null, { linhas: [] })
-    await svc.search('marina')
-    const cond = prisma.profile.findMany.mock.calls[0][0].where.AND
-    const moderacao = cond.find((c: Qualquer) => c.published === true)
-    expect(moderacao).toBeDefined()
-    expect(moderacao.OR).toEqual([
-      { moderationStatus: { not: 'restricted' } },
-      { moderationUntil: { lte: expect.any(Date) } },
-    ])
-    // E a busca por texto continua lá, como condição SEPARADA.
-    expect(cond.some((c: Qualquer) => c.OR?.[0]?.name)).toBe(true)
+  it('sem foto, ou com esquema que não é https nem data, sai NADA', () => {
+    expect(avatarPublico('marina', null)).toBeUndefined()
+    expect(avatarPublico('marina', undefined)).toBeUndefined()
+    expect(avatarPublico('marina', 'javascript:alert(1)')).toBeUndefined()
+    expect(avatarPublico('marina', 'http://sem-tls/x.jpg')).toBeUndefined()
   })
 
-  it('sem termo, a consulta leva só a condição de moderação', async () => {
-    const { svc, prisma } = servicoDeLeitura(null, { linhas: [] })
-    await svc.search('   ')
-    const cond = prisma.profile.findMany.mock.calls[0][0].where.AND
-    expect(cond).toHaveLength(1)
-    expect(cond[0].published).toBe(true)
+  it('slug estranho é codificado — nunca quebra o caminho da URL', () => {
+    expect(avatarPublico('a/b?c', 'data:image/png;base64,AAAA')).toMatch(
+      /^\/api\/profiles\/a%2Fb%3Fc\/avatar\?v=/,
+    )
   })
 })
 

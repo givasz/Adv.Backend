@@ -13,3 +13,4 @@ prisma/migrations/
 
 *.log
 .DS_Store
+deploy.tgz
