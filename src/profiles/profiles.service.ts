@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
+import { createHash } from 'node:crypto'
 import { PrismaService } from '../prisma/prisma.service'
 import { perfilVisivelAoPublico } from './visibilidade'
 import { faixa, pagina } from '../admin/paginacao'
@@ -191,7 +192,17 @@ export class ProfilesService {
     this.prisma.linkEvent
       .create({ data: { profileId: profile.id, kind: 'view' } })
       .catch(() => undefined)
-    return this.toApi(this.toPublic(profile))
+    const publico = this.toPublic(profile)
+    const out = this.toApi(publico)
+    // A foto do VISITANTE sai como ENDEREÇO (…/avatar?v=hash), não como o data
+    // URI. Dentro do JSON ela pesava +33% (base64), não entrava em cache nenhum
+    // e chegava antes do resto do perfil poder pintar; como endereço, o
+    // navegador a busca em paralelo, o cache vale entre visitas, e o `v` (hash
+    // da própria foto) troca a URL no dia em que a foto mudar — nunca antes.
+    // Só aqui: o DONO (getMine/update) continua recebendo o data URI, que é o
+    // que o editor recorta e o cartão de visita desenha.
+    out.avatarUrl = avatarPublico(profile.slug, (publico as { avatarUrl?: string | null }).avatarUrl)
+    return out
   }
 
   /**
@@ -233,12 +244,24 @@ export class ProfilesService {
    * Não incrementa visita: quem carrega a prévia é o robô do mensageiro, não uma
    * pessoa. Contar isso inflaria a métrica do advogado com robô.
    */
-  async avatarBySlug(slug: string): Promise<{ bytes: Buffer; contentType: string }> {
+  async avatarBySlug(
+    slug: string,
+  ): Promise<{ bytes: Buffer; contentType: string; versao: string }> {
     const profile = await this.prisma.profile.findFirst({
       where: { slug, ...this.visivelAoPublico() },
-      select: { avatarUrl: true },
+      // As colunas de moderação vêm junto: a censura parcial que esconde a foto
+      // no JSON público (toPublic) tem de valer AQUI também — sem isto, a foto
+      // "escondida" continuava servida a quem soubesse o endereço da rota.
+      select: {
+        avatarUrl: true,
+        moderationStatus: true,
+        moderationUntil: true,
+        hiddenSections: true,
+      },
     })
-    const src = profile?.avatarUrl
+    if (!profile) throw new NotFoundException('Sem foto')
+    const publico = this.toPublic(profile)
+    const src = (publico as { avatarUrl?: string | null }).avatarUrl
     if (!src) throw new NotFoundException('Sem foto')
 
     const m = /^data:(image\/(?:png|jpeg|jpg|webp|gif));base64,([A-Za-z0-9+/=]+)$/.exec(src)
@@ -247,7 +270,9 @@ export class ProfilesService {
     if (!m) throw new NotFoundException('Sem foto')
 
     const contentType = m[1] === 'image/jpg' ? 'image/jpeg' : m[1]
-    return { bytes: Buffer.from(m[2], 'base64'), contentType }
+    // `versao` é o mesmo hash do `?v=` que o getBySlug põe na URL — o controller
+    // usa como ETag, e um navegador que já tem a foto revalida com um 304 vazio.
+    return { bytes: Buffer.from(m[2], 'base64'), contentType, versao: versaoDaFoto(src) }
   }
 
   /**
@@ -1395,7 +1420,7 @@ export class ProfilesService {
       ...r,
       // DirectoryResult espera `areas: string[]` (não objetos).
       areas: r.areas.map((a) => a.label),
-      avatarUrl: avatarParaLista(r.slug, r.avatarUrl),
+      avatarUrl: avatarPublico(r.slug, r.avatarUrl),
     }))
   }
 }
@@ -1406,15 +1431,29 @@ const DIRECTORY_MAX = 40
 const DIRECTORY_Q_MAX = 120
 
 /**
- * A foto de um item de lista — sempre um ENDEREÇO, nunca os bytes.
+ * Versão curta e estável da foto — muda quando a foto muda, e só então.
  *
- * O data URI vira o caminho da nossa rota de avatar (que serve os bytes com
- * cache de uma hora); a foto hospedada fora segue como está, porque já é um
- * endereço público e a nossa origem não tem o que acrescentar no meio dela.
+ * Vai na URL (`?v=`) e no ETag da rota de avatar. É o que permite ao navegador
+ * guardar a imagem como imutável: trocar a foto troca o endereço, então nenhum
+ * cache precisa expirar "por via das dúvidas".
  */
-function avatarParaLista(slug: string, avatarUrl: string | null): string | undefined {
+function versaoDaFoto(dataUri: string): string {
+  return createHash('sha256').update(dataUri).digest('hex').slice(0, 8)
+}
+
+/**
+ * A foto pública — sempre um ENDEREÇO, nunca os bytes.
+ *
+ * O data URI vira o caminho da nossa rota de avatar (com a versão, para o cache
+ * poder ser longo); a foto hospedada fora segue como está, porque já é um
+ * endereço público e a nossa origem não tem o que acrescentar no meio dela.
+ * Vale para o perfil público (getBySlug) e para os itens de lista (search).
+ */
+function avatarPublico(slug: string, avatarUrl: string | null | undefined): string | undefined {
   if (!avatarUrl) return undefined
-  if (avatarUrl.startsWith('data:')) return `/api/profiles/${encodeURIComponent(slug)}/avatar`
+  if (avatarUrl.startsWith('data:')) {
+    return `/api/profiles/${encodeURIComponent(slug)}/avatar?v=${versaoDaFoto(avatarUrl)}`
+  }
   return avatarUrl.startsWith('https://') ? avatarUrl : undefined
 }
 

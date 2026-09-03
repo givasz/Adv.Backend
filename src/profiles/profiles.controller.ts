@@ -21,6 +21,7 @@ import {
 interface RespostaHttp {
   setHeader(nome: string, valor: string): void
   end(corpo?: Buffer): void
+  statusCode: number
 }
 import { ProfilesService } from './profiles.service'
 import { AdminService } from '../admin/admin.service'
@@ -110,22 +111,42 @@ export class ProfilesController {
    * robô do WhatsApp consiga buscar por HTTP, e a foto está guardada como data
    * URI. Ver ProfilesService.avatarBySlug.
    *
-   * `immutable` não cabe (a pessoa troca a foto), mas uma hora de cache é o certo
-   * aqui: os mensageiros buscam esta URL uma vez por compartilhamento, e sem
-   * cache um perfil que circula vira uma consulta ao banco por leitor.
+   * O prazo do cache depende de COMO a URL chegou:
+   *   • com `?v=` (o hash da foto, posto pelo getBySlug no JSON público): a URL
+   *     muda junto com a foto, então aqui cabe `immutable` — o navegador do
+   *     visitante recorrente nem pergunta de novo;
+   *   • sem versão (o `og:image` que os mensageiros buscam): uma hora, como
+   *     antes — os robôs pegam esta URL uma vez por compartilhamento, e sem
+   *     cache um perfil que circula vira uma consulta ao banco por leitor.
+   * O ETag (o mesmo hash) fecha o meio do caminho: cache vencido revalida com
+   * um 304 vazio em vez de baixar a foto inteira outra vez.
    */
   @Get('profiles/:slug/avatar')
-  async avatar(@Param('slug') slug: string, @Res() res: RespostaHttp) {
+  async avatar(
+    @Param('slug') slug: string,
+    @Query('v') v: string | undefined,
+    @Headers('if-none-match') ifNoneMatch: string | undefined,
+    @Res() res: RespostaHttp,
+  ) {
     // Só bytes. A rota NÃO redireciona: enquanto redirecionava para a foto
     // hospedada fora, ela era um redirecionamento aberto na nossa origem — conta
     // grátis, `avatarUrl` apontando para onde o dono quisesse, e um link do
     // domínio da plataforma levando a qualquer lugar. Ver ProfilesService.
     const foto = await this.profiles.avatarBySlug(slug)
-    res.setHeader('Content-Type', foto.contentType)
-    res.setHeader('Cache-Control', 'public, max-age=3600')
+    const etag = `"${foto.versao}"`
+    res.setHeader('ETag', etag)
+    res.setHeader(
+      'Cache-Control',
+      v ? 'public, max-age=31536000, immutable' : 'public, max-age=3600',
+    )
     // A foto é imagem, e só. Sem isto, um arquivo forjado que passasse pelo
     // saneamento poderia ser servido como outra coisa pelo palpite do navegador.
     res.setHeader('X-Content-Type-Options', 'nosniff')
+    if (ifNoneMatch === etag) {
+      res.statusCode = 304
+      return res.end()
+    }
+    res.setHeader('Content-Type', foto.contentType)
     return res.end(foto.bytes)
   }
 

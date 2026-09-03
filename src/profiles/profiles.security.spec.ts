@@ -327,7 +327,9 @@ describe('GET /directory', () => {
     const gordo = `data:image/png;base64,${'A'.repeat(5000)}`
     const { svc } = servicoDeLeitura(null, { linhas: [linha('marina', gordo)] })
     const [r] = await svc.search()
-    expect(r.avatarUrl).toBe('/api/profiles/marina/avatar')
+    // O `?v=` é o hash da foto: muda quando ela muda, e é o que permite à rota
+    // de avatar responder com cache imutável para o navegador do visitante.
+    expect(r.avatarUrl).toMatch(/^\/api\/profiles\/marina\/avatar\?v=[0-9a-f]{8}$/)
     expect(JSON.stringify(r).length).toBeLessThan(500)
   })
 
