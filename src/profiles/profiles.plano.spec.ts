@@ -17,7 +17,11 @@ import { ProfilesService } from './profiles.service'
 
 type Qualquer = Record<string, any>
 
-const HOJE = new Date('2026-08-28T12:00:00.000Z')
+// Ancorado no relógio REAL, não numa data fixa: planoVigente decide com
+// `new Date()`, e uma âncora congelada apodrece — uma carência de "daqui a 5
+// dias" gravada em relação a uma data do passado já nasce vencida, e o teste
+// quebra sozinho com o passar do calendário (aconteceu: 2026-09-03).
+const HOJE = new Date()
 const dias = (n: number) => new Date(HOJE.getTime() + n * 24 * 60 * 60 * 1000)
 
 interface Opcoes {
