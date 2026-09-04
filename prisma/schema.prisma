@@ -405,6 +405,16 @@ model Profile {
   // Rebaixamento pedido e AGENDADO para o fim do período pago. Cobrar um mês de
   // Max e entregar Pro no dia seguinte é vender o que não se entrega.
   planScheduled         Plan?
+  // Até quando o ENDEREÇO LIMPO continua sendo desta pessoa depois de ela cair
+  // para o Free. Nulo = não há nada pendente (é o caso de todo mundo que não
+  // acabou de descer).
+  //
+  // O endereço sem número é o perk mais visível do Pro, e por isso perdê-lo é o
+  // que faz o rebaixamento pesar. Mas tirá-lo no mesmo instante seria emboscada:
+  // o link está impresso em cartão, colado num QR e indexado no Google. Então o
+  // endereço vira prazo — sete dias com a data escrita no painel, e só depois a
+  // varredura carimba o número. Ver src/assinatura.ts (CARENCIA_ENDERECO_DIAS).
+  slugGraceUntil        DateTime?
   // ---- Vínculo com o provedor de pagamento ----
   // Guardamos só os identificadores — nunca cartão, nunca CPF. O que o provedor
   // sabe é problema dele; o que precisamos é conseguir casar um webhook com uma

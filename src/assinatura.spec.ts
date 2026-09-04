@@ -14,8 +14,11 @@ import {
   aoRetomar,
   aoTrocarPlano,
   aoVirarOPrazo,
+  aoPerderOPlano,
   CARENCIA_DIAS,
+  CARENCIA_ENDERECO_DIAS,
   emCortesia,
+  enderecoVenceu,
   planoVigente,
   somarDias,
   TOLERANCIA_RENOVACAO_DIAS,
@@ -220,5 +223,47 @@ describe('varredura (o que vence sozinho)', () => {
     expect(
       aoVirarOPrazo({ plan: 'premium', planStatus: 'paused', currentPeriodEnd: dias(-400) }, HOJE),
     ).toBeNull()
+  })
+})
+
+describe('o prazo do endereço', () => {
+  // Cair para o Free devolve o endereço ao padrão "nome-1234". Isso é o que dá
+  // peso ao rebaixamento — mas só depois de uma semana avisada, porque o endereço
+  // está impresso em cartão de visita e indexado no Google.
+
+  it('nasce uma semana à frente', () => {
+    expect(aoPerderOPlano(HOJE).getTime()).toBe(dias(CARENCIA_ENDERECO_DIAS).getTime())
+  })
+
+  it('vence só depois da data, e só para quem está mesmo no Free', () => {
+    const noFree = { plan: 'free', planStatus: 'canceled' }
+    expect(enderecoVenceu({ ...noFree, slugGraceUntil: dias(-1) }, HOJE)).toBe(true)
+    expect(enderecoVenceu({ ...noFree, slugGraceUntil: dias(1) }, HOJE)).toBe(false)
+  })
+
+  it('sem prazo marcado, nada vence — é o caso de todo mundo', () => {
+    expect(enderecoVenceu({ plan: 'free', slugGraceUntil: null }, HOJE)).toBe(false)
+    expect(enderecoVenceu({ plan: 'pro', planStatus: 'active' }, HOJE)).toBe(false)
+  })
+
+  it('quem voltou a pagar não perde o endereço, mesmo com o prazo vencido', () => {
+    expect(
+      enderecoVenceu(
+        { plan: 'pro', planStatus: 'active', currentPeriodEnd: dias(20), slugGraceUntil: dias(-5) },
+        HOJE,
+      ),
+    ).toBe(false)
+  })
+
+  it('na carência da COBRANÇA o endereço nem entra em jogo: o plano ainda vale', () => {
+    // O prazo do endereço só começa a correr quando o plano já caiu — os dois
+    // prazos são em sequência, nunca em paralelo. Somados, são duas semanas entre
+    // o cartão recusado e o link mudar.
+    expect(
+      enderecoVenceu(
+        { plan: 'premium', planStatus: 'past_due', graceUntil: dias(2), slugGraceUntil: dias(-1) },
+        HOJE,
+      ),
+    ).toBe(false)
   })
 })

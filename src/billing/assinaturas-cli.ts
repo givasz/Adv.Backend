@@ -14,7 +14,8 @@ async function main() {
     const r = await app.get(AssinaturasService).varrer()
     console.log(
       `Varredura: ${r.rebaixados} assinatura(s) vencida(s) rebaixada(s), ` +
-        `${r.agendados} rebaixamento(s) agendado(s) aplicado(s).`,
+        `${r.agendados} rebaixamento(s) agendado(s) aplicado(s), ` +
+        `${r.enderecos} endereço(s) devolvido(s) ao padrão do Free.`,
     )
   } finally {
     await app.close()

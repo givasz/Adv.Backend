@@ -59,6 +59,25 @@ export const CARENCIA_DIAS = 7
  */
 export const TOLERANCIA_RENOVACAO_DIAS = 3
 
+/**
+ * Prazo do ENDEREÇO depois que o plano cai para o Free.
+ *
+ * O endereço sem número é o perk mais visível do Pro. Devolvê-lo ao padrão do
+ * Free é o que faz o rebaixamento ter peso — sem isso, a única diferença que a
+ * pessoa nota é o que sumiu da página, e o endereço vira um perk pago que
+ * ninguém devolve.
+ *
+ * Mas tirar no mesmo instante seria emboscada: o endereço está impresso em cartão
+ * de visita, colado num QR e indexado no Google. Então ele não cai junto com o
+ * plano — ele ganha prazo, com a data escrita no painel desde o primeiro dia, e
+ * só vira número no fim dele. Somado à carência de cobrança, quem tem o cartão
+ * recusado tem duas semanas até o link mudar.
+ *
+ * Sete dias, e não trinta: um prazo longo demais deixa de ser aviso e vira outro
+ * mês de perk pago de graça.
+ */
+export const CARENCIA_ENDERECO_DIAS = 7
+
 const RANK: Record<Plan, number> = { free: 0, pro: 1, premium: 2 }
 
 const DIA_MS = 24 * 60 * 60 * 1000
@@ -73,6 +92,8 @@ export interface EstadoAssinatura {
   graceUntil?: Date | string | null
   /** rebaixamento pedido e agendado para o fim do período pago */
   planScheduled?: string | null
+  /** até quando o endereço limpo ainda é desta pessoa depois de cair para o Free */
+  slugGraceUntil?: Date | string | null
 }
 
 /** Data tolerante a string (o mock do front e o JSON do webhook mandam string). */
@@ -166,6 +187,26 @@ export function venceu(p: EstadoAssinatura, agora: Date = new Date()): boolean {
   return planoDe(p.plan) !== 'free' && planoVigente(p, agora) === 'free'
 }
 
+/**
+ * O prazo do endereço acabou? (também da varredura diária)
+ *
+ * Só responde `true` quando há prazo marcado E ele passou E o plano vigente é
+ * mesmo o Free — quem reassinou no meio da semana tem o prazo apagado por
+ * `aplicarAssinatura`, e esta conferência é a segunda tranca: um relógio adiantado
+ * ou uma linha esquecida não podem renumerar o endereço de quem está pagando.
+ */
+export function enderecoVenceu(p: EstadoAssinatura, agora: Date = new Date()): boolean {
+  const prazo = data(p.slugGraceUntil)
+  if (!prazo) return false
+  if (planoVigente(p, agora) !== 'free') return false
+  return prazo.getTime() <= agora.getTime()
+}
+
+/** Quando o endereço limpo passa a ser prazo: no instante em que o plano vira Free. */
+export function aoPerderOPlano(agora: Date = new Date()): Date {
+  return somarDias(agora, CARENCIA_ENDERECO_DIAS)
+}
+
 // ---- Transições -------------------------------------------------------------
 //
 // Funções PURAS: recebem o estado e devolvem o patch a gravar. Ficam fora do
@@ -178,6 +219,12 @@ export interface PatchAssinatura {
   currentPeriodEnd?: Date | null
   graceUntil?: Date | null
   planScheduled?: Plan | null
+  /**
+   * NÃO é escrito pelas transições deste arquivo: quem decide o prazo do endereço
+   * é `aplicarAssinatura`, que é quem sabe qual era o endereço antes. Fica no tipo
+   * para a varredura poder zerá-lo ao carimbar.
+   */
+  slugGraceUntil?: Date | null
 }
 
 /** Pagamento confirmado (assinatura nova ou renovação). Zera qualquer carência. */
