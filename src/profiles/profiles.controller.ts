@@ -68,10 +68,25 @@ export class ProfilesController {
     return this.profiles.getMine(userId)
   }
 
-  // PUT /api/profiles/me
+  /**
+   * PUT /api/profiles/me
+   *
+   * O IP viaja até o serviço porque o save pode ser o instante em que um perfil
+   * vai ao ar — e esse instante é registro de acesso do art. 15 do Marco Civil.
+   * Quem decide se grava (e não grava em rascunho) é ProfilesService.update.
+   */
   @Put('profiles/me')
-  async update(@Body() body: any, @Req() req: RequisicaoComAuth) {
-    return this.profiles.update(await this.requireUser(req), body)
+  async update(
+    @Body() body: any,
+    @Req() req: RequisicaoComAuth,
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') forwardedFor?: string,
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    return this.profiles.update(await this.requireUser(req), body, {
+      ip: clientIp(ip, forwardedFor),
+      userAgent,
+    })
   }
 
   // POST /api/profiles/me/plan  → { plan: 'free' | 'pro' | 'premium' }

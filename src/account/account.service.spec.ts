@@ -24,6 +24,8 @@ function service(opts: { firms?: Qualquer[]; user?: Qualquer | null } = {}) {
                 email: 'marina@exemplo.com',
                 password: await hashPassword(SENHA),
                 createdAt: new Date('2026-01-01'),
+                termsAcceptedAt: new Date('2026-01-01'),
+                termsVersion: '2026-09-04',
                 profile: {
                   id: 'p1',
                   slug: 'marina-sales',
@@ -45,6 +47,21 @@ function service(opts: { firms?: Qualquer[]; user?: Qualquer | null } = {}) {
     firm: { findMany: vi.fn(() => Promise.resolve(opts.firms ?? [])) },
     profile: { update: vi.fn((a: Qualquer) => (calls.profileUpdate.push(a), Promise.resolve({}))) },
     linkEvent: { count: vi.fn(() => Promise.resolve(42)) },
+    // Registro de acesso (Marco Civil, art. 15). Entra na exportação porque é
+    // dado pessoal de quem pede — a LGPD dá direito de VER até o que guardamos
+    // por obrigação legal e não podemos apagar a pedido.
+    accessLog: {
+      findMany: vi.fn(() =>
+        Promise.resolve([
+          {
+            action: 'login',
+            ip: '198.51.100.7',
+            userAgent: 'Mozilla/5.0',
+            createdAt: new Date('2026-09-01'),
+          },
+        ]),
+      ),
+    },
     // Histórico de cobrança: dado sobre a PESSOA, então entra na exportação.
     billingEvent: {
       findMany: vi.fn(() =>

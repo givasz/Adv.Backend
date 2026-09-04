@@ -75,6 +75,9 @@ const REGISTRAM_NO_SERVICO: Record<string, string> = {
   suspender: 'AdminService.suspenderConta registra e exige motivo',
   reativar: 'AdminService.reativarConta registra e exige motivo',
   encerrar: 'AdminService.encerrarConta registra, exige motivo e confirmação digitada',
+  registroDeAcesso:
+    'AdminService.registroDeAcesso registra ANTES de devolver as linhas, e exige motivo — ' +
+    'é POST justamente porque a consulta escreve',
 }
 
 describe('as rotas do painel', () => {

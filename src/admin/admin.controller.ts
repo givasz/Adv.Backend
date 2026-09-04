@@ -201,6 +201,29 @@ export class AdminController {
     return this.admin.fichaDaConta(id)
   }
 
+  /**
+   * POST /api/admin/users/:id/acesso  { motivo } → registro de acesso da conta.
+   *
+   * POST, e não GET, de propósito: a consulta ESCREVE (grava a própria consulta
+   * na auditoria) e exige um motivo no corpo. Um GET seria compartilhável por
+   * link, cacheável e chamável sem CSRF — três coisas que não se quer num
+   * endereço que devolve endereços IP.
+   *
+   * Sem tela no painel. Ver AdminService.registroDeAcesso.
+   */
+  @Post('users/:id/acesso')
+  async registroDeAcesso(
+    @Param('id') id: string,
+    @Req() req: RequisicaoComAuth,
+    @Body() body: { motivo?: string },
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') forwardedFor?: string,
+    @Headers('x-admin-token') token?: string,
+  ) {
+    const quem = await this.admin.exigir(req, 'acesso:ler', token)
+    return this.admin.registroDeAcesso(quem, id, body?.motivo ?? '', clientIp(ip, forwardedFor))
+  }
+
   // POST /api/admin/users/:id/suspender  { reason, dias? }
   @Post('users/:id/suspender')
   async suspender(

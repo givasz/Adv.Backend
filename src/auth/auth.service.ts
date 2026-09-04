@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { POLICY_VERSION } from '../oab/compliance'
+import { aceiteVigente, TERMS_VERSION } from '../legal/termos'
 import { slugify } from '../plans'
 import { burnPasswordTime, hashPassword, verifyPassword } from './user-auth'
 import { SessionService } from './session.service'
@@ -25,7 +26,24 @@ export interface AuthSession {
   /** Token anti-CSRF desta sessão, devolvido no cabeçalho das escritas. */
   csrfToken: string
   remember: boolean
-  user: { id: string; email: string; name?: string; plan: string }
+  user: {
+    id: string
+    email: string
+    name?: string
+    plan: string
+    /**
+     * Os Termos mudaram desde o aceite desta conta (ou nunca houve aceite)?
+     *
+     * Vai no corpo de /login, /signup e /me porque é a tela que precisa saber —
+     * é ela que mostra o pedido de reaceite. Não é uma trava de acesso: quem
+     * está dentro continua podendo ler o painel, exportar os dados e sair. O que
+     * o reaceite pendente trava é PUBLICAR (ver profiles.service), que é o ato
+     * em que os Termos importam de verdade.
+     */
+    termsPending: boolean
+    /** Versão aceita por esta conta — vazia quando nunca houve aceite. */
+    termsVersion: string
+  }
 }
 
 @Injectable()
@@ -68,9 +86,22 @@ export class AuthService {
     name: string | undefined,
     plan: string,
     lembrar: boolean,
+    termsVersion: string,
   ): Promise<AuthSession> {
     const { expiresAt, csrfToken, remember } = await this.sessions.abrir(req, id, lembrar)
-    return { expiresAt, csrfToken, remember, user: { id, email, name: name || undefined, plan } }
+    return {
+      expiresAt,
+      csrfToken,
+      remember,
+      user: {
+        id,
+        email,
+        name: name || undefined,
+        plan,
+        termsVersion,
+        termsPending: !aceiteVigente(termsVersion),
+      },
+    }
   }
 
   async signup(
@@ -79,9 +110,20 @@ export class AuthService {
     password?: unknown,
     name?: unknown,
     lembrar = true,
+    aceite?: { aceitou: unknown; ip: string },
   ): Promise<AuthSession> {
     const mail = this.normalizeEmail(email)
     if (!EMAIL_RE.test(mail)) throw new BadRequestException('E-mail inválido.')
+    // O ACEITE É REQUISITO DO CADASTRO, conferido aqui e não só na tela.
+    //
+    // Uma caixa marcada no navegador não é prova de nada — quem chama a rota
+    // direto nunca vê caixa nenhuma. É esta recusa que faz existir a regra "toda
+    // conta desta base aceitou os Termos", que é a frase que se diz num processo.
+    if (aceite?.aceitou !== true) {
+      throw new BadRequestException(
+        'É preciso aceitar os Termos de Uso e a Política de Privacidade para criar a conta.',
+      )
+    }
     // Regras de senha: ver src/password.ts. Valem só no CADASTRO — o login não
     // pode trancar quem criou a conta sob a regra antiga.
     const senha = typeof password === 'string' ? password : ''
@@ -95,6 +137,13 @@ export class AuthService {
       data: {
         email: mail,
         password: await hashPassword(senha),
+        // O aceite entra na MESMA transação que cria a conta. Gravar depois
+        // abriria a janela em que uma conta existe sem registro de aceite — e a
+        // única conta que interessa numa disputa seria justamente a que caiu na
+        // janela.
+        termsAcceptedAt: new Date(),
+        termsVersion: TERMS_VERSION,
+        termsIp: aceite.ip.slice(0, 60),
         profile: { create: this.starterProfile(cleanName) },
       },
       select: { id: true, email: true, profile: { select: { id: true, name: true, plan: true } } },
@@ -107,7 +156,27 @@ export class AuthService {
       user.profile?.name || cleanName,
       user.profile ? planoVigente(user.profile) : 'free',
       lembrar,
+      TERMS_VERSION,
     )
+  }
+
+  /**
+   * Aceite de quem JÁ tem conta — o caminho do reaceite quando o texto muda.
+   *
+   * Existe por duas razões. A primeira é a base anterior a esta mudança: milhares
+   * de contas sem registro nenhum, que não dá para apagar nem para presumir. A
+   * segunda é o item 13 dos Termos, que promete avisar mudanças relevantes; sem
+   * uma porta como esta, "avisar" seria um texto novo publicado em silêncio e a
+   * esperança de que ninguém reparasse.
+   *
+   * Carimba sempre a versão do SERVIDOR. O corpo diz apenas "aceito".
+   */
+  async aceitarTermos(userId: string, ip: string): Promise<{ termsVersion: string }> {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { termsAcceptedAt: new Date(), termsVersion: TERMS_VERSION, termsIp: ip.slice(0, 60) },
+    })
+    return { termsVersion: TERMS_VERSION }
   }
 
   // Convites feitos para um e-mail SEM conta ficam guardados em FirmInvite (o
@@ -149,6 +218,7 @@ export class AuthService {
         suspendedReason: true,
         closedAt: true,
         closedReason: true,
+        termsVersion: true,
         // Plano VIGENTE, não o contratado: o retrato da sessão é o que a tela
         // consulta antes de o perfil chegar, e um "premium" aqui destravaria por
         // um instante o que a assinatura vencida não entrega mais.
@@ -205,6 +275,7 @@ export class AuthService {
       user.profile?.name || undefined,
       user.profile ? planoVigente(user.profile) : 'free',
       lembrar,
+      user.termsVersion,
     )
   }
 
@@ -271,6 +342,7 @@ export class AuthService {
       select: {
         id: true,
         email: true,
+        termsVersion: true,
         // Vigente, não contratado — mesma razão do login: este é o retrato que a
         // tela consulta ANTES de o perfil chegar (ver frontend lib/auth.ts).
         profile: {
@@ -290,6 +362,8 @@ export class AuthService {
       email: user.email,
       name: user.profile?.name || undefined,
       plan: user.profile ? planoVigente(user.profile) : 'free',
+      termsVersion: user.termsVersion,
+      termsPending: !aceiteVigente(user.termsVersion),
     }
   }
 }

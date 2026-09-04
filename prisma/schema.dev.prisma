@@ -49,6 +49,28 @@ model User {
   email           String          @unique
   password        String // hash (argon2)
   createdAt       DateTime        @default(now())
+  // ---- Aceite dos Termos ----
+  //
+  // Os documentos legais são bons e não valiam nada: nada provava que alguém
+  // concordou com eles. O CDC (art. 46) é direto — cláusula que o consumidor não
+  // teve oportunidade de conhecer NÃO O OBRIGA — e o ônus de provar a
+  // oportunidade é de quem redigiu. Uma frase "ao continuar você concorda" sem
+  // registro nenhum é exatamente o caso que o artigo descreve.
+  //
+  // As três colunas são o registro: QUANDO, QUAL TEXTO e DE ONDE.
+  //
+  // `termsVersion` guarda a data da revisão aceita (ver src/legal/termos.ts).
+  // Vazia nas contas criadas antes disto existir — e é assim que a base inteira
+  // passa a ter aceite: quem entra com versão vencida recebe o pedido de
+  // reaceite antes de continuar.
+  termsAcceptedAt DateTime?
+  termsVersion    String          @default("")
+  // IP de onde partiu o aceite. É o endereço, não uma impressão digital: um hash
+  // prova que dois aceites vieram do mesmo lugar e não prova qual lugar — e o que
+  // um juiz pede é o endereço. Vive sob o mesmo regime do AccessLog (sigilo,
+  // acesso restrito), mas acompanha a conta enquanto ela existir, porque é prova
+  // do contrato, não registro de conexão.
+  termsIp         String          @default("")
   // ---- Sanções que alcançam a CONTA, não só o perfil ----
   // Ver docs/politica-de-sancoes.md, degraus 4 e 5. Até aqui o painel só
   // alcançava o perfil: dava para tirar a página do ar e não dava para impedir
@@ -107,6 +129,63 @@ model Session {
 
   @@index([userId])
   @@index([expiresAt])
+}
+
+// REGISTRO DE ACESSO A APLICAÇÃO — Marco Civil da Internet, art. 15.
+//
+// POR QUE ISTO EXISTE, ainda que contrarie o resto do desenho
+// ----------------------------------------------------------
+// Todo o produto foi construído para guardar o mínimo: Session não tem IP, o log
+// de segurança usa impressão digital do e-mail, as métricas contam
+// acontecimentos e nunca pessoas. Essa disciplina está certa e continua valendo
+// em toda parte — menos aqui, por duas razões que se somam.
+//
+// A LEGAL. O art. 15 obriga o provedor de aplicação constituído como pessoa
+// jurídica, que exerça a atividade de forma organizada e com fins econômicos, a
+// guardar os registros de acesso à aplicação por SEIS MESES, sob sigilo e em
+// ambiente controlado. É o nosso caso desde que existe um plano pago.
+//
+// A PRÁTICA, que importa mais. A defesa inteira da plataforma se apoia em uma
+// frase: "a responsabilidade pelo conteúdo é de quem o publicou". Essa frase só
+// funciona se for possível dizer QUEM publicou. Sem registro de acesso, diante de
+// um perfil com a inscrição de outro advogado, tudo o que se entrega é um e-mail
+// que qualquer um cria em trinta segundos — e a responsabilidade que se queria
+// transferir volta inteira para cá. O registro é o que transforma a cláusula em
+// algo oponível.
+//
+// POR QUE NÃO TEM RELAÇÃO COM User
+// --------------------------------
+// De propósito. Se houvesse `onDelete: Cascade`, excluir a conta apagaria o
+// registro — e o art. 15 não admite que o obrigado se desobrigue a pedido do
+// titular. A LGPD acomoda isso sem conflito: o art. 16, I ressalva a guarda
+// necessária ao cumprimento de obrigação legal. Por isso `userId` é uma coluna
+// solta, e `subject` (impressão digital do e-mail) preserva a atribuição mesmo
+// depois de a conta deixar de existir.
+//
+// O PRAZO É TETO, NÃO PISO: 180 dias, expurgados por RetencaoService. Guardar
+// mais do que a lei pede seria tratar dado pessoal sem finalidade — o oposto do
+// que este modelo existe para fazer.
+model AccessLog {
+  id        String   @id @default(cuid())
+  // Conta a que o registro se refere. Sem relação (ver acima): sobrevive à
+  // exclusão da conta pelo prazo legal, e não impede a exclusão.
+  userId    String   @default("")
+  // Impressão digital do e-mail no momento do acesso — a atribuição que resta
+  // quando a conta some. Não é o e-mail, e não volta a ser.
+  subject   String   @default("")
+  // "login" | "signup" | "publicacao" | "edicao"
+  action    String
+  // O ENDEREÇO, não um hash. Um hash de IP não identifica ninguém: não se
+  // consulta operadora com hash, e um registro que não identifica não cumpre o
+  // art. 15 nem serve para transferir responsabilidade. Guardado sob sigilo,
+  // sem tela pública, e apagado em 180 dias.
+  ip        String   @default("")
+  userAgent String   @default("")
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([subject, createdAt])
+  @@index([createdAt])
 }
 
 // Canal de suporte EXCLUSIVO de quem tem conta. Diferente da denúncia (Report),
@@ -393,6 +472,21 @@ model Profile {
   // transação, e aí não há como saber qual dos dois está certo.
   views                 Int              @default(0)
   published             Boolean          @default(false)
+  // ---- Declaração de veracidade, no momento do ato ----
+  //
+  // Os Termos (item 3) já dizem que os dados são de responsabilidade de quem os
+  // publica. Cláusula genérica, porém, é o que toda plataforma tem; o que muda o
+  // resultado de uma disputa é uma declaração ESPECÍFICA, datada e atribuível —
+  // feita no instante em que a pessoa colocou o conteúdo no ar, não escondida
+  // num documento que ela pode dizer que nunca leu.
+  //
+  // Gravado pelo servidor quando `published` passa de false para true, e só com
+  // `truthDeclared: true` no corpo (ver profiles.service.update). Nunca é
+  // limpo: despublicar não desfaz o que foi declarado no passado.
+  truthDeclaredAt       DateTime?
+  // Versão dos Termos vigente no momento da declaração — a declaração aponta para
+  // um texto concreto, senão não se sabe o que foi declarado.
+  truthDeclaredVersion  String           @default("")
   // Versão da política de publicidade (Provimento) aplicada à última verificação.
   policyVersion         String           @default("Prov. 205/2021")
   // Revisão do conjunto de regras (RULESET_REV) conferida na última verificação.

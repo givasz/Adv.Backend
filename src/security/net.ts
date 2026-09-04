@@ -8,7 +8,20 @@
 
 const TRUST_PROXY = process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY === 'true'
 
-/** IP do cliente para fins de limite. Nunca é persistido. */
+/**
+ * IP do cliente.
+ *
+ * Nasceu como chave de rate limit e só isso — daí o aviso, que valeu até
+ * 04/09/2026, de que nada dele era persistido. Deixou de valer: o registro de
+ * acesso do art. 15 do Marco Civil (model AccessLog) e o aceite dos Termos
+ * (User.termsIp) guardam o endereço. Fora desses dois lugares a regra antiga
+ * continua inteira — nenhuma outra tabela recebe IP, e o visitante de perfil
+ * público segue sem ser identificado.
+ *
+ * TRUST_PROXY importa mais agora: em produção, sem ele ligado, o endereço
+ * gravado seria o do Nginx, e um registro que aponta para o próprio servidor não
+ * cumpre obrigação nenhuma.
+ */
 export function clientIp(ip?: string, forwardedFor?: string): string {
   if (TRUST_PROXY) {
     const first = forwardedFor?.split(',')[0]?.trim()

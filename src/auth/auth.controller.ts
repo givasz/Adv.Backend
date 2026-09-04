@@ -15,6 +15,8 @@ import type { RequisicaoComAuth } from './session-context'
 import { AUTH_RATE_RULES, enforceRateLimit } from '../security/rate-limit'
 import { clientIp } from '../security/net'
 import { fingerprint, logSecurityEvent } from '../security/audit-log'
+import { registrarAcesso } from '../security/access-log'
+import { PrismaService } from '../prisma/prisma.service'
 
 /**
  * Entrada e saída da conta.
@@ -30,6 +32,7 @@ export class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly sessions: SessionService,
+    private readonly prisma: PrismaService,
   ) {}
 
   // "Lembrar de mim" chega como booleano; qualquer outra coisa vira o padrão.
@@ -40,11 +43,19 @@ export class AuthController {
     return typeof valor === 'boolean' ? valor : true
   }
 
-  // POST /api/auth/signup  → { email, password, name?, remember? }
+  // POST /api/auth/signup  → { email, password, name?, remember?, aceitouTermos }
   @Post('signup')
   async signup(
     @Req() req: RequisicaoComAuth,
-    @Body() body: { email?: string; password?: string; name?: string; remember?: boolean },
+    @Body()
+    body: {
+      email?: string
+      password?: string
+      name?: string
+      remember?: boolean
+      /** Caixa dos Termos. Sem ela o cadastro é recusado — ver AuthService.signup. */
+      aceitouTermos?: boolean
+    },
     @Ip() ip?: string,
     @Headers('x-forwarded-for') xff?: string,
     @Headers('user-agent') userAgent?: string,
@@ -62,6 +73,7 @@ export class AuthController {
         body?.password,
         body?.name,
         this.lembrar(body?.remember),
+        { aceitou: body?.aceitouTermos, ip: endereco },
       )
       logSecurityEvent({
         event: 'signup_ok',
@@ -69,6 +81,14 @@ export class AuthController {
         subject,
         userId: sessao.user.id,
         result: 'ok',
+        userAgent,
+      })
+      // Registro de acesso (Marco Civil, art. 15) — ver security/access-log.ts.
+      await registrarAcesso(this.prisma, {
+        userId: sessao.user.id,
+        email: sessao.user.email,
+        action: 'signup',
+        ip: endereco,
         userAgent,
       })
       return sessao
@@ -126,6 +146,13 @@ export class AuthController {
         result: 'ok',
         userAgent,
       })
+      await registrarAcesso(this.prisma, {
+        userId: sessao.user.id,
+        email: sessao.user.email,
+        action: 'login',
+        ip: endereco,
+        userAgent,
+      })
       return sessao
     } catch (err) {
       logSecurityEvent({ event: 'login_fail', ip: endereco, subject, result: 'negado', userAgent })
@@ -151,6 +178,37 @@ export class AuthController {
       csrfToken: this.sessions.csrfDe(sessao),
       remember: sessao.remember,
     }
+  }
+
+  /**
+   * POST /api/auth/aceitar-termos — registra o aceite de quem já tem conta.
+   *
+   * É o outro lado do `termsPending` que /auth/me devolve: a tela mostra o texto
+   * novo, a pessoa confirma, e a versão vigente fica carimbada na conta com data
+   * e endereço. O corpo não diz QUAL versão — quem decide isso é o servidor
+   * (src/legal/termos.ts), senão o cliente escolheria qual contrato assinou.
+   *
+   * Exige sessão, e só. Não tem teto de tentativas: aceitar duas vezes grava a
+   * mesma coisa duas vezes, e recusar um aceite por excesso de zelo seria
+   * trancar a pessoa fora de um consentimento que ela está tentando dar.
+   */
+  @Post('aceitar-termos')
+  async aceitarTermos(
+    @Req() req: RequisicaoComAuth,
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') xff?: string,
+  ) {
+    const userId = await this.sessions.requireUser(req)
+    const endereco = clientIp(ip, xff)
+    const r = await this.auth.aceitarTermos(userId, endereco)
+    logSecurityEvent({
+      event: 'terms_accepted',
+      ip: endereco,
+      userId,
+      resource: r.termsVersion,
+      result: 'ok',
+    })
+    return r
   }
 
   /**

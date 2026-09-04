@@ -7,6 +7,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { avatarPublico, ProfilesService } from './profiles.service'
+import { TERMS_VERSION } from '../legal/termos'
 
 type Qualquer = Record<string, any>
 
@@ -20,6 +21,10 @@ function service(plan: 'free' | 'pro' | 'premium' = 'premium') {
         plan,
         oabNumber: '123',
         userId: 'u1',
+        // Conta com o aceite dos Termos em dia: sem isto, o serviço recusa
+        // qualquer publicação — e o que estes testes conferem é o SANEAMENTO da
+        // entrada, não o aceite (que tem testes próprios em publicar.spec.ts).
+        user: { termsVersion: TERMS_VERSION },
       }),
       update: vi.fn((a: Qualquer) => {
         gravado.push(a.data)
@@ -122,7 +127,9 @@ describe('tamanho e tipo', () => {
 
   it('published aceita qualquer coisa e grava booleano', async () => {
     const { svc, gravado } = service()
-    await svc.update('u1', { ...base, published: 'sim' })
+    // `truthDeclared` porque isto é uma ESTREIA (o dublê devolve published:false
+    // como estado atual) — ver publicar.spec.ts para as regras da declaração.
+    await svc.update('u1', { ...base, published: 'sim', truthDeclared: true })
     expect(gravado[0].published).toBe(true) // "sim" é verdadeiro
     expect(typeof gravado[0].published).toBe('boolean')
   })
@@ -222,7 +229,12 @@ describe('campos obrigatórios para publicar', () => {
 
   it('deixa publicar quando os dois estão preenchidos', async () => {
     const { svc, gravado } = service()
-    await svc.update('u1', { name: 'Marina Sales', oabNumber: 'OAB/SP 123', published: true })
+    await svc.update('u1', {
+      name: 'Marina Sales',
+      oabNumber: 'OAB/SP 123',
+      published: true,
+      truthDeclared: true,
+    })
     expect(gravado[0].published).toBe(true)
   })
 })

@@ -611,6 +611,67 @@ export class AdminService {
   }
 
   /**
+   * Registro de acesso de UMA conta — Marco Civil, art. 15.
+   *
+   * A única razão de esta consulta existir é responder a ordem de autoridade
+   * competente. Guardar o registro e não ter como lê-lo seria cumprir a
+   * obrigação pela metade: a lei manda guardar para poder fornecer.
+   *
+   * Três travas, porque o dado é o mais sensível da base:
+   *
+   *   • permissão `acesso:ler`, que só o responsável tem;
+   *   • `motivo` obrigatório e com tamanho mínimo — quem consulta escreve por
+   *     quê, e a frase fica no AdminAction para sempre. Consulta sem motivo é
+   *     bisbilhotice, e a diferença entre uma coisa e outra é justamente o
+   *     registro do porquê;
+   *   • a própria consulta é registrada ANTES de devolver qualquer linha. Se a
+   *     gravação da auditoria falhar, ninguém vê IP nenhum.
+   *
+   * Não há tela no painel para isto, e é deliberado: um botão "ver IPs" ao lado
+   * da ficha convida ao uso casual. Quem precisa responder um ofício chama a
+   * rota; quem não precisa, não descobre que ela existe olhando a interface.
+   */
+  async registroDeAcesso(quem: AdminAtual, userId: string, motivo: string, ip?: string) {
+    const razao = (motivo ?? '').trim()
+    if (razao.length < 15) {
+      throw new BadRequestException(
+        'Diga por que está consultando o registro de acesso (o número do ofício ou processo, por exemplo). O motivo fica registrado.',
+      )
+    }
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, termsAcceptedAt: true, termsVersion: true, termsIp: true },
+    })
+    if (!user) throw new BadRequestException('Conta não encontrada.')
+
+    // A auditoria vem ANTES da leitura, e é aguardada. Registrar depois deixaria
+    // uma janela em que os IPs foram lidos e a consulta não existiu.
+    await this.registrar(quem, {
+      action: 'acesso.consultar',
+      targetType: 'user',
+      targetId: userId,
+      reason: razao,
+      ip,
+    })
+
+    const registros = await this.prisma.accessLog.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: 1000,
+    })
+    return {
+      conta: { id: user.id, email: user.email },
+      aceiteDosTermos: user.termsAcceptedAt
+        ? { em: user.termsAcceptedAt, versao: user.termsVersion, ip: user.termsIp }
+        : null,
+      registros,
+      aviso:
+        'Registro guardado por 180 dias (Marco Civil, art. 15). Uso restrito ao ' +
+        'atendimento de ordem de autoridade competente. Esta consulta ficou registrada.',
+    }
+  }
+
+  /**
    * Degrau 4 — suspende o login por um prazo.
    *
    * O perfil sai do ar junto: manter a página no ar enquanto o dono não consegue
