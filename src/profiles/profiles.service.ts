@@ -7,6 +7,7 @@ import {
 import { createHash } from 'node:crypto'
 import { PrismaService } from '../prisma/prisma.service'
 import { perfilVisivelAoPublico, secoesCensuradas } from './visibilidade'
+import { areaComMaisDeUma, perguntaComMaisDeUma } from '../campo-unico'
 import { faixa, pagina } from '../admin/paginacao'
 import { blockingFields, POLICY_VERSION, publicStatus, RULESET_REV } from '../oab/compliance'
 import {
@@ -83,6 +84,18 @@ interface TextoAtual {
   bio: number
   /** rótulo da área → tamanho da descrição gravada */
   areaDesc: Map<string, number>
+  /**
+   * Os rótulos de área que JÁ estão no banco, e as perguntas do FAQ com o
+   * tamanho da resposta gravada.
+   *
+   * Servem à mesma regra do resto deste bloco: um teto (ou uma trava de forma)
+   * vale para o texto que ENTRA, nunca para o que já está lá. Quem caiu de plano
+   * tem rótulo de 40 caracteres e resposta de 220 gravados; cobrá-los no próximo
+   * save travaria o editor inteiro por causa de um campo que a pessoa nem tocou —
+   * exatamente o defeito que enforceCharLimits foi escrito para não repetir.
+   */
+  areaLabels: Set<string>
+  faqAnswer: Map<string, number>
 }
 
 /**
@@ -124,6 +137,7 @@ const perfilBase = {
   headline: true,
   bio: true,
   areas: { select: { label: true, description: true } },
+  faqs: { select: { question: true, answer: true } },
 } as const
 
 /** Tamanhos já gravados, no formato que o enforceCharLimits espera. */
@@ -135,10 +149,17 @@ function textoAtual(p: any): TextoAtual {
     // texto longo a mais; errar para o outro trava o editor de novo.
     areaDesc.set(label, Math.max(areaDesc.get(label) ?? 0, String(a?.description ?? '').length))
   }
+  const faqAnswer = new Map<string, number>()
+  for (const f of p?.faqs ?? []) {
+    const q = String(f?.question ?? '')
+    faqAnswer.set(q, Math.max(faqAnswer.get(q) ?? 0, String(f?.answer ?? '').length))
+  }
   return {
     headline: String(p?.headline ?? '').length,
     bio: String(p?.bio ?? '').length,
     areaDesc,
+    areaLabels: new Set<string>((p?.areas ?? []).map((a: any) => String(a?.label ?? ''))),
+    faqAnswer,
   }
 }
 
@@ -146,7 +167,10 @@ function textoAtual(p: any): TextoAtual {
 const CITY_MAX = 80
 const STATE_MAX = 40
 const REGION_MAX = 200
-const AREA_LABEL_MAX = 60
+// Teto de SANIDADE do rótulo (anti-abuso). O teto por PLANO é outro e vive em
+// plans.ts — este aqui é só o limite acima do qual nada é razoável, inclusive
+// para texto herdado de um plano maior.
+const AREA_LABEL_SANIDADE = 60
 const BRAND_NAME_MAX = 60
 const SOCIAL_MAX = 8
 
@@ -768,6 +792,39 @@ export class ProfilesService {
     }
   }
 
+  /**
+   * UM ASSUNTO POR CAMPO — a trava que impede a cota de ser burlada por dentro.
+   *
+   * O Free entrega uma área e uma pergunta. Sem esta conferência, quem quer três
+   * áreas escreve "Família, Sucessões e Inventários" no rótulo único e quem quer
+   * três perguntas empilha as três numa: a cota fica intacta no banco e furada na
+   * tela. A regra em si mora em src/campo-unico.ts, espelhada no editor —
+   * conferir só no cliente seria pedir por favor.
+   *
+   * Vale para o texto que ENTRA. Rótulo e pergunta que JÁ estão gravados passam:
+   * quem escreveu "Cível / Criminal" antes desta trava existir não pode descobrir
+   * isso ao tentar trocar o telefone, com o save inteiro recusado por um campo
+   * que ele não tocou. É a mesma regra do teto de caracteres, pelo mesmo motivo.
+   */
+  private enforceCampoUnico(data: any, atual?: TextoAtual) {
+    for (const a of data.areas ?? []) {
+      const label = String(a?.label ?? '')
+      if (atual?.areaLabels?.has(label)) continue
+      const problema = areaComMaisDeUma(label)
+      if (problema) {
+        throw new BadRequestException(`${problema.motivo} Sugestão: "${problema.sugestao}".`)
+      }
+    }
+    for (const f of data.faqs ?? []) {
+      const question = String(f?.question ?? '')
+      if (atual?.faqAnswer?.has(question)) continue
+      const problema = perguntaComMaisDeUma(question)
+      if (problema) {
+        throw new BadRequestException(`${problema.motivo} Sugestão: "${problema.sugestao}".`)
+      }
+    }
+  }
+
   // Perguntas frequentes → linhas prontas para o Prisma, cortadas na COTA do plano
   // (nenhuma no Free, 2 no Pro, 5 no Max).
   //
@@ -780,8 +837,10 @@ export class ProfilesService {
   //
   // Uma pergunta SEM resposta não vai para o perfil: caixa vazia com uma dúvida
   // pendurada é pior do que não ter FAQ nenhum.
-  private faqRows(raw: unknown, max: number) {
+  private faqRows(raw: unknown, max: number, plan: Plan, atual?: TextoAtual) {
     if (max <= 0) return []
+    const perguntaMax = countLimit(FAQ_QUESTION_MAX, plan)
+    const respostaMax = countLimit(FAQ_ANSWER_MAX, plan)
     const list = Array.isArray(raw) ? raw : []
     return list
       .filter(
@@ -792,11 +851,21 @@ export class ProfilesService {
           f.answer.trim(),
       )
       .slice(0, max)
-      .map((f: any, order: number) => ({
-        question: String(f.question).trim().slice(0, FAQ_QUESTION_MAX),
-        answer: String(f.answer).trim().slice(0, FAQ_ANSWER_MAX),
-        order,
-      }))
+      .map((f: any, order: number) => {
+        const question = String(f.question).trim()
+        // Os tetos de TEXTO viraram tabela por plano em 04/09/2026, e o Free é o
+        // mais curto. Cortar pelo teto do plano ATUAL apagaria, em silêncio e no
+        // primeiro save, pedaço de resposta escrita no Max por quem acabou de cair
+        // para o Free. Então o corte respeita o que já está gravado: a pergunta
+        // conhecida passa inteira, e a resposta dela também.
+        const conhecida = atual?.faqAnswer?.has(question) ?? false
+        const herdado = atual?.faqAnswer?.get(question) ?? 0
+        return {
+          question: conhecida ? question : question.slice(0, perguntaMax),
+          answer: String(f.answer).trim().slice(0, Math.max(respostaMax, herdado)),
+          order,
+        }
+      })
   }
 
   private randomSuffix(): number {
@@ -985,7 +1054,7 @@ export class ProfilesService {
         online: !!d.serviceMode?.online,
       },
       areas: clampList<any>(d.areas, 40).map((a: any) => ({
-        label: clampText(a?.label, AREA_LABEL_MAX),
+        label: clampText(a?.label, AREA_LABEL_SANIDADE),
         description: clampText(a?.description, 4000),
       })),
       faqs: clampList<any>(d.faqs, 20),
@@ -1046,8 +1115,12 @@ export class ProfilesService {
     // O plano que vale AGORA — contratado cruzado com a situação da cobrança. É
     // ele, e não `Profile.plan`, que abre e fecha recurso (ver src/assinatura.ts).
     const plan: Plan = planoVigente(current as any)
+    // O que já está gravado — os tetos e as travas de forma valem para o texto que
+    // ENTRA, nunca para o que a pessoa herdou de um plano maior.
+    const atual = textoAtual(current)
     // Fonte da verdade dos limites por plano.
-    this.enforceCharLimits(data, plan, textoAtual(current))
+    this.enforceCharLimits(data, plan, atual)
+    this.enforceCampoUnico(data, atual)
     // O endereço candidato no Free é o GRAVADO, nunca o do corpo (perk pago).
     const slug = await this.resolveSlug(
       data.name,
@@ -1180,7 +1253,7 @@ export class ProfilesService {
         },
         faqs: {
           deleteMany: { order: { lt: limiteFaqs } },
-          create: this.faqRows(data.faqs, limiteFaqs),
+          create: this.faqRows(data.faqs, limiteFaqs, plan, atual),
         },
         socials: {
           deleteMany: {},
