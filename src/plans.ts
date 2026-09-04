@@ -24,16 +24,19 @@ export const OAB_MAX = 20
 // Áreas de atuação e perguntas frequentes. O servidor é a
 // fonte da verdade: o excedente é CORTADO no save (não derruba a requisição, para
 // não travar quem acabou de fazer downgrade).
-export const AREA_LIMIT: Record<Plan, number> = { free: 1, pro: 6, premium: 20 }
-// Perguntas frequentes respondidas no perfil: nenhuma no Free, 2 no Pro, 5 no Max.
+//
+// Free = UMA área; Pro 6 → 4 e Max 20 → 12 em 04/09/2026. Um perfil que lista
+// vinte assuntos não diz o que o advogado faz, diz que ele faz tudo.
+export const AREA_LIMIT: Record<Plan, number> = { free: 1, pro: 4, premium: 12 }
+// Perguntas frequentes respondidas no perfil: 1 no Free, 2 no Pro, 5 no Max.
 export const FAQ_LIMIT: Record<Plan, number> = { free: 1, pro: 2, premium: 5 }
 
-// Tetos de texto do FAQ (iguais em todos os planos — quem tem, tem por inteiro).
+// Tetos de TEXTO — POR PLANO desde 04/09/2026 (eram fixos; o Free é o mais
+// curto). Use `countLimit` para ler com um plano em mãos.
+//
 // CURTOS de propósito: FAQ é orientação geral, não parecer jurídico. Resposta longa
 // no celular vira parede de texto que ninguém lê — e quanto mais texto, mais chance
 // de escorregar para fora do que o Prov. 205/2021 permite.
-// Tetos de TEXTO por plano — eram números fixos até 04/09/2026. Use `countLimit`
-// para ler com um plano em mãos.
 export const AREA_LABEL_MAX: Record<Plan, number> = { free: 32, pro: 40, premium: 40 }
 export const FAQ_QUESTION_MAX: Record<Plan, number> = { free: 80, pro: 100, premium: 100 }
 // 300 → 220 em 27/08/2026. A 300, a IA escrevia até encostar no teto e a resposta
@@ -50,7 +53,6 @@ export function countLimit(
   return table[(plan as Plan) in table ? (plan as Plan) : 'free']
 }
 
-// Perguntas frequentes no perfil — recurso dos planos pagos (2 no Pro, 5 no Max).
 /**
  * Responder perguntas frequentes no perfil. Deixou de ser "recurso pago" em
  * 04/09/2026 e passou a ser a leitura da tabela: cota maior que zero. Assim o
