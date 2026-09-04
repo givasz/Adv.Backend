@@ -7,6 +7,7 @@
 
 import { Body, Controller, Get, Headers, HttpCode, Ip, Param, Post, Query, Req } from '@nestjs/common'
 import { AdminService } from './admin.service'
+import { LevantamentosService } from './levantamentos.service'
 import { ROLE_DESCRICAO, ROLE_LABEL, ADMIN_ROLES } from './admin-roles'
 import type { RequisicaoComAuth } from '../auth/session-context'
 import { clientIp } from '../security/net'
@@ -15,7 +16,10 @@ import { fingerprint } from '../security/audit-log'
 
 @Controller('admin')
 export class AdminController {
-  constructor(private readonly admin: AdminService) {}
+  constructor(
+    private readonly admin: AdminService,
+    private readonly levantamentos: LevantamentosService,
+  ) {}
 
   // ---- Sessão ---------------------------------------------------------------
 
@@ -189,6 +193,23 @@ export class AdminController {
   // Degraus 4 e 5 da escada (docs/politica-de-sancoes.md). Até aqui o painel só
   // alcançava o perfil: dava para tirar a página do ar e não dava para impedir
   // que a mesma pessoa publicasse outra no dia seguinte.
+
+  /**
+   * GET /api/admin/levantamentos?dias=90 → os números da plataforma.
+   *
+   * GET e sem registro em AdminAction: é leitura de agregado, sem nome de
+   * ninguém dentro, e uma trilha que grava "fulano olhou o gráfico" só faria a
+   * auditoria de verdade — a das decisões — ficar mais difícil de ler.
+   */
+  @Get('levantamentos')
+  async levantamentosDaPlataforma(
+    @Req() req: RequisicaoComAuth,
+    @Query('dias') dias?: string,
+    @Headers('x-admin-token') token?: string,
+  ) {
+    await this.admin.exigir(req, 'metricas:ler', token)
+    return this.levantamentos.levantar(dias)
+  }
 
   /** GET /api/admin/users/:id → a ficha que o administrador lê ANTES de decidir. */
   @Get('users/:id')
