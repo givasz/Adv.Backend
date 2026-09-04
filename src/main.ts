@@ -4,7 +4,7 @@ import { ValidationPipe } from '@nestjs/common'
 import type { NestExpressApplication } from '@nestjs/platform-express'
 import { AppModule } from './app.module'
 import { assertSecureConfig } from './security/config'
-import { avisarSobreTreinoDeIa } from './ai/provedores'
+import { avisarSobreTreinoDeIa, descreverCadeia } from './ai/provedores'
 import { securityHeaders } from './security/headers'
 import { sessionContext } from './auth/session-context'
 import { CSRF_HEADER, origemPermitida } from './auth/csrf'
@@ -22,6 +22,9 @@ async function bootstrap() {
   // promete sobre treinamento? O que sai daqui leva nome, cidade e o texto do
   // advogado. Ver ai/provedores.ts.
   avisarSobreTreinoDeIa()
+  // E o que a cadeia tem DE VERDADE: nomes no .env não são chaves. Esta linha
+  // é a primeira coisa a conferir depois de um `pm2 restart`.
+  console.log(`[ia] ${descreverCadeia(process.env)}`)
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bodyParser: true,

@@ -10,6 +10,13 @@ import {
   PROVEDORES,
   provedoresQueTreinam,
   avisarSobreTreinoDeIa,
+  Descanso,
+  DESCANSO_LENTO_MS,
+  DESCANSO_MS,
+  descreverCadeia,
+  PAUSA_ANTES_DE_REPETIR_MS,
+  tempoEsgotou,
+  valeRepetir,
   type Provider,
 } from './provedores'
 
@@ -285,5 +292,116 @@ describe('treinamento com dados do advogado', () => {
   it('provedoresQueTreinam nomeia exatamente quem está em uso', () => {
     const env = { AI_PROVIDER: 'anthropic,gemini', ANTHROPIC_API_KEY: 'k', GEMINI_API_KEY: 'k' }
     expect(provedoresQueTreinam(env as never)).toEqual(['gemini'])
+  })
+})
+
+// Em produção a cadeia é feita de tier grátis, e tier grátis tropeça: 503 de
+// deploy, 429 por minuto, conexão que cai. O que vem abaixo é a diferença entre
+// "temos um plano B" e "temos um plano B que custa 20 s por clique".
+describe('valeRepetir — a tentativa de conserto antes de passar a vez', () => {
+  it('repete uma falha do servidor (5xx) e um 408', () => {
+    expect(valeRepetir(500)).toBe(true)
+    expect(valeRepetir(502)).toBe(true)
+    expect(valeRepetir(503, 'respondeu 503 overloaded')).toBe(true)
+    expect(valeRepetir(408)).toBe(true)
+  })
+
+  it('repete uma falha de rede — outra conexão pode passar', () => {
+    expect(valeRepetir(0, 'fetch failed')).toBe(true)
+    expect(valeRepetir(0, 'ECONNRESET')).toBe(true)
+    expect(valeRepetir(0, 'resposta vazia')).toBe(true)
+  })
+
+  it('NÃO repete o tempo esgotado — já foram 20 s, o plano B assume', () => {
+    expect(valeRepetir(0, 'tempo esgotado (20 s)')).toBe(false)
+    expect(valeRepetir(0, 'This operation was aborted')).toBe(false)
+    expect(tempoEsgotou(0, 'tempo esgotado (20 s)')).toBe(true)
+    expect(tempoEsgotou(0, 'fetch failed')).toBe(false)
+  })
+
+  it('NÃO repete erro de chave nem de pedido — igual dá igual', () => {
+    expect(valeRepetir(401)).toBe(false)
+    expect(valeRepetir(429)).toBe(false)
+    expect(valeRepetir(400, 'modelo inexistente')).toBe(false)
+    expect(valeRepetir(404)).toBe(false)
+  })
+})
+
+describe('Descanso — quem falhou sai da fila por um prazo, e volta sozinho', () => {
+  const T0 = 1_000_000
+
+  it('marcado descansa; vencido o prazo, volta', () => {
+    const d = new Descanso()
+    d.marcar('gemini', 60_000, T0)
+    expect(d.descansando('gemini', T0)).toBe(true)
+    expect(d.descansando('gemini', T0 + 59_999)).toBe(true)
+    expect(d.descansando('gemini', T0 + 60_000)).toBe(false)
+  })
+
+  it('quem nunca falhou não descansa', () => {
+    expect(new Descanso().descansando('groq', T0)).toBe(false)
+  })
+
+  it('filtrar tira só quem descansa e mantém a ordem', () => {
+    const d = new Descanso()
+    d.marcar('gemini', 60_000, T0)
+    expect(d.filtrar(['gemini', 'groq', 'openrouter'], T0)).toEqual(['groq', 'openrouter'])
+    // Vencido o prazo o principal volta a ser o primeiro — é o "conserto".
+    expect(d.filtrar(['gemini', 'groq', 'openrouter'], T0 + 60_000)).toEqual([
+      'gemini',
+      'groq',
+      'openrouter',
+    ])
+  })
+
+  it('com TODOS descansando, a cadeia inteira volta — tentar é melhor que desistir', () => {
+    const d = new Descanso()
+    d.marcar('gemini', 60_000, T0)
+    d.marcar('groq', 60_000, T0)
+    expect(d.filtrar(['gemini', 'groq'], T0)).toEqual(['gemini', 'groq'])
+  })
+
+  it('liberar devolve o provedor à fila na hora', () => {
+    const d = new Descanso()
+    d.marcar('gemini', 60_000, T0)
+    d.liberar('gemini')
+    expect(d.descansando('gemini', T0)).toBe(false)
+  })
+
+  it('os prazos têm a ordem certa: tempo esgotado descansa mais que 5xx', () => {
+    expect(DESCANSO_LENTO_MS).toBeGreaterThan(DESCANSO_MS)
+    // E a pausa antes de repetir é curta — quem clicou está esperando.
+    expect(PAUSA_ANTES_DE_REPETIR_MS).toBeLessThan(2_000)
+  })
+})
+
+describe('descreverCadeia — a linha de boot diz o que a cadeia tem de verdade', () => {
+  it('conta as chaves e nomeia quem foi pulado por não ter chave', () => {
+    const linha = descreverCadeia(
+      env({ AI_PROVIDER: 'gemini,groq,openrouter', GEMINI_API_KEY: 'a,b', GROQ_API_KEY: 'c' }),
+    )
+    expect(linha).toContain('gemini [gemini-flash-lite-latest, 2 chave(s)]')
+    expect(linha).toContain('groq [llama-3.3-70b-versatile, 1 chave(s)]')
+    expect(linha).toContain('sem chave (pulados): openrouter')
+    expect(linha).not.toContain('SEM PLANO B')
+  })
+
+  it('grita quando só há UM provedor com chave — não existe plano B', () => {
+    const linha = descreverCadeia(env({ AI_PROVIDER: 'gemini,groq', GEMINI_API_KEY: 'a' }))
+    expect(linha).toContain('SEM PLANO B')
+  })
+
+  it('diz quando não há provedor nenhum', () => {
+    expect(descreverCadeia(env({ AI_PROVIDER: 'gemini' }))).toContain('NENHUM provedor com chave')
+  })
+})
+
+describe('as reservas grátis novas (cerebras, mistral) entram pelo catálogo', () => {
+  it('são compatíveis com a OpenAI — reserva nova é entrada, não código', () => {
+    expect(PROVEDORES.cerebras.baseOpenAi).toMatch(/^https:\/\/api\.cerebras\.ai/)
+    expect(PROVEDORES.mistral.baseOpenAi).toMatch(/^https:\/\/api\.mistral\.ai/)
+    expect(cadeiaUtil(env({ AI_PROVIDER: 'gemini,cerebras,mistral', CEREBRAS_API_KEY: 'k' }))).toEqual([
+      'cerebras',
+    ])
   })
 })

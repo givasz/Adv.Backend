@@ -35,7 +35,15 @@
 // aposta de conformidade.
 // ---------------------------------------------------------------------------
 
-export type Provider = 'gemini' | 'groq' | 'openrouter' | 'xai' | 'anthropic' | 'ollama'
+export type Provider =
+  | 'gemini'
+  | 'groq'
+  | 'openrouter'
+  | 'cerebras'
+  | 'mistral'
+  | 'xai'
+  | 'anthropic'
+  | 'ollama'
 
 export interface Provedor {
   nome: Provider
@@ -143,6 +151,35 @@ export const PROVEDORES: Record<Provider, Provedor> = {
     // compartilhar o tráfego — é o que os torna grátis. Um modelo PAGO do mesmo
     // OpenRouter não tem a mesma condição: aqui o que decide é o modelo, não só
     // o provedor.
+    treinaComOsDados: 'talvez',
+  },
+  // Cerebras (cloud.cerebras.ai) — tier grátis sem cartão, limitado por dia, e
+  // tão rápido quanto o Groq. Entrou em 04/09/2026 como TERCEIRA reserva grátis:
+  // com três provedores de contas diferentes, uma cota estourada e um incidente
+  // simultâneos ainda deixam um em pé.
+  //
+  // ⚠️ Não foi medido contra a API como os de cima: catálogo escrito do console,
+  // sem chave em mãos. Se o modelo padrão não existir mais, AI_MODEL_CEREBRAS
+  // corrige sem tocar em código (a lista está em cloud.cerebras.ai → Models).
+  cerebras: {
+    nome: 'cerebras',
+    envs: ['CEREBRAS_API_KEY'],
+    baseOpenAi: 'https://api.cerebras.ai/v1',
+    modeloPadrao: 'llama-3.3-70b',
+    custo: 'gratis',
+    treinaComOsDados: 'talvez',
+  },
+  // Mistral (console.mistral.ai) — o plano "Experiment" é grátis com telefone
+  // verificado. É a quarta reserva grátis, e a única europeia (dado fica na UE).
+  //
+  // ⚠️ Também não medido contra a API. O tier grátis da Mistral diz em voz alta
+  // que pode treinar com o tráfego — daí o 'talvez' abaixo.
+  mistral: {
+    nome: 'mistral',
+    envs: ['MISTRAL_API_KEY'],
+    baseOpenAi: 'https://api.mistral.ai/v1',
+    modeloPadrao: 'mistral-small-latest',
+    custo: 'gratis',
     treinaComOsDados: 'talvez',
   },
   // xAI — o Grok de verdade (console.x.ai). Entra aqui porque foi pedido, mas
@@ -338,6 +375,120 @@ export class ErroDeProvedor extends Error {
     super(`${provedor}: ${motivo}`)
     this.name = 'ErroDeProvedor'
   }
+}
+
+/**
+ * Este erro é PASSAGEIRO — vale tentar o MESMO provedor mais uma vez antes de
+ * passar a vez?
+ *
+ * A pergunta é diferente da de `chaveQueimada`. Ali a resposta é "troque de
+ * chave"; aqui é "espere um instante e repita". Vale repetir quando:
+ *
+ *   • 5xx — o provedor tropeçou (502/503 de deploy, 500 esporádico). É o caso
+ *     que o tier grátis mais produz, e quase sempre passa em um segundo;
+ *   • 408 — o servidor desistiu de esperar o pedido;
+ *   • 0 sem ser tempo esgotado — a REDE falhou (conexão recusada, reset). Um
+ *     segundo pedido pega outra conexão.
+ *
+ * NÃO vale repetir quando:
+ *
+ *   • o tempo esgotou — já foram 20 s. Um provedor pendurado continua pendurado,
+ *     e repetir dobraria a espera de quem clicou antes de o plano B assumir;
+ *   • 4xx — o pedido ou a chave estão errados; repetir igual dá igual.
+ */
+export function valeRepetir(status: number, motivo = ''): boolean {
+  if (status >= 500 || status === 408) return true
+  return status === 0 && !tempoEsgotou(status, motivo)
+}
+
+/** O erro foi o nosso teto de 20 s? (nosso texto em `postar` e o nome do DOM). */
+export function tempoEsgotou(status: number, motivo = ''): boolean {
+  return status === 0 && /tempo esgotado|abort/i.test(motivo)
+}
+
+/** A pausa entre a primeira tentativa e a repetição. Curta: quem clicou está esperando. */
+export const PAUSA_ANTES_DE_REPETIR_MS = 800
+
+/**
+ * Quanto tempo um provedor que falhou fica de fora antes de ser tentado de
+ * novo. É o "conserto" automático: o principal não é abandonado — ele é
+ * dispensado por um minuto, e depois volta a ser o primeiro a ser chamado.
+ */
+export const DESCANSO_MS = 60_000
+
+/**
+ * Descanso maior para quem estourou o TEMPO. Cada sondagem num provedor
+ * pendurado custa 20 s para o advogado que fez o pedido — sondar a cada minuto
+ * seria um clique lento por minuto. A cada três, é um a cada três minutos.
+ */
+export const DESCANSO_LENTO_MS = 180_000
+
+/**
+ * Descanso — a memória de quem falhou há pouco.
+ *
+ * Sem isto, a cadeia funciona mas cobra caro: com o principal fora do ar, TODO
+ * pedido paga a falha dele (até 20 s de tempo esgotado) antes de o plano B
+ * assumir. Com isto, o primeiro pedido paga, e os seguintes vão direto para a
+ * reserva até o prazo vencer — quando o principal é sondado de novo e, se
+ * tiver voltado, retoma o posto sem ninguém mexer em nada.
+ *
+ * É um disjuntor de uma posição só: em memória, sem estado compartilhado, e
+ * com prazo. Reiniciar o processo zera tudo, que é o certo.
+ */
+export class Descanso {
+  private readonly ate = new Map<Provider, number>()
+
+  /** Tira o provedor de circulação até `agora + ms`. */
+  marcar(p: Provider, ms: number, agora = Date.now()): void {
+    this.ate.set(p, agora + ms)
+  }
+
+  /** O provedor está descansando? Prazo vencido apaga a marca. */
+  descansando(p: Provider, agora = Date.now()): boolean {
+    const fim = this.ate.get(p)
+    if (fim === undefined) return false
+    if (fim > agora) return true
+    this.ate.delete(p)
+    return false
+  }
+
+  /** Volta a chamar o provedor já — ele acabou de responder bem. */
+  liberar(p: Provider): void {
+    this.ate.delete(p)
+  }
+
+  /**
+   * A cadeia SEM os que estão descansando — a menos que TODOS estejam. Aí a
+   * ordem inteira volta: melhor tentar quem falhou há pouco do que devolver o
+   * template sem sequer ter pedido a alguém.
+   */
+  filtrar(cadeia: Provider[], agora = Date.now()): Provider[] {
+    const acordados = cadeia.filter((p) => !this.descansando(p, agora))
+    return acordados.length ? acordados : cadeia
+  }
+}
+
+/**
+ * Uma linha para o log de boot: o que a cadeia tem de verdade.
+ *
+ * `AI_PROVIDER=gemini,groq,openrouter` no `.env` não quer dizer três reservas —
+ * quer dizer três NOMES. Quantos têm chave só aparece aqui, e é a diferença
+ * entre "temos plano B" e "achamos que temos". Em produção, a linha é a
+ * primeira coisa a conferir depois de um `pm2 restart`.
+ */
+export function descreverCadeia(env: NodeJS.ProcessEnv): string {
+  const pedida = cadeiaConfigurada(env)
+  const util = cadeiaUtil(env)
+  const elos = util.map((p) => {
+    const n = PROVEDORES[p].semChave ? 'local' : `${lerChaves(env, p).length} chave(s)`
+    return `${p} [${modeloDe(env, p, util[0] === p)}, ${n}]`
+  })
+  const semChave = pedida.filter((p) => !util.includes(p))
+  const partes = [`cadeia de IA: ${elos.length ? elos.join(' → ') : 'NENHUM provedor com chave'}`]
+  if (semChave.length) partes.push(`sem chave (pulados): ${semChave.join(', ')}`)
+  if (util.length === 1 && !PROVEDORES[util[0]].semChave)
+    partes.push('⚠️ SEM PLANO B: um provedor só — uma cota estourada derruba o "Gerar com IA"')
+  return partes.join(' | ')
 }
 
 /**
