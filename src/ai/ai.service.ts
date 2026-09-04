@@ -10,11 +10,17 @@ import { clampList, clampText } from '../security/sanitize'
 import {
   cadeiaUtil,
   chaveQueimada,
+  Descanso,
+  DESCANSO_LENTO_MS,
+  DESCANSO_MS,
   ErroDeProvedor,
   GiroDeChaves,
   lerChaves,
   modeloDe,
+  PAUSA_ANTES_DE_REPETIR_MS,
   PROVEDORES,
+  tempoEsgotou,
+  valeRepetir,
   type Provider,
 } from './provedores'
 // O teto do FAQ entra no PROMPT. Antes era o número 300 escrito à mão aqui: se
@@ -96,6 +102,9 @@ Não mencione casos concretos, decisões judiciais ou clientes. Responda apenas 
 export class AiService {
   private readonly logger = new Logger(AiService.name)
   private readonly giro = new GiroDeChaves()
+  private readonly descanso = new Descanso()
+  /** A espera antes de repetir. Pública e substituível: teste nenhum quer dormir 800 ms. */
+  pausa: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))
 
   async generate(entrada: GenerateDto): Promise<GenerateResult> {
     const dto = this.sanitizeDto(entrada)
@@ -249,37 +258,57 @@ export class AiService {
   /**
    * Pede o texto ao primeiro provedor da cadeia que responder.
    *
-   * Dois laços, e a diferença entre eles é o que faz a coisa funcionar:
+   * É um PLANO B, não uma corrida: um provedor por vez, na ordem do `.env`, e
+   * o próximo só entra quando o anterior desistiu. Dois laços, e a diferença
+   * entre eles é o que faz a coisa funcionar:
    *
    *   • o de FORA passa de provedor em provedor — Gemini caiu, tenta o Groq;
    *   • o de DENTRO troca de CHAVE dentro do mesmo provedor, e só quando o erro
    *     é da chave (cota estourada, chave recusada). Um 500 do Gemini não é
    *     motivo para gastar a chave reserva do Gemini: é motivo para ir ao Groq.
    *
+   * E, desde 04/09/2026, duas coisas entre um laço e outro:
+   *
+   *   • REPETIÇÃO — uma falha passageira (5xx, rede) ganha UMA segunda chance
+   *     no mesmo provedor, depois de uma pausa curta. É a "tentativa de
+   *     conserto" antes de passar a vez; o tier grátis tropeça e se levanta em
+   *     um segundo com frequência;
+   *   • DESCANSO — quem falhou de verdade sai da fila por um minuto (três, se
+   *     foi tempo esgotado). Os pedidos seguintes vão direto para a reserva em
+   *     vez de pagar a mesma falha de novo, e quando o prazo vence o principal
+   *     é sondado — e retoma o posto sozinho se tiver voltado.
+   *
    * Nada disso aparece para quem clicou. Se a cadeia inteira falhar, o erro do
    * ÚLTIMO provedor sobe — e o `generate()` acima ainda tem o template seguro,
    * então nem uma falha total deixa o advogado sem texto.
    */
   private async runModel(prompt: string, maxTokens: number): Promise<string> {
-    const cadeia = cadeiaUtil(process.env)
-    if (!cadeia.length) {
+    const completa = cadeiaUtil(process.env)
+    if (!completa.length) {
       throw new Error(
         'Nenhum provedor de IA configurado: confira AI_PROVIDER e a chave do provedor escolhido.',
       )
     }
+    const cadeia = this.descanso.filtrar(completa)
 
     let ultimoErro: unknown
-    for (const [ordem, provedor] of cadeia.entries()) {
+    for (const provedor of cadeia) {
+      // "Principal" é o primeiro da cadeia CONFIGURADA, não o primeiro acordado:
+      // é ele que AI_MODEL descreve, e é a ausência dele que merece o aviso.
+      const principal = provedor === completa[0]
       const chaves = lerChaves(process.env, provedor)
-      const modelo = modeloDe(process.env, provedor, ordem === 0)
+      const modelo = modeloDe(process.env, provedor, principal)
       const total = Math.max(1, chaves.length)
 
-      for (let tentativa = 1; tentativa <= total; tentativa++) {
+      let tentativa = 1
+      let repetiu = false
+      while (tentativa <= total) {
         const chave = this.giro.chave(provedor, chaves)
         try {
           const texto = await this.chamarProvedor(provedor, modelo, chave, prompt, maxTokens)
           if (!texto) throw new ErroDeProvedor(provedor, 0, 'resposta vazia')
-          if (ordem > 0) {
+          this.descanso.liberar(provedor)
+          if (!principal) {
             // Vale a linha de log: o principal caiu e ninguém percebeu porque a
             // reserva assumiu. Sem isto, a descoberta só viria pela fatura ou
             // pela reclamação de que "a IA está escrevendo diferente".
@@ -290,13 +319,41 @@ export class AiService {
           ultimoErro = err
           const status = err instanceof ErroDeProvedor ? err.status : 0
           const corpo = err instanceof ErroDeProvedor ? err.message : ''
-          if (chaveQueimada(status, corpo) && this.giro.girar(provedor, total, tentativa)) {
-            this.logger.warn(
-              `${provedor}: chave ${this.giro.indice(provedor)} recusada (${status}) — indo para a próxima.`,
+
+          if (chaveQueimada(status, corpo)) {
+            if (this.giro.girar(provedor, total, tentativa)) {
+              this.logger.warn(
+                `${provedor}: chave ${this.giro.indice(provedor)} recusada (${status}) — indo para a próxima.`,
+              )
+              tentativa++
+              continue
+            }
+            // Todas as chaves deste provedor recusadas: ele descansa. A cota
+            // diária não volta em um minuto, mas o custo de sondar é um 429
+            // rápido — e um limite por minuto (Groq) já terá passado.
+            this.descanso.marcar(provedor, DESCANSO_MS)
+            this.logger.error(
+              `${provedor}: ${total} chave(s) recusada(s) (${status}) — descansa ${DESCANSO_MS / 1000} s; indo para a reserva.`,
             )
+            break
+          }
+
+          if (!repetiu && valeRepetir(status, corpo)) {
+            // A "tentativa de conserto": mesma chave, mesmo provedor, uma vez.
+            repetiu = true
+            this.logger.warn(
+              `${provedor}: falha passageira (${status || 'rede'}) — repetindo em ${PAUSA_ANTES_DE_REPETIR_MS} ms.`,
+            )
+            await this.pausa(PAUSA_ANTES_DE_REPETIR_MS)
             continue
           }
-          this.logger.error(`Falha na geração via ${provedor}`, err as Error)
+
+          const prazo = tempoEsgotou(status, corpo) ? DESCANSO_LENTO_MS : DESCANSO_MS
+          this.descanso.marcar(provedor, prazo)
+          this.logger.error(
+            `Falha na geração via ${provedor} — descansa ${prazo / 1000} s; indo para a reserva.`,
+            err as Error,
+          )
           break
         }
       }
@@ -604,6 +661,12 @@ Devolva o texto completo já corrigido — sem promessas ou garantias de resulta
       return await res.json()
     } catch (err) {
       if (err instanceof ErroDeProvedor) throw err
+      // Nomear o tempo esgotado é o que separa "repita" de "passe a vez" lá em
+      // cima (ver valeRepetir/tempoEsgotou): 20 s já se foram, e um provedor
+      // pendurado não merece mais 20.
+      if ((err as Error)?.name === 'AbortError') {
+        throw new ErroDeProvedor(provedor, 0, 'tempo esgotado (20 s)')
+      }
       throw new ErroDeProvedor(provedor, 0, (err as Error)?.message ?? 'falha de rede')
     } finally {
       clearTimeout(relogio)
