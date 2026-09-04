@@ -401,13 +401,43 @@ export function valeRepetir(status: number, motivo = ''): boolean {
   return status === 0 && !tempoEsgotou(status, motivo)
 }
 
-/** O erro foi o nosso teto de 20 s? (nosso texto em `postar` e o nome do DOM). */
+/** O erro foi tempo esgotado? (nosso texto em `postar`, o nome do DOM e o do SDK da Anthropic). */
 export function tempoEsgotou(status: number, motivo = ''): boolean {
-  return status === 0 && /tempo esgotado|abort/i.test(motivo)
+  return status === 0 && /tempo esgotado|abort|timed out/i.test(motivo)
 }
 
 /** A pausa entre a primeira tentativa e a repetição. Curta: quem clicou está esperando. */
 export const PAUSA_ANTES_DE_REPETIR_MS = 800
+
+/**
+ * O ORÇAMENTO DE TEMPO de um pedido inteiro, e por que ele existe.
+ *
+ * O site fala com a API pelo proxy do Netlify, e o proxy corta qualquer
+ * resposta que passe de 26 s (documentado em "Rewrites and proxies →
+ * limitations"). Não importa o que o backend faça depois disso: o navegador já
+ * recebeu um erro de gateway. Então TUDO que um pedido faz — primeira geração,
+ * repetição, reserva, os reparos de conformidade — tem de caber em menos que
+ * isso, com folga para a rede.
+ *
+ *   • PRAZO_DO_PEDIDO_MS   — o teto do pedido inteiro, contado do início.
+ *   • TEMPO_POR_CHAMADA_MS — o teto de UMA chamada a um provedor. Era 20 s;
+ *     com o orçamento de 22 s isso deixava 2 s para a reserva, que é o mesmo
+ *     que não ter reserva. Os modelos da cadeia respondem em 1–4 s; 12 s já é
+ *     um provedor doente, e ainda deixa 10 s para o plano B.
+ *   • MINIMO_PARA_TENTAR_MS — abaixo disto não vale começar uma chamada nova:
+ *     ela não terminaria a tempo, e o template seguro responde na hora.
+ *
+ * Quando o prazo aperta, quem paga é o REPARO (o texto já regular vira
+ * template) e nunca a resposta: o advogado sempre recebe algo antes do corte.
+ */
+export const PRAZO_DO_PEDIDO_MS = 22_000
+export const TEMPO_POR_CHAMADA_MS = 12_000
+export const MINIMO_PARA_TENTAR_MS = 2_500
+
+/** Quanto ainda resta até o prazo, nunca negativo. */
+export function restante(prazo: number, agora = Date.now()): number {
+  return Math.max(0, prazo - agora)
+}
 
 /**
  * Quanto tempo um provedor que falhou fica de fora antes de ser tentado de
@@ -418,8 +448,9 @@ export const DESCANSO_MS = 60_000
 
 /**
  * Descanso maior para quem estourou o TEMPO. Cada sondagem num provedor
- * pendurado custa 20 s para o advogado que fez o pedido — sondar a cada minuto
- * seria um clique lento por minuto. A cada três, é um a cada três minutos.
+ * pendurado custa o teto de uma chamada para o advogado que fez o pedido —
+ * sondar a cada minuto seria um clique lento por minuto. A cada três, é um a
+ * cada três minutos.
  */
 export const DESCANSO_LENTO_MS = 180_000
 

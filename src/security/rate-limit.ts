@@ -48,9 +48,12 @@ export function enforceRateLimit(
   }
 }
 
-// Remove chaves cujos acessos já expiraram (janela máxima considerada: 1h).
+// Remove chaves cujos acessos já expiraram. A janela máxima considerada é 24 h
+// (era 1 h): com as regras diárias da IA, podar em 1 h apagaria a contagem do
+// dia de quem estivesse quieto há uma hora — justamente sob pressão de memória,
+// que é quando um ataque está em curso.
 function pruneExpired(now: number) {
-  const horizon = now - 60 * 60 * 1000
+  const horizon = now - 24 * 60 * 60 * 1000
   for (const [k, arr] of hits) {
     if (arr.every((t) => t <= horizon)) hits.delete(k)
   }
@@ -93,12 +96,38 @@ export const AUTH_RATE_RULES = {
   adminLoginGlobal: { windowMs: 15 * 60 * 1000, max: 400 } as Rule,
 }
 
-// Geração de texto por IA: cada chamada custa dinheiro num provedor pago. Sem
+// Geração de texto por IA: cada chamada custa dinheiro num provedor pago — ou,
+// em produção hoje, custa COTA de um tier grátis, que é ainda mais escassa. Sem
 // teto, um laço de terminal esvazia o orçamento da conta em minutos.
+//
+// Três alturas de teto (04/09/2026):
+//
+//   • por MINUTO/HORA — segura o laço de terminal e o clique nervoso;
+//   • por DIA — segura o uso legítimo mas exagerado: uma pessoa gerando a bio
+//     sessenta vezes num dia não é ataque, mas cada pedido pode virar até
+//     quatro chamadas ao provedor (geração + três reparos). A cota diária do
+//     tier grátis do Gemini se mede em centenas de pedidos, e ela é de TODOS;
+//   • GLOBAL por hora — o guarda-chuva das chaves: seja quem for e de onde for,
+//     a plataforma inteira não passa disto por hora. É o teto que impede que
+//     um dia de procura acima do normal derrube o "Gerar com IA" de todo mundo
+//     à tarde. Ajustável sem deploy por AI_TETO_GLOBAL_HORA.
+//
+// A janela diária pede que pruneExpired abaixo enxergue 24 h, não 1 h.
+const DIA = 24 * 60 * 60 * 1000
 export const AI_RATE_RULES = {
   perIp: { windowMs: 60 * 60 * 1000, max: 40 } as Rule,
   perIpBurst: { windowMs: 60 * 1000, max: 8 } as Rule,
   perUser: { windowMs: 60 * 60 * 1000, max: 120 } as Rule,
+  // Sem conta (Free anônimo) o dia é mais curto: é a porta pública da rota.
+  perIpDay: { windowMs: DIA, max: 30 } as Rule,
+  perUserDay: { windowMs: DIA, max: 80 } as Rule,
+  global: { windowMs: 60 * 60 * 1000, max: tetoGlobalPorHora() } as Rule,
+}
+
+/** O teto global por hora, com override pelo .env (número inteiro positivo). */
+export function tetoGlobalPorHora(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number.parseInt((env.AI_TETO_GLOBAL_HORA ?? '').trim(), 10)
+  return Number.isFinite(n) && n > 0 ? n : 300
 }
 
 // Webhook de cobrança. O teto é FOLGADO de propósito: quem chama é o servidor do

@@ -116,7 +116,15 @@ describe('o corte pós-geração nunca devolve mais do que cabe', () => {
 // ---------------------------------------------------------------------------
 
 import { afterEach, beforeEach, vi } from 'vitest'
-import { DESCANSO_LENTO_MS, DESCANSO_MS, ErroDeProvedor, type Provider } from './provedores'
+import {
+  DESCANSO_LENTO_MS,
+  DESCANSO_MS,
+  ErroDeProvedor,
+  MINIMO_PARA_TENTAR_MS,
+  PRAZO_DO_PEDIDO_MS,
+  TEMPO_POR_CHAMADA_MS,
+  type Provider,
+} from './provedores'
 
 type Resposta = string | ErroDeProvedor
 type Roteiro = Partial<Record<Provider, Resposta[]>>
@@ -138,8 +146,13 @@ function cadeiaDeMentira(roteiro: Roteiro) {
     return proxima
   }
   s.pausa = async () => {}
-  const runModel = (s as unknown as { runModel(p: string, n: number): Promise<string> }).runModel
-  return { gerar: () => runModel.call(s, 'prompt', 100), chamadas }
+  const runModel = (
+    s as unknown as { runModel(p: string, n: number, prazo: number): Promise<string> }
+  ).runModel
+  return {
+    gerar: (prazo = Date.now() + PRAZO_DO_PEDIDO_MS) => runModel.call(s, 'prompt', 100, prazo),
+    chamadas,
+  }
 }
 
 const erro = (p: Provider, status: number, motivo: string) => new ErroDeProvedor(p, status, motivo)
@@ -242,5 +255,49 @@ describe('a cadeia é um plano B, não uma corrida', () => {
     })
     await expect(c.gerar()).rejects.toBeInstanceOf(ErroDeProvedor)
     await expect(c.gerar()).resolves.toBe('gemini voltou')
+  })
+})
+
+// O proxy do Netlify corta em 26 s. O que não couber no orçamento do pedido não
+// é resposta lenta — é erro de gateway na tela do advogado.
+describe('o orçamento de tempo do pedido', () => {
+  const ENV_ANTES = { ...process.env }
+  beforeEach(() => {
+    process.env.AI_PROVIDER = 'gemini,groq'
+    process.env.GEMINI_API_KEY = 'g1'
+    process.env.GROQ_API_KEY = 'q1'
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-04T12:00:00Z'))
+  })
+  afterEach(() => {
+    process.env = { ...ENV_ANTES }
+    vi.useRealTimers()
+  })
+
+  it('cabe no corte do proxy: uma chamada + a reserva ficam abaixo de 26 s', () => {
+    expect(PRAZO_DO_PEDIDO_MS).toBeLessThan(26_000)
+    expect(TEMPO_POR_CHAMADA_MS * 2).toBeLessThanOrEqual(PRAZO_DO_PEDIDO_MS + 2_000)
+    expect(TEMPO_POR_CHAMADA_MS).toBeGreaterThanOrEqual(8_000)
+  })
+
+  it('com o prazo quase vencido, nem chama — e o provedor NÃO descansa por isso', async () => {
+    const c = cadeiaDeMentira({ gemini: ['gemini ok'], groq: ['groq ok'] })
+    await expect(c.gerar(Date.now() + MINIMO_PARA_TENTAR_MS - 1)).rejects.toBeInstanceOf(
+      ErroDeProvedor,
+    )
+    expect(c.chamadas).toEqual([])
+    // Pedido seguinte, com prazo cheio: o gemini está lá, de pé.
+    await expect(c.gerar()).resolves.toBe('gemini ok')
+    expect(c.chamadas).toEqual(['gemini:g1'])
+  })
+
+  it('sem tempo para a pausa da repetição, passa a vez em vez de repetir', async () => {
+    const c = cadeiaDeMentira({
+      gemini: [erro('gemini', 503, 'x'), 'gemini se recuperou'],
+      groq: ['groq ok'],
+    })
+    // Sobra pouco: dá para UMA chamada, não para pausa + chamada.
+    await expect(c.gerar(Date.now() + MINIMO_PARA_TENTAR_MS + 100)).resolves.toBe('groq ok')
+    expect(c.chamadas).toEqual(['gemini:g1', 'groq:q1'])
   })
 })

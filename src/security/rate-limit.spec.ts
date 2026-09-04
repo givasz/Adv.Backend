@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { HttpException } from '@nestjs/common'
 import {
+  AI_RATE_RULES,
   AUTH_RATE_RULES,
+  tetoGlobalPorHora,
   checkRateLimit,
   enforceRateLimit,
   resetRateLimits,
@@ -56,5 +58,21 @@ describe('clientIp', () => {
     // TRUST_PROXY não está ligado no ambiente de teste.
     expect(clientIp('9.9.9.9', '1.1.1.1')).toBe('9.9.9.9')
     expect(clientIp(undefined, '1.1.1.1')).toBe('sem-ip')
+  })
+})
+
+// Os tetos da IA protegem COTA de tier grátis, que é de todo mundo.
+describe('tetos da IA', () => {
+  it('o global vem do .env quando faz sentido, e tem padrão quando não', () => {
+    expect(tetoGlobalPorHora({} as never)).toBe(300)
+    expect(tetoGlobalPorHora({ AI_TETO_GLOBAL_HORA: '120' } as never)).toBe(120)
+    expect(tetoGlobalPorHora({ AI_TETO_GLOBAL_HORA: 'muito' } as never)).toBe(300)
+    expect(tetoGlobalPorHora({ AI_TETO_GLOBAL_HORA: '0' } as never)).toBe(300)
+  })
+
+  it('o dia sem conta é mais curto que o dia com conta, e os dois cabem no global', () => {
+    expect(AI_RATE_RULES.perIpDay.max).toBeLessThan(AI_RATE_RULES.perUserDay.max)
+    expect(AI_RATE_RULES.perUserDay.max).toBeLessThan(AI_RATE_RULES.global.max)
+    expect(AI_RATE_RULES.perIpDay.windowMs).toBe(24 * 60 * 60 * 1000)
   })
 })
