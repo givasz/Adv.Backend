@@ -42,6 +42,15 @@ export const PERMISSOES = {
   /** Ler o histórico de ações do painel. */
   'auditoria:ler': ['owner', 'moderator', 'readonly'],
   /**
+   * Ler os levantamentos: quantos perfis por plano, como isso evoluiu, uso.
+   *
+   * Fora de `support` de propósito. Não é sigilo — são números agregados, sem
+   * nome de ninguém — é foco: quem atende chamado precisa da fila, e uma aba a
+   * mais na barra de quem trabalha por fila é uma aba que atrapalha. `readonly`
+   * entra porque é exatamente para isto que aquele papel existe.
+   */
+  'metricas:ler': ['owner', 'moderator', 'readonly'],
+  /**
    * Ler o registro de acesso (Marco Civil, art. 15): data, hora e IP de entrada
    * na conta e de publicação de perfil.
    *
