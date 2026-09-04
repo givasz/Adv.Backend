@@ -35,9 +35,11 @@ import {
   VIDEO_ORIENTATIONS,
 } from '../video'
 import {
+  aoPerderOPlano,
   aoTrocarPlano,
   ehRebaixamento,
   emCortesia,
+  enderecoVenceu,
   planoVigente,
   valeAte,
   type PatchAssinatura,
@@ -625,6 +627,12 @@ export class ProfilesService {
       graceUntil: p.graceUntil ? new Date(p.graceUntil).toISOString() : null,
       /** rebaixamento pedido, esperando o fim do período pago */
       planScheduled: (p.planScheduled as Plan) ?? null,
+      /**
+       * Até quando o endereço limpo ainda é desta pessoa depois de ela cair para o
+       * Free. É o que o painel usa para avisar com data, antes de a varredura
+       * carimbar o número — a única forma de a troca não ser uma emboscada.
+       */
+      slugGraceUntil: p.slugGraceUntil ? new Date(p.slugGraceUntil).toISOString() : null,
     }
   }
 
@@ -793,6 +801,45 @@ export class ProfilesService {
 
   private randomSuffix(): number {
     return Math.floor(1000 + Math.random() * 9000) // 4 dígitos
+  }
+
+  /**
+   * O endereço parece ser o "nome-1234" que a plataforma impõe no Free?
+   *
+   * Serve para NÃO mexer duas vezes na mesma pessoa: quem já está numerado não
+   * tem endereço limpo a perder, e portanto não abre prazo nenhum ao descer.
+   *
+   * O critério é o mesmo do `stripAutoNumber` em resolveSlug, e erra sempre para o
+   * lado de não tocar: um "joao-silva-2020" escolhido à mão pelo advogado casa o
+   * padrão e é tratado como automático — o efeito é ele MANTER o endereço, que é
+   * o erro barato dos dois.
+   */
+  private pareceAutoNumerado(slug: string, name: string): boolean {
+    const base = slugify(name ?? '')
+    if (!base) return false
+    return new RegExp(`^${base}-\\d+$`).test(slug ?? '')
+  }
+
+  /**
+   * Um endereço "nome-1234" livre, para carimbar quem perdeu o plano.
+   *
+   * `resolveSlug` não serve aqui: no ramo do Free ele PRESERVA o endereço que já
+   * existe — comportamento certo para um save comum e exatamente o oposto do que
+   * esta função precisa fazer.
+   */
+  private async slugNumerado(name: string, selfUserId: string): Promise<string> {
+    const base = slugify(name ?? '') || 'advogado'
+    for (let i = 0; i < 12; i++) {
+      const candidato = `${base}-${this.randomSuffix()}`
+      const dono = await this.prisma.profile.findUnique({
+        where: { slug: candidato },
+        select: { userId: true },
+      })
+      if (!dono || dono.userId === selfUserId) return candidato
+    }
+    // 12 sorteios em 9 mil valores só colidem se o nome for extraordinariamente
+    // comum. O carimbo do relógio fecha a porta sem estourar a varredura.
+    return `${base}-${Date.now().toString().slice(-6)}`
   }
 
   // Escada de endereço:
@@ -1218,15 +1265,28 @@ export class ProfilesService {
    * agendamento). Conteúdo — vídeo, marca, cartão, perguntas, áreas além da cota —
    * NÃO é tocado: some da leitura e volta inteiro quando o plano voltar.
    *
-   * O ENDEREÇO NÃO É MEXIDO no rebaixamento. Só a SUBIDA de plano mexe nele, para
-   * entregar o perk do nome limpo; descer preserva o que já está impresso em
-   * cartão de visita e indexado no Google (ver resolveSlug).
+   * O ENDEREÇO NÃO É MEXIDO AQUI no rebaixamento — nem quando ele cai para o
+   * Free. Cair para o Free ABRE UM PRAZO (`slugGraceUntil`), e o endereço limpo
+   * continua no ar até ele vencer; quem carimba o número é a varredura diária,
+   * depois de sete dias com a data escrita no painel. A subida, essa sim, mexe no
+   * endereço na hora, para entregar o perk do nome limpo.
+   *
+   * Por que prazo em vez de troca imediata: o endereço está impresso em cartão de
+   * visita, colado num QR e indexado no Google. Trocá-lo no segundo em que o
+   * cartão de crédito falha é emboscada. Nunca trocá-lo, por outro lado, é
+   * regalar o perk mais visível do Pro a quem parou de pagar.
    */
-  private async aplicarAssinatura(userId: string, patch: PatchAssinatura, motivo: string) {
+  private async aplicarAssinatura(
+    userId: string,
+    patch: PatchAssinatura,
+    motivo: string,
+    agora: Date = new Date(),
+  ) {
     const antes = await this.prisma.profile.findUnique({
       where: { userId },
       select: { id: true, name: true, slug: true, plan: true, schedulingMode: true, theme: true,
-                planStatus: true, currentPeriodEnd: true, graceUntil: true, planScheduled: true },
+                planStatus: true, currentPeriodEnd: true, graceUntil: true, planScheduled: true,
+                slugGraceUntil: true },
     })
     if (!antes) throw new NotFoundException('Perfil não encontrado')
 
@@ -1248,6 +1308,23 @@ export class ProfilesService {
     if (subiu) {
       dados.slug = await this.resolveSlug(antes.name, depois, antes.slug, userId, true, antes.slug)
     }
+
+    // ---- O prazo do endereço --------------------------------------------------
+    //
+    // Três casos, e o silêncio do quarto importa tanto quanto os outros:
+    if (depois !== 'free') {
+      // 1. Está num plano pago (subiu, ou desceu de Max para Pro): não há prazo a
+      //    correr. Zerar aqui é o que devolve o endereço a quem reassinou dentro
+      //    da semana — sem isso, a varredura carimbaria alguém que voltou a pagar.
+      dados.slugGraceUntil = null
+    } else if (antesVigente !== 'free' && !this.pareceAutoNumerado(antes.slug, antes.name)) {
+      // 2. Acabou de cair para o Free com endereço limpo: começa a contagem.
+      dados.slugGraceUntil = aoPerderOPlano(agora)
+    }
+    // 3. Já era Free, ou já estava numerado: nada muda. Em especial, uma segunda
+    //    passagem da varredura sobre a mesma linha NÃO reinicia o relógio — se
+    //    reiniciasse, o prazo nunca venceria, que é o mesmo defeito que a carência
+    //    de cobrança já teve (ver aoFalharPagamento).
 
     const updated = await this.prisma.profile.update({
       where: { userId },
@@ -1281,6 +1358,69 @@ export class ProfilesService {
     })
     if (!dono) throw new NotFoundException('Perfil não encontrado')
     return this.aplicarAssinatura(dono.userId, patch, motivo)
+  }
+
+  /**
+   * Carimba o número no endereço de quem perdeu o plano e deixou o prazo vencer.
+   * Chamada só pela varredura diária (billing/assinaturas.service.ts).
+   *
+   * Devolve o endereço novo, ou `null` quando não havia o que fazer — a varredura
+   * é idempotente e esta função é a segunda tranca: ela reconfere, na linha
+   * gravada, que o plano vigente é mesmo o Free. Quem voltou a pagar entre a
+   * consulta e a escrita sai daqui intocado.
+   *
+   * O endereço ANTIGO não é redirecionado: ele volta a ficar livre, e prendê-lo a
+   * um redirecionamento seria continuar entregando ao Free o perk que o Pro vende.
+   * É por isso que o aviso existe, e é por isso que ele tem uma semana.
+   */
+  async carimbarEnderecoVencido(profileId: string, agora: Date = new Date()) {
+    const p = await this.prisma.profile.findUnique({
+      where: { id: profileId },
+      select: { id: true, name: true, slug: true, userId: true, plan: true, planStatus: true,
+                currentPeriodEnd: true, graceUntil: true, planScheduled: true, slugGraceUntil: true },
+    })
+    if (!p) return null
+
+    if (!enderecoVenceu(p as any, agora)) {
+      // Prazo apagado, plano de volta, ou ainda no prazo. Se o prazo continua
+      // marcado mas a pessoa está pagando, limpa a sujeira e sai.
+      if (p.slugGraceUntil && planoVigente(p as any, agora) !== 'free') {
+        await this.prisma.profile.update({
+          where: { id: p.id },
+          data: { slugGraceUntil: null },
+        })
+      }
+      return null
+    }
+
+    // Já numerado (por um save que sorteou outro endereço no meio da semana, por
+    // exemplo): não há o que carimbar, só o prazo a encerrar.
+    if (this.pareceAutoNumerado(p.slug, p.name)) {
+      await this.prisma.profile.update({ where: { id: p.id }, data: { slugGraceUntil: null } })
+      return null
+    }
+
+    const anterior = p.slug
+    const novo = await this.slugNumerado(p.name, p.userId)
+    await this.prisma.profile.update({
+      where: { id: p.id },
+      data: { slug: novo, slugGraceUntil: null },
+    })
+
+    // O endereço é a coisa mais pública do perfil: a troca vai para a trilha, com
+    // o de antes e o de agora. É o registro que responde "por que meu QR parou de
+    // funcionar" sem depender da memória de ninguém.
+    await this.prisma.auditLog.create({
+      data: {
+        profileId: p.id,
+        action: 'plan',
+        complianceStatus: 'ok',
+        policyVersion: POLICY_VERSION,
+        bioSnapshot: `endereço devolvido ao padrão do Free: ${anterior} → ${novo}`,
+      },
+    })
+
+    return { anterior, novo }
   }
 
   // A plataforma NÃO confere inscrições na OAB. O número é auto-declarado e o

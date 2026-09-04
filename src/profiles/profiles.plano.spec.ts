@@ -31,6 +31,7 @@ interface Opcoes {
   currentPeriodEnd?: Date | null
   graceUntil?: Date | null
   planScheduled?: string | null
+  slugGraceUntil?: Date | null
   slug?: string
   name?: string
   headline?: string
@@ -55,6 +56,7 @@ function service(o: Opcoes = {}) {
     currentPeriodEnd: o.currentPeriodEnd ?? null,
     graceUntil: o.graceUntil ?? null,
     planScheduled: o.planScheduled ?? null,
+    slugGraceUntil: o.slugGraceUntil ?? null,
     oabNumber: 'OAB/SP 123',
     name: o.name ?? 'Marina Sales',
     slug: o.slug ?? 'marina-sales',
@@ -336,5 +338,100 @@ describe('troca de plano', () => {
     const { svc } = service()
     await expect(svc.setPlan('u1', 'deus')).rejects.toThrow(/inválido/i)
     await expect(svc.setPlan('u1', { plan: 'premium' })).rejects.toThrow(/inválido/i)
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('o endereço vira prazo quando o plano cai — não some junto com ele', () => {
+  // O endereço sem número é o perk mais visível do Pro. Se ele ficasse para
+  // sempre, o rebaixamento não teria peso nenhum; se saísse no mesmo instante,
+  // seria emboscada — o link está impresso em cartão e indexado no Google.
+  // A resposta é a do meio: sete dias, com a data no painel desde o primeiro.
+
+  it('cair para o Free abre o prazo do endereço, e NÃO troca o endereço agora', async () => {
+    const { svc, gravado } = service({ plan: 'premium', slug: 'marina-sales' })
+    await svc.setPlan('u1', 'free')
+    expect(gravado[0].slug).toBeUndefined() // o endereço de hoje continua o dela
+    const prazo = gravado[0].slugGraceUntil as Date
+    expect(prazo).toBeInstanceOf(Date)
+    const faltam = (prazo.getTime() - Date.now()) / (24 * 60 * 60 * 1000)
+    expect(faltam).toBeGreaterThan(6.5)
+    expect(faltam).toBeLessThan(7.5)
+  })
+
+  it('quem já estava numerado não tem endereço limpo a perder', async () => {
+    const { svc, gravado } = service({ plan: 'premium', slug: 'marina-sales-4827' })
+    await svc.setPlan('u1', 'free')
+    expect(gravado[0].slugGraceUntil).toBeUndefined()
+  })
+
+  it('descer de Max para Pro não mexe no endereço: o Pro também tem nome limpo', async () => {
+    const { svc, gravado } = service({ plan: 'premium', slug: 'marina-sales' })
+    await svc.setPlan('u1', 'pro')
+    expect(gravado[0].slugGraceUntil).toBeNull()
+    expect(gravado[0].slug).toBeUndefined()
+  })
+
+  it('reassinar dentro da semana APAGA o prazo — ninguém perde o endereço pagando', async () => {
+    const { svc, gravado } = service({
+      plan: 'free',
+      planStatus: 'canceled',
+      slug: 'marina-sales',
+      slugGraceUntil: dias(3),
+    })
+    await svc.setPlan('u1', 'pro')
+    expect(gravado[0].slugGraceUntil).toBeNull()
+  })
+})
+
+describe('o carimbo do endereço (varredura diária)', () => {
+  it('prazo vencido no Free: o número volta e a troca vai para a trilha', async () => {
+    const { svc, gravado, prisma } = service({
+      plan: 'free',
+      planStatus: 'canceled',
+      slug: 'marina-sales',
+      slugGraceUntil: dias(-1),
+    })
+    const r = await svc.carimbarEnderecoVencido('p1')
+    expect(r).toEqual({ anterior: 'marina-sales', novo: expect.stringMatching(/^marina-sales-\d{4}$/) })
+    expect(gravado[0].slug).toMatch(/^marina-sales-\d{4}$/)
+    expect(gravado[0].slugGraceUntil).toBeNull()
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ bioSnapshot: expect.stringContaining('marina-sales') }),
+      }),
+    )
+  })
+
+  it('dentro do prazo não faz nada', async () => {
+    const { svc, gravado } = service({
+      plan: 'free',
+      planStatus: 'canceled',
+      slug: 'marina-sales',
+      slugGraceUntil: dias(2),
+    })
+    expect(await svc.carimbarEnderecoVencido('p1')).toBeNull()
+    expect(gravado).toHaveLength(0)
+  })
+
+  it('voltou a pagar com o prazo vencido: o endereço fica, o prazo é apagado', async () => {
+    // A segunda tranca. Entre a consulta da varredura e a escrita cabe um
+    // pagamento; renumerar quem está pagando seria o pior erro desta rotina.
+    const { svc, gravado } = service({
+      plan: 'pro',
+      planStatus: 'active',
+      currentPeriodEnd: dias(20),
+      slug: 'marina-sales',
+      slugGraceUntil: dias(-1),
+    })
+    expect(await svc.carimbarEnderecoVencido('p1')).toBeNull()
+    expect(gravado[0]).toEqual({ slugGraceUntil: null })
+  })
+
+  it('sem prazo marcado, não há o que carimbar', async () => {
+    const { svc, gravado } = service({ plan: 'free', slug: 'marina-sales' })
+    expect(await svc.carimbarEnderecoVencido('p1')).toBeNull()
+    expect(gravado).toHaveLength(0)
   })
 })

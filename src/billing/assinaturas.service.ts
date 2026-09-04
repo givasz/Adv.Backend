@@ -5,12 +5,16 @@ import { aoVirarOPrazo } from '../assinatura'
 
 // A VARREDURA DIÁRIA das assinaturas — quem virou de prazo desde ontem.
 //
-// Duas coisas acontecem aqui, e só aqui:
+// Três coisas acontecem aqui, e só aqui:
 //
 //  1. REBAIXAMENTO AGENDADO que amadureceu. Quem pediu para descer de Max para Pro
 //     continuou no Max até o fim do mês pago; hoje o mês virou.
 //  2. ASSINATURA VENCIDA de vez — carência esgotada, ou cancelamento cujo período
 //     acabou. É o único ponto do sistema que rebaixa `Profile.plan` sozinho.
+//  3. ENDEREÇO cujo prazo venceu. Quem caiu para o Free ficou uma semana com o
+//     endereço limpo e a data no painel; passada a semana, o número volta. É o
+//     único ponto do sistema que renumera um endereço sozinho — e por isso ele
+//     roda DEPOIS dos outros dois, sobre o estado já reconciliado.
 //
 // POR QUE UMA VARREDURA, SE A LEITURA JÁ DECIDE
 //
@@ -67,7 +71,9 @@ export class AssinaturasService implements OnModuleInit, OnModuleDestroy {
    * Uma passagem. Pública para o `npm run assinaturas` poder chamar à mão — útil
    * logo depois de um deploy, sem esperar as seis horas.
    */
-  async varrer(agora: Date = new Date()): Promise<{ rebaixados: number; agendados: number }> {
+  async varrer(
+    agora: Date = new Date(),
+  ): Promise<{ rebaixados: number; agendados: number; enderecos: number }> {
     let rebaixados = 0
     let agendados = 0
     try {
@@ -124,6 +130,45 @@ export class AssinaturasService implements OnModuleInit, OnModuleDestroy {
       // isso, então ninguém usa de graça o que não pagou.
       this.log.warn(`varredura falhou: ${e instanceof Error ? e.message : e}`)
     }
-    return { rebaixados, agendados }
+
+    const enderecos = await this.carimbarEnderecos(agora)
+    return { rebaixados, agendados, enderecos }
+  }
+
+  /**
+   * Passagem dos ENDEREÇOS vencidos. Separada da de cima, e depois dela, por um
+   * motivo de ordem: quem acabou de ser rebaixado nesta mesma passagem teve o
+   * prazo ABERTO agora, e portanto não é candidato hoje — o que é exatamente o
+   * desejado. Ninguém perde o endereço no mesmo minuto em que perde o plano.
+   *
+   * Num `try` próprio: uma falha ao renumerar não pode apagar o resultado do
+   * rebaixamento, que é a parte que envolve dinheiro.
+   */
+  private async carimbarEnderecos(agora: Date): Promise<number> {
+    let carimbados = 0
+    try {
+      const vencidos = await this.prisma.profile.findMany({
+        where: { slugGraceUntil: { not: null, lt: agora } },
+        select: { id: true },
+        take: LOTE,
+      })
+
+      for (const p of vencidos) {
+        try {
+          // A própria função reconfere o plano vigente antes de mexer — quem
+          // voltou a pagar sai daqui apenas com o prazo apagado.
+          if (await this.profiles.carimbarEnderecoVencido(p.id, agora)) carimbados++
+        } catch (e) {
+          this.log.warn(`endereço do perfil ${p.id}: ${e instanceof Error ? e.message : e}`)
+        }
+      }
+
+      if (carimbados > 0) {
+        this.log.log(`varredura: ${carimbados} endereço(s) devolvido(s) ao padrão do Free`)
+      }
+    } catch (e) {
+      this.log.warn(`varredura de endereços falhou: ${e instanceof Error ? e.message : e}`)
+    }
+    return carimbados
   }
 }
