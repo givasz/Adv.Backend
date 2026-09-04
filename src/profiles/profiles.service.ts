@@ -10,6 +10,8 @@ import { perfilVisivelAoPublico, secoesCensuradas } from './visibilidade'
 import { areaComMaisDeUma, perguntaComMaisDeUma } from '../campo-unico'
 import { faixa, pagina } from '../admin/paginacao'
 import { blockingFields, POLICY_VERSION, publicStatus, RULESET_REV } from '../oab/compliance'
+import { aceiteVigente, TERMS_VERSION } from '../legal/termos'
+import { devoRegistrarEdicao, registrarAcesso } from '../security/access-log'
 import {
   AREA_LIMIT,
   canUseFaq,
@@ -128,6 +130,13 @@ const perfilBase = {
   plan: true,
   oabNumber: true,
   slug: true,
+  // Já estava no ar antes deste save? É a diferença entre PUBLICAR (ato que
+  // exige a declaração de veracidade) e editar o que já é público.
+  published: true,
+  truthDeclaredAt: true,
+  // Versão dos Termos aceita pela conta dona deste perfil. Publicar com aceite
+  // vencido seria colocar conteúdo no ar sob um contrato que ninguém assinou.
+  user: { select: { termsVersion: true } },
   // Situação da cobrança: quem decide o que está liberado é o plano VIGENTE.
   planStatus: true,
   currentPeriodEnd: true,
@@ -1070,6 +1079,10 @@ export class ProfilesService {
         // índice que a grava. Vem depois do filtro de propósito: um link recusado
         // no meio da lista deixaria um buraco na numeração se contasse antes.
         .map((s, order) => ({ kind: s.kind as string, url: s.url as string, order })),
+      // Declaração de veracidade da estreia. Coerção explícita: `...d` deixa
+      // passar o que vier no corpo, e uma string "false" ou o número 1 não podem
+      // valer como declaração de ninguém.
+      truthDeclared: d.truthDeclared === true,
       contact: {
         whatsapp: safeWhatsapp(c.whatsapp),
         email: safeEmail(c.email),
@@ -1089,7 +1102,13 @@ export class ProfilesService {
     }
   }
 
-  async update(userId: string, raw: any) {
+  /**
+   * @param origem  IP e navegador de quem salvou. Só chegam até aqui para virar
+   *   registro de acesso (Marco Civil, art. 15) quando o save publica ou altera
+   *   um perfil PÚBLICO. Opcional porque os testes chamam `update` direto, e um
+   *   parâmetro obrigatório só para eles seria ruído.
+   */
+  async update(userId: string, raw: any, origem?: { ip: string; userAgent?: string }) {
     // Nada abaixo desta linha vê o corpo cru: tipo, tamanho e formato de link são
     // decididos aqui, antes da checagem de conformidade e do banco.
     const data = this.sanitizeInput(raw)
@@ -1103,6 +1122,13 @@ export class ProfilesService {
         where: { userId },
         select: perfilBase,
       })) ?? (await this.garantirPerfil(userId, data.name))
+    // `estreia` é a transição de rascunho para público. É nela, e só nela, que a
+    // declaração de veracidade é cobrada: pedir a mesma confirmação a cada save
+    // com debounce do editor transformaria uma declaração num clique reflexo, e
+    // uma declaração que ninguém lê não prova nada.
+    const jaPublicado = Boolean((current as any)?.published)
+    const estreia = Boolean(data.published) && !jaPublicado
+
     // Perfil restrito pela moderação não pode ser republicado pelo dono.
     if (data.published && current?.moderationStatus === 'restricted') {
       throw new ForbiddenException(
@@ -1110,7 +1136,31 @@ export class ProfilesService {
       )
     }
     // O que um perfil PÚBLICO não pode deixar de ter.
+    //
+    // Vem ANTES das duas recusas abaixo de propósito: "falta o seu nome" é uma
+    // instrução que a pessoa resolve em dez segundos, e "aceite os Termos" é uma
+    // interrupção. Mandar aceitar um contrato para depois descobrir que o perfil
+    // estava vazio seria duas viagens para o mesmo destino.
     if (data.published) this.exigirCamposDePublicacao(data)
+
+    // ---- O que o ato de PUBLICAR exige, e editar não ----
+    //
+    // Aceite dos Termos em dia é condição para colocar conteúdo no ar. Ler o
+    // painel, editar rascunho, exportar os dados e sair continuam liberados —
+    // travar isso seria sequestrar a conta para forçar um aceite, que é
+    // exatamente o vício que o CDC (art. 39, IV) chama de abusivo. Publicar é
+    // outra coisa: é o ato em que os Termos são o contrato.
+    if (data.published && !aceiteVigente((current as any)?.user?.termsVersion)) {
+      throw new ForbiddenException(
+        'Os Termos de Uso foram atualizados. Leia e aceite a versão nova para publicar o perfil.',
+      )
+    }
+
+    if (estreia && data.truthDeclared !== true) {
+      throw new BadRequestException(
+        'Confirme que as informações do perfil são verdadeiras e de sua titularidade antes de publicar.',
+      )
+    }
 
     // O plano que vale AGORA — contratado cruzado com a situação da cobrança. É
     // ele, e não `Profile.plan`, que abre e fecha recurso (ver src/assinatura.ts).
@@ -1207,6 +1257,11 @@ export class ProfilesService {
             }
           : {}),
         published: data.published,
+        // A declaração é carimbada UMA vez, na estreia, e nunca é limpa:
+        // despublicar não desfaz o que foi declarado enquanto estava no ar.
+        ...(estreia
+          ? { truthDeclaredAt: new Date(), truthDeclaredVersion: TERMS_VERSION }
+          : {}),
         policyVersion: POLICY_VERSION,
         // Carimba a revisão vigente das regras (monitor normativo): ao salvar, o
         // perfil passa a estar "em dia" com o RULESET_REV atual.
@@ -1278,6 +1333,22 @@ export class ProfilesService {
         bioSnapshot: data.bio ?? '',
       },
     })
+
+    // Registro de acesso (Marco Civil, art. 15). Só quando o save toca no que é
+    // PÚBLICO: rascunho que ninguém vê não coloca conteúdo no mundo e não
+    // justifica guardar o endereço de quem o escreveu.
+    //
+    // A estreia é sempre registrada. As edições posteriores passam por uma
+    // janela de trinta minutos, senão o debounce do editor encheria a tabela de
+    // IPs — ver devoRegistrarEdicao.
+    if (origem && data.published && (estreia || devoRegistrarEdicao(userId))) {
+      await registrarAcesso(this.prisma, {
+        userId,
+        action: estreia ? 'publicacao' : 'edicao',
+        ip: origem.ip,
+        userAgent: origem.userAgent,
+      })
+    }
 
     return this.toApi(updated)
   }

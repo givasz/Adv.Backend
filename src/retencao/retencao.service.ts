@@ -42,6 +42,22 @@ export const RETENCAO_AUDITORIA_DIAS = 365
  */
 export const RETENCAO_COBRANCA_DIAS = 365
 
+/**
+ * Registro de acesso (AccessLog) — Marco Civil, art. 15.
+ *
+ * Seis meses é o prazo da lei, e aqui ele é TETO, não piso. A obrigação é
+ * guardar por seis meses; guardar por mais tempo seria tratar dado pessoal sem
+ * finalidade, que é o que a LGPD (art. 15, I) manda encerrar. 180 dias é a
+ * leitura conservadora de "seis meses" — nenhum mês de 31 dias faz o prazo
+ * encolher, e nenhum registro sobrevive além do necessário.
+ *
+ * Este é o único expurgo que apaga IP. Também é o único que apaga linha de
+ * alguém que talvez já nem tenha conta: AccessLog não tem relação com User de
+ * propósito (ver schema.prisma), então excluir a conta não leva o registro
+ * junto — o prazo leva.
+ */
+export const RETENCAO_ACESSO_DIAS = 180
+
 const INTERVALO_MS = 24 * 60 * 60 * 1000
 // Espera antes da primeira passagem: subir a aplicação e imediatamente disparar
 // um DELETE grande disputaria o banco justamente no instante em que o pm2 está
@@ -77,31 +93,45 @@ export class RetencaoService implements OnModuleInit, OnModuleDestroy {
    * Apaga o que passou do prazo. Público para o `npm run retencao` poder chamar
    * uma passagem avulsa — útil logo depois de um deploy, sem esperar o intervalo.
    */
-  async expurgar(): Promise<{ eventos: number; auditoria: number; cobranca: number }> {
+  async expurgar(): Promise<{
+    eventos: number
+    auditoria: number
+    cobranca: number
+    acesso: number
+  }> {
     try {
-      const [eventos, auditoria, cobranca] = await Promise.all([
+      const [eventos, auditoria, cobranca, acesso] = await Promise.all([
         this.prisma.linkEvent.deleteMany({ where: { createdAt: { lt: limite(RETENCAO_EVENTOS_DIAS) } } }),
         this.prisma.auditLog.deleteMany({ where: { createdAt: { lt: limite(RETENCAO_AUDITORIA_DIAS) } } }),
         this.prisma.billingEvent.deleteMany({
           where: { createdAt: { lt: limite(RETENCAO_COBRANCA_DIAS) } },
         }),
+        this.prisma.accessLog.deleteMany({
+          where: { createdAt: { lt: limite(RETENCAO_ACESSO_DIAS) } },
+        }),
       ])
-      const total = eventos.count + auditoria.count + cobranca.count
+      const total = eventos.count + auditoria.count + cobranca.count + acesso.count
       // Só registra quando houve o que apagar: uma linha de log por dia dizendo
       // "apaguei zero" é ruído que faz o log parar de ser lido.
       if (total > 0) {
         this.log.log(
           `expurgo: ${eventos.count} eventos (>${RETENCAO_EVENTOS_DIAS}d), ` +
             `${auditoria.count} registros de auditoria (>${RETENCAO_AUDITORIA_DIAS}d), ` +
-            `${cobranca.count} eventos de cobrança (>${RETENCAO_COBRANCA_DIAS}d)`,
+            `${cobranca.count} eventos de cobrança (>${RETENCAO_COBRANCA_DIAS}d), ` +
+            `${acesso.count} registros de acesso (>${RETENCAO_ACESSO_DIAS}d)`,
         )
       }
-      return { eventos: eventos.count, auditoria: auditoria.count, cobranca: cobranca.count }
+      return {
+        eventos: eventos.count,
+        auditoria: auditoria.count,
+        cobranca: cobranca.count,
+        acesso: acesso.count,
+      }
     } catch (e) {
       // Uma falha de limpeza não pode derrubar a API: o pior efeito de não
       // apagar hoje é apagar amanhã.
       this.log.warn(`expurgo falhou: ${e instanceof Error ? e.message : e}`)
-      return { eventos: 0, auditoria: 0, cobranca: 0 }
+      return { eventos: 0, auditoria: 0, cobranca: 0, acesso: 0 }
     }
   }
 }

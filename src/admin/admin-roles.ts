@@ -41,6 +41,18 @@ export const PERMISSOES = {
   'suporte:ler': ['owner', 'moderator', 'support', 'readonly'],
   /** Ler o histórico de ações do painel. */
   'auditoria:ler': ['owner', 'moderator', 'readonly'],
+  /**
+   * Ler o registro de acesso (Marco Civil, art. 15): data, hora e IP de entrada
+   * na conta e de publicação de perfil.
+   *
+   * É a permissão mais restrita das de consulta, e de propósito: só `owner`.
+   * O art. 15 manda guardar sob sigilo, e sigilo com quatro papéis de acesso não
+   * é sigilo. Quem atende suporte não precisa do IP de ninguém para responder um
+   * chamado; quem modera decide sobre o CONTEÚDO, que está à vista de todos. O
+   * único uso legítimo deste dado é responder a ordem de autoridade competente,
+   * e essa resposta é do responsável pela plataforma.
+   */
+  'acesso:ler': ['owner'],
 
   // ---- Decisão ----
   /** Avisar, censurar seções, restringir ou liberar um perfil. */

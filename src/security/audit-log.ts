@@ -25,6 +25,10 @@ export type SecurityEvent =
   | 'admin_logout'
   | 'rate_limited'
   | 'access_denied'
+  // O registro de acesso do art. 15 não pôde ser gravado no banco. Cai aqui para
+  // não sumir — ver security/access-log.ts.
+  | 'access_log_fail'
+  | 'terms_accepted'
 
 interface Registro {
   event: SecurityEvent

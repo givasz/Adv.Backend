@@ -37,6 +37,8 @@ export class AccountService {
         id: true,
         email: true,
         createdAt: true,
+        termsAcceptedAt: true,
+        termsVersion: true,
         profile: {
           include: {
             areas: { orderBy: { order: 'asc' } },
@@ -91,12 +93,37 @@ export class AccountService {
         })
       : []
 
+    // Registro de acesso (Marco Civil, art. 15). ENTRA na exportação porque é dado
+    // pessoal sobre quem pede — a LGPD (art. 18, II) dá direito de acesso mesmo
+    // ao que guardamos por obrigação legal. O direito de acesso e o de eliminação
+    // são coisas diferentes: este dado a pessoa pode VER, e não pode apagar antes
+    // do prazo, e a exportação é o único lugar em que ela o vê.
+    const acessos = await this.prisma.accessLog.findMany({
+      where: { userId },
+      select: { action: true, ip: true, userAgent: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+      take: 1000,
+    })
+
     return {
       geradoEm: new Date().toISOString(),
       sobre:
         'Tudo o que o advoc.me guarda sobre esta conta. Denúncias aparecem apenas ' +
         'pelo motivo e pela data: o contato de quem denunciou pertence a outra pessoa.',
       conta: { id: user.id, email: user.email, criadaEm: user.createdAt },
+      aceiteDosTermos: user.termsAcceptedAt
+        ? {
+            em: user.termsAcceptedAt,
+            versao: user.termsVersion,
+            documento: `https://advoc.me/legal/termos`,
+          }
+        : null,
+      registroDeAcesso: {
+        porQue:
+          'Guardado por 180 dias para cumprir o art. 15 do Marco Civil da Internet. ' +
+          'Não é apagado a pedido antes do prazo, e não é usado para nenhuma outra finalidade.',
+        registros: acessos,
+      },
       perfil: p ?? null,
       escritoriosQueSaoSeus: user.firmsOwned,
       chamadosDeSuporte: user.tickets,
@@ -106,7 +133,7 @@ export class AccountService {
       naoGuardamos: [
         'Dados de quem visita o seu perfil: o contato vai do aparelho do visitante direto para o seu WhatsApp.',
         'Sua senha em texto: guardamos apenas um hash scrypt, do qual ela não pode ser recuperada.',
-        'Endereço IP de sessões: o IP é usado só na hora, para limitar tentativas, e não é gravado.',
+        'Endereço IP de navegação: fora do registro de acesso acima (entrar na conta e publicar o perfil), o IP é usado só na hora, para limitar tentativas, e não é gravado.',
         'Dados do seu cartão: quem os guarda é o provedor de pagamento. Aqui ficam só os identificadores da assinatura.',
       ],
     }
