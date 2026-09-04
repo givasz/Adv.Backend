@@ -14,6 +14,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { ProfilesService } from './profiles.service'
+import { CHAR_LIMITS, FAQ_ANSWER_MAX, FAQ_LIMIT } from '../plans'
 
 type Qualquer = Record<string, any>
 
@@ -110,15 +111,20 @@ const base = { name: 'Marina Sales', oabNumber: 'OAB/SP 123', published: false }
 
 describe('rebaixar esconde, nunca apaga', () => {
   it('salvar no Free NÃO apaga as perguntas frequentes', async () => {
-    // Era o pior dos três: no Free a cota é ZERO, então o `deleteMany: {}` era a
-    // operação inteira — limpava a tabela e não criava nada. Bastava um save
-    // qualquer (trocar o telefone servia) para o FAQ sumir para sempre.
+    // Era o pior dos três: com o `deleteMany: {}` de antes, a operação limpava a
+    // tabela e não criava nada. Bastava um save qualquer (trocar o telefone
+    // servia) para o FAQ sumir para sempre. A janela da cota é o que segura: o que
+    // está ALÉM dela não é lido, não é reescrito e não é apagado.
     const { svc, gravado } = service({
       plan: 'free',
-      faqs: [{ id: 'f1', question: 'a?', answer: 'b', order: 0 }],
+      faqs: [
+        { id: 'f1', question: 'a?', answer: 'b', order: 0 },
+        { id: 'f2', question: 'c?', answer: 'd', order: 1 },
+      ],
     })
     await svc.update('u1', { ...base, faqs: [] })
-    expect(gravado[0].faqs).toEqual({ deleteMany: { order: { lt: 0 } }, create: [] })
+    // Free = 1 pergunta desde 04/09/2026: a janela apaga só a posição 0.
+    expect(gravado[0].faqs).toEqual({ deleteMany: { order: { lt: 1 } }, create: [] })
   })
 
   it('salvar fora do Max NÃO zera o vídeo', async () => {
@@ -153,15 +159,15 @@ describe('rebaixar esconde, nunca apaga', () => {
   })
 
   it('o save só substitui as áreas DENTRO da cota — o excedente fica intacto', async () => {
-    // Max com 5 áreas que cai para o Free (cota 2): as outras 3 não são apagadas,
+    // Max com 5 áreas que cai para o Free (cota 1): as outras 4 não são apagadas,
     // ficam congeladas esperando o plano voltar.
     const { svc, gravado } = service({
       plan: 'free',
       areas: Array.from({ length: 5 }, (_, i) => ({ id: `a${i}`, label: `A${i}`, description: '', order: i })),
     })
     await svc.update('u1', { ...base, areas: [{ label: 'A0', description: '' }, { label: 'A1', description: '' }] })
-    expect(gravado[0].areas.deleteMany).toEqual({ order: { lt: 2 } })
-    expect(gravado[0].areas.create).toHaveLength(2)
+    expect(gravado[0].areas.deleteMany).toEqual({ order: { lt: 1 } })
+    expect(gravado[0].areas.create).toHaveLength(1)
   })
 })
 
@@ -213,7 +219,9 @@ describe('o teto de caracteres não sequestra o editor de quem rebaixou', () => 
 
   it('mas o texto não pode CRESCER acima do teto do plano', async () => {
     const { svc } = service({ plan: 'free', bio: 'x'.repeat(1000) })
-    await expect(svc.update('u1', { ...base, bio: 'x'.repeat(1001) })).rejects.toThrow(/limite de 300/i)
+    await expect(svc.update('u1', { ...base, bio: 'x'.repeat(1001) })).rejects.toThrow(
+      new RegExp(`limite de ${CHAR_LIMITS.free.bio}`, 'i'),
+    )
   })
 
   it('encurtar sempre pode, mesmo continuando acima do teto', async () => {
@@ -230,7 +238,7 @@ describe('o teto de caracteres não sequestra o editor de quem rebaixou', () => 
     })
     await expect(
       svc.update('u1', { ...base, areas: [{ label: 'Trabalhista', description: 'y'.repeat(400) }] }),
-    ).rejects.toThrow(/limite de 160/i)
+    ).rejects.toThrow(new RegExp(`limite de ${CHAR_LIMITS.free.areaDesc}`, 'i'))
   })
 
   it('a MESMA área herdada, com o mesmo texto, passa', async () => {
@@ -261,7 +269,9 @@ describe('a leitura entrega o plano VIGENTE, não o contratado', () => {
     expect(p.theme).toBe('papel')
     expect(p.schedulingMode).toBe('off')
     expect(p.videoUrl).toBeUndefined()
-    expect(p.faqs).toEqual([])
+    // O Free responde UMA pergunta desde 04/09/2026 — o que cai para o Free perde
+    // as EXCEDENTES, não o recurso inteiro.
+    expect(p.faqs).toHaveLength(FAQ_LIMIT.free)
   })
 
   it('cartão recusado ontem NÃO tira nada do ar', async () => {
@@ -433,5 +443,86 @@ describe('o carimbo do endereço (varredura diária)', () => {
     const { svc, gravado } = service({ plan: 'free', slug: 'marina-sales' })
     expect(await svc.carimbarEnderecoVencido('p1')).toBeNull()
     expect(gravado).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('um assunto por campo — a cota não pode ser burlada por dentro', () => {
+  // O Free entrega UMA área e UMA pergunta. Um limite de CONTAGEM sozinho não
+  // segura nada: quem quer três áreas escreve as três no rótulo único. Conferir
+  // isso só no editor seria pedir por favor — o servidor é quem grava.
+
+  it('rótulo com enumeração é recusado, e o erro traz a sugestão de corte', async () => {
+    const { svc } = service({ plan: 'free' })
+    await expect(
+      svc.update('u1', { ...base, areas: [{ label: 'Família, Sucessões', description: '' }] }),
+    ).rejects.toThrow(/mais de uma área/i)
+    await expect(
+      svc.update('u1', { ...base, areas: [{ label: 'Cível / Criminal', description: '' }] }),
+    ).rejects.toThrow(/Direito|Cível/)
+  })
+
+  it('nome legítimo de área passa — este é o lado que não pode falhar', async () => {
+    // Uma trava que reprova "Direito de Família e Sucessões" faz o advogado brigar
+    // com o editor, e ele tem razão: é o nome consagrado de UMA área.
+    const { svc, gravado } = service({ plan: 'free' })
+    await svc.update('u1', {
+      ...base,
+      areas: [{ label: 'Direito de Família e Sucessões', description: '' }],
+    })
+    expect(gravado[0].areas.create[0].label).toBe('Direito de Família e Sucessões')
+  })
+
+  it('rótulo JÁ GRAVADO assim continua salvando — a trava vale para o que entra', async () => {
+    // Quem escreveu "Cível / Criminal" antes desta trava existir não pode
+    // descobrir isso ao tentar trocar o telefone, com o save inteiro recusado por
+    // um campo que ele não tocou. Mesma regra do teto de caracteres.
+    const { svc, gravado } = service({
+      plan: 'free',
+      areas: [{ id: 'a0', label: 'Cível / Criminal', description: '', order: 0 }],
+    })
+    await svc.update('u1', { ...base, areas: [{ label: 'Cível / Criminal', description: '' }] })
+    expect(gravado[0].areas.create[0].label).toBe('Cível / Criminal')
+  })
+
+  it('duas interrogações numa pergunta são recusadas', async () => {
+    const { svc } = service({ plan: 'free' })
+    await expect(
+      svc.update('u1', {
+        ...base,
+        faqs: [{ question: 'Quanto custa? Quanto demora?', answer: 'Depende do caso.' }],
+      }),
+    ).rejects.toThrow(/mais de uma pergunta/i)
+  })
+
+  it('uma pergunta só passa, com vírgula e tudo', async () => {
+    const { svc, gravado } = service({ plan: 'free' })
+    await svc.update('u1', {
+      ...base,
+      faqs: [{ question: 'Quanto tempo demora, em média?', answer: 'Depende do caso.' }],
+    })
+    expect(gravado[0].faqs.create).toHaveLength(1)
+  })
+})
+
+describe('os tetos de texto por plano não apagam o que foi escrito num plano maior', () => {
+  it('pergunta NOVA no Free responde pelo teto curto do Free', async () => {
+    const { svc, gravado } = service({ plan: 'free' })
+    const longa = 'y'.repeat(400)
+    await svc.update('u1', { ...base, faqs: [{ question: 'Como funciona?', answer: longa }] })
+    expect(gravado[0].faqs.create[0].answer).toHaveLength(FAQ_ANSWER_MAX.free)
+  })
+
+  it('resposta HERDADA do Max não é cortada ao salvar no Free', async () => {
+    // Sem esta regra, o primeiro save depois de um rebaixamento comeria 60
+    // caracteres da resposta — em silêncio, e sem ninguém ter pedido.
+    const herdada = 'y'.repeat(FAQ_ANSWER_MAX.premium)
+    const { svc, gravado } = service({
+      plan: 'free',
+      faqs: [{ id: 'f0', question: 'Como funciona?', answer: herdada, order: 0 }],
+    })
+    await svc.update('u1', { ...base, faqs: [{ question: 'Como funciona?', answer: herdada }] })
+    expect(gravado[0].faqs.create[0].answer).toHaveLength(FAQ_ANSWER_MAX.premium)
   })
 })

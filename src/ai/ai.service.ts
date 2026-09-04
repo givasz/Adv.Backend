@@ -214,7 +214,12 @@ export class AiService {
     if (declarado > 0) return declarado
     // Campos cujo tamanho o servidor conhece sozinho. Os demais seguem sem teto
     // (0), porque dependem do plano — e o plano do corpo não é confiável.
-    return kind === 'faq' ? FAQ_ANSWER_MAX : 0
+    //
+    // O teto do FAQ virou tabela por plano em 04/09/2026. Aqui vale o MAIOR: este
+    // é o caminho de quem não declarou tamanho nenhum, e apertar por conta própria
+    // encurtaria a resposta de um Max sem que ninguém tivesse pedido. Quem sabe o
+    // plano é o editor, e ele manda o número no pedido (ver Editor.aiLimit).
+    return kind === 'faq' ? Math.max(...Object.values(FAQ_ANSWER_MAX)) : 0
   }
 
   /**
@@ -393,7 +398,7 @@ ${contexto}${kws ? `
 Pontos a abordar: ${kws}` : ''}${ctx}
 
 Regras obrigatórias (normas de publicidade da advocacia, Provimento 205/2021 da OAB):
-- Resposta EDUCATIVA e GERAL, CURTA: no máximo ${dto.maxChars || FAQ_ANSWER_MAX} caracteres, em 2 ou 3 frases. Prefira ficar ABAIXO desse teto — o teto é o limite, não a meta.
+- Resposta EDUCATIVA e GERAL, CURTA: no máximo ${dto.maxChars || Math.max(...Object.values(FAQ_ANSWER_MAX))} caracteres, em 2 ou 3 frases. Prefira ficar ABAIXO desse teto — o teto é o limite, não a meta.
 - Pode explicar como a lei trata o tema e citar o dispositivo ou instituto aplicável.
 - NÃO prometa resultado, prazo ou êxito; não diga que "resolve" ou "garante" nada.
 - NÃO cite casos, clientes, processos, valores de honorários nem preços.

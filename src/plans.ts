@@ -2,8 +2,12 @@
 export type Plan = 'free' | 'pro' | 'premium'
 export type LimitedField = 'headline' | 'bio' | 'areaDesc'
 
+// O Free é APERTADO de propósito (revisão de 04/09/2026): UMA área, UMA pergunta
+// e campos curtos. Cota de um com campo largo é uma regra que se anula sozinha —
+// vira convite a empilhar ("Família, Sucessões e Inventários" num rótulo só).
+// Os planos pagos ficam folgados: lá a cota já dá o espaço.
 export const CHAR_LIMITS: Record<Plan, Record<LimitedField, number>> = {
-  free: { headline: 60, bio: 300, areaDesc: 160 },
+  free: { headline: 50, bio: 240, areaDesc: 110 },
   pro: { headline: 90, bio: 600, areaDesc: 280 },
   premium: { headline: 120, bio: 1000, areaDesc: 400 },
 }
@@ -20,21 +24,24 @@ export const OAB_MAX = 20
 // Áreas de atuação e perguntas frequentes. O servidor é a
 // fonte da verdade: o excedente é CORTADO no save (não derruba a requisição, para
 // não travar quem acabou de fazer downgrade).
-export const AREA_LIMIT: Record<Plan, number> = { free: 2, pro: 6, premium: 20 }
+export const AREA_LIMIT: Record<Plan, number> = { free: 1, pro: 6, premium: 20 }
 // Perguntas frequentes respondidas no perfil: nenhuma no Free, 2 no Pro, 5 no Max.
-export const FAQ_LIMIT: Record<Plan, number> = { free: 0, pro: 2, premium: 5 }
+export const FAQ_LIMIT: Record<Plan, number> = { free: 1, pro: 2, premium: 5 }
 
 // Tetos de texto do FAQ (iguais em todos os planos — quem tem, tem por inteiro).
 // CURTOS de propósito: FAQ é orientação geral, não parecer jurídico. Resposta longa
 // no celular vira parede de texto que ninguém lê — e quanto mais texto, mais chance
 // de escorregar para fora do que o Prov. 205/2021 permite.
-export const FAQ_QUESTION_MAX = 100
+// Tetos de TEXTO por plano — eram números fixos até 04/09/2026. Use `countLimit`
+// para ler com um plano em mãos.
+export const AREA_LABEL_MAX: Record<Plan, number> = { free: 32, pro: 40, premium: 40 }
+export const FAQ_QUESTION_MAX: Record<Plan, number> = { free: 80, pro: 100, premium: 100 }
 // 300 → 220 em 27/08/2026. A 300, a IA escrevia até encostar no teto e a resposta
 // saía com cinco linhas no celular. 220 cabe em duas ou três frases.
 //
 // ⚠️ Espelha frontend/src/lib/plans.ts. Este número também vai para o PROMPT da
 // IA (ai.service.ts) — mudar aqui muda o que o modelo recebe como instrução.
-export const FAQ_ANSWER_MAX = 220
+export const FAQ_ANSWER_MAX: Record<Plan, number> = { free: 160, pro: 220, premium: 220 }
 
 export function countLimit(
   table: Record<Plan, number>,
@@ -44,8 +51,13 @@ export function countLimit(
 }
 
 // Perguntas frequentes no perfil — recurso dos planos pagos (2 no Pro, 5 no Max).
+/**
+ * Responder perguntas frequentes no perfil. Deixou de ser "recurso pago" em
+ * 04/09/2026 e passou a ser a leitura da tabela: cota maior que zero. Assim o
+ * portão nunca discorda do número anunciado.
+ */
 export function canUseFaq(plan: string | undefined): boolean {
-  return plan === 'pro' || plan === 'premium'
+  return countLimit(FAQ_LIMIT, plan) > 0
 }
 
 // ---- Temas visuais ----

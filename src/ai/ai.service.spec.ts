@@ -14,6 +14,11 @@ import { describe, expect, it } from 'vitest'
 import { AiService } from './ai.service'
 import { FAQ_ANSWER_MAX } from '../plans'
 
+// O teto do FAQ virou tabela por plano em 04/09/2026. Sem plano declarado no
+// pedido, o servidor usa o MAIOR — apertar por conta própria encurtaria a
+// resposta de um Max sem ninguém ter pedido. Quem sabe o plano é o editor.
+const TETO_FAQ = Math.max(...Object.values(FAQ_ANSWER_MAX))
+
 // `sanitizeDto`, `buildPrompt` e `fitToLimit` são privados — e devem continuar
 // sendo. O teste alcança o comportamento pelo tipo, sem afrouxar a classe.
 const interno = (s: AiService) =>
@@ -35,14 +40,14 @@ describe('teto de caracteres do FAQ', () => {
 
   it('sem teto declarado, usa o do campo — nunca zero', () => {
     const dto = servico().sanitizeDto({ kind: 'faq' })
-    expect(dto.maxChars).toBe(FAQ_ANSWER_MAX)
+    expect(dto.maxChars).toBe(TETO_FAQ)
     expect(dto.maxChars).toBeGreaterThan(0)
   })
 
   it('teto inválido não vira zero num campo que tem tamanho conhecido', () => {
     for (const ruim of [0, -5, 'muito', null, NaN, undefined]) {
       const dto = servico().sanitizeDto({ kind: 'faq', maxChars: ruim })
-      expect(dto.maxChars).toBe(FAQ_ANSWER_MAX)
+      expect(dto.maxChars).toBe(TETO_FAQ)
     }
   })
 })
@@ -57,7 +62,7 @@ describe('a IA é INSTRUÍDA com o limite', () => {
   it('sem maxChars, o prompt cita o teto do campo — e nunca "0 caracteres"', () => {
     const s = servico()
     const prompt = s.buildPrompt(s.sanitizeDto({ kind: 'faq' }))
-    expect(prompt).toContain(`${FAQ_ANSWER_MAX} caracteres`)
+    expect(prompt).toContain(`${TETO_FAQ} caracteres`)
     // A frase exata do bug. Não dá para procurar só "0 caracteres": "220
     // caracteres" contém essa sequência, e o teste passaria sempre.
     expect(prompt).not.toMatch(/máximo 0 caracteres/)
