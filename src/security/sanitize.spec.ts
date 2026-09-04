@@ -9,6 +9,7 @@ import {
   safeHostname,
   safeImageSrc,
   safePhone,
+  safeWhatsapp,
   safeUrl,
 } from './sanitize'
 
@@ -105,8 +106,42 @@ describe('safeEmail / safePhone', () => {
   it('confere formato', () => {
     expect(safeEmail(' Fulano@Exemplo.com ')).toBe('fulano@exemplo.com')
     expect(safeEmail('sem-arroba')).toBeNull()
+    // Telefone para EXIBIR guarda a pontuação — é assim que a pessoa lê na tela.
     expect(safePhone('+55 (11) 99000-0000')).toBe('+55 (11) 99000-0000')
     expect(safePhone('<script>alert(1)</script>')).toBeNull()
+  })
+})
+
+describe('safeWhatsapp — o número que vira LINK, não o que vira texto', () => {
+  // Enquanto o WhatsApp usava safePhone, "+55 (11) 99000-0000" era gravado com a
+  // pontuação e a URL virava `https://wa.me/+55 (11) 99000-0000?text=...`, que não
+  // abre conversa nenhuma. A falha é silenciosa dos dois lados: a mensagem não
+  // chega e ninguém fica sabendo. Ver frontend/src/lib/whatsapp.ts.
+
+  it('normaliza para só dígitos, com DDI', () => {
+    expect(safeWhatsapp('+55 (11) 99000-0000')).toBe('5511990000000')
+    expect(safeWhatsapp('55 11 99887-7665')).toBe('5511998877665')
+    expect(safeWhatsapp('5511998877665')).toBe('5511998877665')
+  })
+
+  it('completa o DDI de número brasileiro que veio sem ele', () => {
+    expect(safeWhatsapp('11998877665')).toBe('5511998877665')
+    expect(safeWhatsapp('011998877665')).toBe('5511998877665')
+  })
+
+  it('o que não forma número vira null — nunca um link torto', () => {
+    expect(safeWhatsapp('99999')).toBeNull()
+    expect(safeWhatsapp('1'.repeat(20))).toBeNull()
+    expect(safeWhatsapp('<script>alert(1)</script>')).toBeNull()
+    expect(safeWhatsapp('')).toBeNull()
+    expect(safeWhatsapp(42)).toBeNull()
+  })
+
+  it('bate com a regra do frontend — as duas pontas normalizam igual', () => {
+    // Se divergirem, o servidor grava uma coisa e o link é montado com outra.
+    for (const bruto of ['+55 (11) 99000-0000', '11998877665', '5511998877665']) {
+      expect(safeWhatsapp(bruto)).toBe(String(safeWhatsapp(bruto)).replace(/\D/g, ''))
+    }
   })
 })
 

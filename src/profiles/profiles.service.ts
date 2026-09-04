@@ -56,7 +56,7 @@ import {
   safeHexColor,
   safeHostname,
   safeImageSrc,
-  safePhone,
+  safeWhatsapp,
   safeUrl,
 } from '../security/sanitize'
 
@@ -1071,7 +1071,7 @@ export class ProfilesService {
         // no meio da lista deixaria um buraco na numeração se contasse antes.
         .map((s, order) => ({ kind: s.kind as string, url: s.url as string, order })),
       contact: {
-        whatsapp: safePhone(c.whatsapp),
+        whatsapp: safeWhatsapp(c.whatsapp),
         email: safeEmail(c.email),
         scheduling: safeUrl(c.scheduling),
       },

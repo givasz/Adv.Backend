@@ -89,11 +89,34 @@ export function safeEmail(value: unknown): string | null {
   return v && EMAIL_RE.test(v) ? v : null
 }
 
-/** Telefone/WhatsApp: só dígitos e os separadores usuais. */
+/** Telefone para EXIBIR (fixo do escritório): dígitos e os separadores usuais. */
 export function safePhone(value: unknown, max = 30): string | null {
   if (typeof value !== 'string') return null
   const v = value.trim().slice(0, max)
   return v && /^[0-9+()\-.\s]{6,}$/.test(v) ? v : null
+}
+
+/**
+ * WhatsApp: NORMALIZADO para o formato que vira link — só dígitos, com DDI.
+ *
+ * Diferente de `safePhone` de propósito. Um telefone para ler na tela pode ter
+ * parênteses e traço; um número de WhatsApp é um pedaço de URL
+ * (`https://wa.me/<numero>`), e o `wa.me` só aceita dígitos. Enquanto os dois
+ * campos usavam a mesma função, "+55 (11) 99000-0000" era gravado com a pontuação
+ * e o botão do perfil virava um link morto — que não dá erro em lugar nenhum:
+ * a mensagem simplesmente não chega, e nem o visitante nem o advogado ficam
+ * sabendo. Ver frontend/src/lib/whatsapp.ts, que aplica a MESMA regra na leitura
+ * (para os números já gravados torto antes desta função existir).
+ */
+export function safeWhatsapp(value: unknown, max = 30): string | null {
+  if (typeof value !== 'string') return null
+  let digitos = value.trim().slice(0, max).replace(/\D/g, '')
+  if (!digitos) return null
+  digitos = digitos.replace(/^0+/, '') // "0" de operadora colado na frente
+  // 10 ou 11 dígitos é DDD + número, sem o DDI: o link não abre sem o 55.
+  if (digitos.length === 10 || digitos.length === 11) digitos = `55${digitos}`
+  // Piso: DDD + número. Teto: E.164, que nenhum telefone do mundo ultrapassa.
+  return digitos.length >= 10 && digitos.length <= 15 ? digitos : null
 }
 
 /** Lista: qualquer coisa → array cortado no teto de itens. */

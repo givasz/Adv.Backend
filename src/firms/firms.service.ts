@@ -19,6 +19,7 @@ import {
   safeHostname,
   safeImageSrc,
   safePhone,
+  safeWhatsapp,
   safeUrl,
 } from '../security/sanitize'
 import { hasBlockingIssue } from '../oab/compliance'
@@ -304,7 +305,7 @@ export class FirmsService {
       ...enderecoCols(d.address),
       phone: safePhone(c.phone),
       email: safeEmail(c.email),
-      whatsapp: safePhone(c.whatsapp),
+      whatsapp: safeWhatsapp(c.whatsapp),
       // Redes viram href na página do escritório — só http/https entram.
       instagram: safeUrl(c.instagram),
       linkedin: safeUrl(c.linkedin),
