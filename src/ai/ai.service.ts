@@ -16,9 +16,13 @@ import {
   ErroDeProvedor,
   GiroDeChaves,
   lerChaves,
+  MINIMO_PARA_TENTAR_MS,
   modeloDe,
   PAUSA_ANTES_DE_REPETIR_MS,
+  PRAZO_DO_PEDIDO_MS,
   PROVEDORES,
+  restante,
+  TEMPO_POR_CHAMADA_MS,
   tempoEsgotou,
   valeRepetir,
   type Provider,
@@ -119,10 +123,13 @@ export class AiService {
     // template abaixo é o mesmo usado quando a IA escreve algo irregular, e é
     // garantidamente regular por construção — melhor um texto sóbrio e sem
     // graça do que uma tela de erro.
+    // O relógio do pedido inteiro começa aqui (ver PRAZO_DO_PEDIDO_MS): tudo o
+    // que vem abaixo — reserva, repetição, reparos — tem de caber nele.
+    const prazo = Date.now() + PRAZO_DO_PEDIDO_MS
     let usedFallback = false
     let text: string
     try {
-      text = await this.runModel(prompt, maxTokens)
+      text = await this.runModel(prompt, maxTokens, prazo)
     } catch (err) {
       this.logger.error('Nenhum provedor da cadeia respondeu — usando o template seguro.', err as Error)
       text = this.safeTemplate(dto)
@@ -138,8 +145,14 @@ export class AiService {
       let attempt = 1;
       // `!usedFallback`: com a cadeia caída não há a quem pedir reparo, e o
       // template já é regular. Sem esta condição, um clique com todos os
-      // provedores fora esperaria três tempos-limite de 20 s antes de responder.
-      !usedFallback && attempt <= MAX_REPAIRS && hasBlockingIssue(text);
+      // provedores fora esperaria três tempos-limite antes de responder.
+      // `restante(prazo)`: um reparo que não terminaria antes do corte do proxy
+      // não é reparo — é um erro de gateway. Quem paga o prazo apertado é o
+      // reparo (vira template, que já é regular), nunca a resposta.
+      !usedFallback &&
+      attempt <= MAX_REPAIRS &&
+      hasBlockingIssue(text) &&
+      restante(prazo) >= MINIMO_PARA_TENTAR_MS;
       attempt++
     ) {
       const blocking = checkCompliance(text).filter((i) => i.severity === 'block')
@@ -149,7 +162,7 @@ export class AiService {
           .join(', ')}`,
       )
       try {
-        text = await this.runModel(this.buildRepairPrompt(dto, text, blocking), maxTokens)
+        text = await this.runModel(this.buildRepairPrompt(dto, text, blocking), maxTokens, prazo)
       } catch (err) {
         this.logger.error('Falha durante o reparo — interrompendo o loop.', err as Error)
         break
@@ -282,7 +295,7 @@ export class AiService {
    * ÚLTIMO provedor sobe — e o `generate()` acima ainda tem o template seguro,
    * então nem uma falha total deixa o advogado sem texto.
    */
-  private async runModel(prompt: string, maxTokens: number): Promise<string> {
+  private async runModel(prompt: string, maxTokens: number, prazo: number): Promise<string> {
     const completa = cadeiaUtil(process.env)
     if (!completa.length) {
       throw new Error(
@@ -303,9 +316,16 @@ export class AiService {
       let tentativa = 1
       let repetiu = false
       while (tentativa <= total) {
+        // O orçamento do pedido acabou? Então nem começa: a chamada não
+        // terminaria antes do corte do proxy, e o template responde na hora.
+        // Não é falha do provedor — ele NÃO descansa por isso.
+        if (restante(prazo) < MINIMO_PARA_TENTAR_MS) {
+          this.logger.warn(`${provedor}: prazo do pedido esgotado antes de chamar — template.`)
+          throw ultimoErro ?? new ErroDeProvedor(provedor, 0, 'prazo do pedido esgotado')
+        }
         const chave = this.giro.chave(provedor, chaves)
         try {
-          const texto = await this.chamarProvedor(provedor, modelo, chave, prompt, maxTokens)
+          const texto = await this.chamarProvedor(provedor, modelo, chave, prompt, maxTokens, prazo)
           if (!texto) throw new ErroDeProvedor(provedor, 0, 'resposta vazia')
           this.descanso.liberar(provedor)
           if (!principal) {
@@ -338,7 +358,11 @@ export class AiService {
             break
           }
 
-          if (!repetiu && valeRepetir(status, corpo)) {
+          if (
+            !repetiu &&
+            valeRepetir(status, corpo) &&
+            restante(prazo) >= PAUSA_ANTES_DE_REPETIR_MS + MINIMO_PARA_TENTAR_MS
+          ) {
             // A "tentativa de conserto": mesma chave, mesmo provedor, uma vez.
             repetiu = true
             this.logger.warn(
@@ -348,10 +372,10 @@ export class AiService {
             continue
           }
 
-          const prazo = tempoEsgotou(status, corpo) ? DESCANSO_LENTO_MS : DESCANSO_MS
-          this.descanso.marcar(provedor, prazo)
+          const descansoMs = tempoEsgotou(status, corpo) ? DESCANSO_LENTO_MS : DESCANSO_MS
+          this.descanso.marcar(provedor, descansoMs)
           this.logger.error(
-            `Falha na geração via ${provedor} — descansa ${prazo / 1000} s; indo para a reserva.`,
+            `Falha na geração via ${provedor} — descansa ${descansoMs / 1000} s; indo para a reserva.`,
             err as Error,
           )
           break
@@ -368,12 +392,16 @@ export class AiService {
     chave: string,
     prompt: string,
     maxTokens: number,
+    prazo: number,
   ): Promise<string> {
-    if (provedor === 'ollama') return this.viaOllama(modelo, prompt, maxTokens)
-    if (provedor === 'gemini') return this.viaGemini(modelo, chave, prompt, maxTokens)
-    if (provedor === 'anthropic') return this.viaAnthropic(modelo, chave, prompt, maxTokens)
+    // O teto desta chamada é o menor entre o teto de uma chamada e o que sobra
+    // do pedido: a reserva chamada aos 15 s ganha 7 s, não 12.
+    const limiteMs = Math.min(TEMPO_POR_CHAMADA_MS, restante(prazo))
+    if (provedor === 'ollama') return this.viaOllama(modelo, prompt, maxTokens, limiteMs)
+    if (provedor === 'gemini') return this.viaGemini(modelo, chave, prompt, maxTokens, limiteMs)
+    if (provedor === 'anthropic') return this.viaAnthropic(modelo, chave, prompt, maxTokens, limiteMs)
     const base = PROVEDORES[provedor].baseOpenAi!
-    return this.viaOpenAiCompativel(provedor, base, modelo, chave, prompt, maxTokens)
+    return this.viaOpenAiCompativel(provedor, base, modelo, chave, prompt, maxTokens, limiteMs)
   }
 
   private list(dto: GenerateDto): string {
@@ -533,14 +561,20 @@ Devolva o texto completo já corrigido — sem promessas ou garantias de resulta
     chave: string,
     prompt: string,
     maxTokens: number,
+    limiteMs: number,
   ): Promise<string> {
     try {
-      const res = await new Anthropic({ apiKey: chave }).messages.create({
-        model: modelo,
-        max_tokens: maxTokens,
-        system: OAB_SYSTEM,
-        messages: [{ role: 'user', content: prompt }],
-      })
+      const res = await new Anthropic({ apiKey: chave, maxRetries: 0 }).messages.create(
+        {
+          model: modelo,
+          max_tokens: maxTokens,
+          system: OAB_SYSTEM,
+          messages: [{ role: 'user', content: prompt }],
+        },
+        // `maxRetries: 0` acima: quem repete é o laço da cadeia, com o relógio
+        // do pedido na mão — o SDK repetindo por conta própria estouraria o prazo.
+        { timeout: limiteMs },
+      )
       return res.content
         .filter((b): b is Anthropic.TextBlock => b.type === 'text')
         .map((b) => b.text)
@@ -560,6 +594,7 @@ Devolva o texto completo já corrigido — sem promessas ou garantias de resulta
     chave: string,
     prompt: string,
     maxTokens: number,
+    limiteMs: number,
   ): Promise<string> {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent?key=${chave}`
     const data = (await this.postar(
@@ -571,6 +606,7 @@ Devolva o texto completo já corrigido — sem promessas ou garantias de resulta
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         generationConfig: { temperature: 0.7, maxOutputTokens: maxTokens },
       },
+      limiteMs,
     )) as { candidates?: { content?: { parts?: { text?: string }[] } }[] }
 
     const text = (data.candidates?.[0]?.content?.parts ?? [])
@@ -598,8 +634,10 @@ Devolva o texto completo já corrigido — sem promessas ou garantias de resulta
     chave: string,
     prompt: string,
     maxTokens: number,
+    limiteMs: number,
   ): Promise<string> {
-    const data = (await this.postar(
+    const data = (await this.postarCom(
+      limiteMs,
       provedor,
       `${base}/chat/completions`,
       {
@@ -637,14 +675,27 @@ Devolva o texto completo já corrigido — sem promessas ou garantias de resulta
    * segurar a requisição do advogado até o navegador desistir: 20 s é folgado
    * para um texto de perfil e curto para uma espera.
    */
-  private async postar(
+  private postarCom(
+    limiteMs: number,
     provedor: Provider,
     url: string,
     headers: Record<string, string>,
     corpo: unknown,
   ): Promise<unknown> {
+    return this.postar(provedor, url, headers, corpo, limiteMs)
+  }
+
+  private async postar(
+    provedor: Provider,
+    url: string,
+    headers: Record<string, string>,
+    corpo: unknown,
+    // O teto desta chamada: nunca mais que TEMPO_POR_CHAMADA_MS, e menos quando
+    // o pedido já gastou parte do orçamento (ver chamarProvedor).
+    limiteMs: number = TEMPO_POR_CHAMADA_MS,
+  ): Promise<unknown> {
     const abortar = new AbortController()
-    const relogio = setTimeout(() => abortar.abort(), 20_000)
+    const relogio = setTimeout(() => abortar.abort(), Math.max(1, limiteMs))
     try {
       const res = await fetch(url, {
         method: 'POST',
@@ -665,7 +716,7 @@ Devolva o texto completo já corrigido — sem promessas ou garantias de resulta
       // cima (ver valeRepetir/tempoEsgotou): 20 s já se foram, e um provedor
       // pendurado não merece mais 20.
       if ((err as Error)?.name === 'AbortError') {
-        throw new ErroDeProvedor(provedor, 0, 'tempo esgotado (20 s)')
+        throw new ErroDeProvedor(provedor, 0, `tempo esgotado (${Math.round(limiteMs / 1000)} s)`)
       }
       throw new ErroDeProvedor(provedor, 0, (err as Error)?.message ?? 'falha de rede')
     } finally {
@@ -673,9 +724,15 @@ Devolva o texto completo já corrigido — sem promessas ou garantias de resulta
     }
   }
 
-  private async viaOllama(modelo: string, prompt: string, maxTokens: number): Promise<string> {
+  private async viaOllama(
+    modelo: string,
+    prompt: string,
+    maxTokens: number,
+    limiteMs: number,
+  ): Promise<string> {
     const base = process.env.OLLAMA_URL ?? 'http://localhost:11434'
-    const data = (await this.postar(
+    const data = (await this.postarCom(
+      limiteMs,
       'ollama',
       `${base}/api/chat`,
       { 'Content-Type': 'application/json' },

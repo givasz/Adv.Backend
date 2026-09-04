@@ -45,8 +45,21 @@ export class AiController {
       [`ai:ip:${clientIp(ip, xff)}`, AI_RATE_RULES.perIp],
       [`ai:burst:${clientIp(ip, xff)}`, AI_RATE_RULES.perIpBurst],
     ]
-    if (userId) limites.push([`ai:user:${userId}`, AI_RATE_RULES.perUser])
+    if (userId) {
+      limites.push([`ai:user:${userId}`, AI_RATE_RULES.perUser])
+      limites.push([`ai:user-dia:${userId}`, AI_RATE_RULES.perUserDay])
+    } else {
+      // Sem conta, o dia é do IP — e mais curto (ver AI_RATE_RULES).
+      limites.push([`ai:ip-dia:${clientIp(ip, xff)}`, AI_RATE_RULES.perIpDay])
+    }
     enforceRateLimit(limites, 'Muitas gerações em pouco tempo. Aguarde um instante e tente de novo.')
+    // O guarda-chuva das chaves: a plataforma inteira, por hora. Vem DEPOIS dos
+    // tetos individuais para uma pessoa exagerando não consumir o global de
+    // todo mundo — e a mensagem é outra, porque a culpa não é de quem clicou.
+    enforceRateLimit(
+      [['ai:global', AI_RATE_RULES.global]],
+      'A IA está com muita procura agora. Tente de novo em alguns minutos — ou comece por um modelo pronto.',
+    )
 
     // O PLANO É DO SERVIDOR (mesma regra do PUT /profiles/me): vem da assinatura
     // gravada no banco. Sem sessão, é free — e free só gera bio e área.
