@@ -173,6 +173,61 @@ describe('balão de conversa', () => {
   })
 })
 
+// Horários ocupados (assistant.busy) — o advogado dizendo "esse já foi".
+//
+// A lista chega como JSON livre e é lida por visitantes (é o que faz um horário
+// sumir da conversa). Além do formato, o servidor PODA o passado e põe teto: uma
+// coluna que só cresce vira arquivo morto, e um corpo hostil vira disco cheio.
+describe('horários ocupados do assistente', () => {
+  it('só aceita "AAAA-MM-DDTHH:MM", ordenado e sem repetição', async () => {
+    const { svc, gravado } = service()
+    const amanha = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
+    const depois = new Date(Date.now() + 172_800_000).toISOString().slice(0, 10)
+    await svc.update('u1', {
+      ...base,
+      assistant: {
+        busy: [
+          `${depois}T09:00`,
+          `${amanha}T14:00`,
+          `${depois}T09:00`,
+          `${amanha}T25:00`,
+          `${amanha} 14:00`,
+          '2026-02-31T10:00',
+          { dia: amanha },
+          42,
+        ],
+      },
+    })
+    expect(JSON.parse(gravado[0].assistantBusy)).toEqual([`${amanha}T14:00`, `${depois}T09:00`])
+  })
+
+  it('poda o passado — a lista não vira arquivo morto', async () => {
+    const { svc, gravado } = service()
+    const semanaPassada = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10)
+    await svc.update('u1', { ...base, assistant: { busy: [`${semanaPassada}T09:00`] } })
+    expect(JSON.parse(gravado[0].assistantBusy)).toEqual([])
+  })
+
+  it('põe teto: uma lista infinita não enche a coluna', async () => {
+    const { svc, gravado } = service()
+    const dia = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
+    const enorme = Array.from({ length: 5000 }, (_, i) => {
+      const d = new Date(Date.now() + (i + 1) * 86_400_000).toISOString().slice(0, 10)
+      return `${d}T09:00`
+    })
+    await svc.update('u1', { ...base, assistant: { busy: [...enorme, `${dia}T10:00`] } })
+    expect(JSON.parse(gravado[0].assistantBusy)).toHaveLength(400)
+  })
+
+  it('tipo trocado (ou ausente) grava lista vazia, não quebra o save', async () => {
+    for (const lixo of ['2026-11-25T14:00', {}, null, undefined, 7]) {
+      const { svc, gravado } = service()
+      await svc.update('u1', { ...base, assistant: { busy: lixo } })
+      expect(gravado[0].assistantBusy).toBe('[]')
+    }
+  })
+})
+
 describe('plano', () => {
   it('o plano do corpo é ignorado — quem manda é a assinatura do banco', async () => {
     const { svc, gravado } = service('free')

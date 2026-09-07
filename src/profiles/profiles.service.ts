@@ -434,6 +434,7 @@ export class ProfilesService {
 
     return {
       assistantDays: JSON.stringify(days),
+      assistantBusy: JSON.stringify(this.assistantBusy(a?.busy)),
       assistantDurationMin: clampInt(a?.durationMin, 15, 180, 45),
       assistantLeadHours: clampInt(a?.leadHours, 0, 168, 12),
       assistantHorizonDays: clampInt(a?.horizonDays, 1, 90, 14),
@@ -443,6 +444,30 @@ export class ProfilesService {
       // corpo malformado — ligar é ato deliberado do advogado.
       assistantFloating: a?.floating === true,
     }
+  }
+
+  /**
+   * Horários ocupados (o advogado marcando o que já foi combinado por fora).
+   *
+   * Só o formato "AAAA-MM-DDTHH:MM" entra, e só de hoje em diante — a poda no
+   * caminho de gravação E no de leitura é o que mantém a lista pequena sem uma
+   * tarefa agendada. A folga de um dia existe porque o servidor pensa em UTC e o
+   * advogado, em Brasília: sem ela, a virada da meia-noite de lá liberaria um
+   * horário que aqui ainda é hoje.
+   *
+   * Não há nada de terceiro aqui: nem nome, nem motivo, nem contato. A coluna
+   * guarda quando, e mais nada.
+   */
+  private assistantBusy(raw: unknown): string[] {
+    const corte = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
+    const ok = (v: unknown): v is string =>
+      typeof v === 'string' &&
+      /^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):([0-5]\d)$/.test(v) &&
+      v.slice(0, 10) >= corte &&
+      !Number.isNaN(Date.parse(`${v}:00Z`))
+    const lista = Array.isArray(raw) ? raw.filter(ok) : []
+    // Teto: 400 marcações cobrem meses de agenda cheia; acima disso é abuso ou bug.
+    return [...new Set(lista)].sort().slice(0, 400)
   }
 
   // Colunas planas → objeto `assistant` do frontend.
@@ -460,8 +485,15 @@ export class ProfilesService {
     } catch {
       /* JSON inválido → grade vazia (o front cai no padrão) */
     }
+    let busy: string[] = []
+    try {
+      busy = this.assistantBusy(JSON.parse(typeof p.assistantBusy === 'string' ? p.assistantBusy : '[]'))
+    } catch {
+      /* JSON inválido → nenhum horário ocupado (a grade volta inteira) */
+    }
     return {
       days,
+      busy,
       durationMin: p.assistantDurationMin ?? 45,
       leadHours: p.assistantLeadHours ?? 12,
       horizonDays: p.assistantHorizonDays ?? 14,
