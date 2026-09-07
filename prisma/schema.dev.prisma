@@ -395,6 +395,12 @@ model Profile {
   assistantLeadHours    Int              @default(12) // antecedência mínima para oferecer um horário
   assistantHorizonDays  Int              @default(14) // até quantos dias à frente sugerir datas
   assistantGreeting     String           @default("") // frase de abertura (passa pela checagem OAB)
+  // Horários que o advogado marcou como OCUPADOS — a agenda de fora entrando no
+  // assistente (o cliente que ligou, a audiência, o horário combinado no WhatsApp).
+  // Só data e hora, nunca de quem é o compromisso: não guardamos dado de visitante
+  // aqui nem em lugar nenhum. A lista se poda sozinha na leitura e na gravação
+  // (o passado sai), então não vira arquivo morto nem precisa de faxina agendada.
+  assistantBusy         String           @default("[]") // JSON: ["2026-11-25T14:00"]
   // Balão no canto da página pública, que segue a rolagem e abre a conversa.
   // Desligado por padrão DE PROPÓSITO: um elemento que persegue o visitante é o
   // oposto da sobriedade que o Prov. 205/2021 exige, e quem o liga tem de ser o
