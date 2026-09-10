@@ -163,7 +163,7 @@ PACOTE="$(mktemp -d)"
 cp "$DUMP" "$PACOTE/banco-advocme.sql.gz"
 
 # O .env é o que separa "recuperei os dados" de "voltei ao ar". Sem ele não há
-# DATABASE_URL, não há AUTH_SESSION_SECRET (trocá-lo desloga todo mundo) e não
+# DATABASE_URL, não há os segredos do anti-CSRF e do painel, e não
 # há a cadeia de chaves de IA. É por causa dele que este pacote é cifrado.
 [ -f "$ENV_APP" ]                  && cp "$ENV_APP" "$PACOTE/env-producao.txt"
 [ -f "$APP_DIR/.bi-credenciais" ]  && cp "$APP_DIR/.bi-credenciais" "$PACOTE/bi-credenciais.txt"
