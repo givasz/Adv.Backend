@@ -114,6 +114,45 @@ export class BillingService {
     return CABECALHO_ASSINATURA
   }
 
+  /**
+   * Guarda um evento SEM aplicar nada.
+   *
+   * Serve ao adaptador de provedor (ver `pagarme.controller.ts`) para o tráfego
+   * que não mexe em assinatura — `charge.created`, antifraude, estorno. É a maior
+   * parte do que um provedor manda, e jogar fora seria perder a única resposta
+   * possível para "o que exatamente eles nos contaram naquele dia".
+   *
+   * Passa pela MESMA chave única dos eventos aplicados, então repetido continua
+   * sendo repetido, e o `type` guardado aqui é o do PROVEDOR (o vocabulário da
+   * casa só existe para o que a gente trata).
+   */
+  async registrarBruto(dados: {
+    id: string
+    provider: string
+    type: string
+    occurredAt: string
+    payload: string
+    note: string
+  }): Promise<ResultadoDoEvento> {
+    try {
+      await this.prisma.billingEvent.create({
+        data: {
+          eventId: dados.id.slice(0, 120),
+          provider: dados.provider.slice(0, 40),
+          type: dados.type.slice(0, 80),
+          occurredAt: new Date(dados.occurredAt),
+          payload: dados.payload.slice(0, 20000),
+          applied: false,
+          note: dados.note,
+        },
+        select: { id: true },
+      })
+    } catch {
+      return { ok: true, applied: false, reason: 'repetido' }
+    }
+    return { ok: true, applied: false, reason: dados.note }
+  }
+
   /** Fronteira de entrada: o corpo é JSON de fora, tudo é conferido campo a campo. */
   private sanitizar(raw: any): EventoDeCobranca {
     const texto = (v: unknown, max = 200) =>
