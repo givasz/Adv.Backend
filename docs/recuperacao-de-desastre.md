@@ -55,9 +55,9 @@ O dump comprimido tem ~96 KB e o pacote cifrado ~112 KB.
 ## 2. Arquitetura
 
 ```
-   VPS PRODUÇÃO — 74.208.118.111
+   VPS PRODUÇÃO — 51.255.41.163
    ┌────────────────────────────────────────────┐
-   │ PostgreSQL 16 · banco "advocme" (127.0.0.1)│  cópia 1 — dados vivos
+   │ PostgreSQL 18 · banco "advocme" (127.0.0.1)│  cópia 1 — dados vivos
    │        │                                   │
    │        │ pg_dump --no-owner --no-acl        │
    │        ▼                                   │
@@ -79,7 +79,7 @@ O dump comprimido tem ~96 KB e o pacote cifrado ~112 KB.
 No `authorized_keys` da VPS de backup a chave da produção está presa assim:
 
 ```
-command="/usr/local/bin/advocme-receber",restrict,from="74.208.118.111" ssh-ed25519 AAAA... advocme-backup-offsite
+command="/usr/local/bin/advocme-receber",restrict,from="51.255.41.163" ssh-ed25519 AAAA... advocme-backup-offsite
 ```
 
 Ela consegue **uma** coisa: acrescentar o arquivo de hoje. Não abre shell, não
@@ -104,7 +104,7 @@ em `/root` (0700), num disco que só o root alcança, e nunca sai da máquina.
 
 ## 3. Arquivos e onde cada coisa mora
 
-### Na VPS de produção (74.208.118.111)
+### Na VPS de produção (51.255.41.163)
 
 | Caminho | O que é | Permissão |
 |---|---|---|
@@ -132,13 +132,13 @@ em `/root` (0700), num disco que só o root alcança, e nunca sai da máquina.
 | **`advocme-backup-PRIVADA.asc`** | **Abre os backups cifrados. Sem ela nada é recuperável.** |
 | `advocme-backup-PUBLICA.asc` | Cópia da pública (reinstalar noutra VPS) |
 | `gpg-keyring/` | Chaveiro GPG já montado com as duas |
-| `vpskey` | Entrada SSH na VPS de produção |
+| `vpskey-ovh` | Entrada SSH na VPS de produção (OVH) |
 | `producao.env` | Cópia do `.env` de produção + senhas de root e Postgres |
 
 > 🔴 **`advocme-backup-PRIVADA.asc` não tem senha.** Foi decisão consciente:
 > disponibilidade acima de sigilo, porque a prioridade declarada é *não perder os
 > dados* e uma senha esquecida transforma todo o histórico em lixo. Consequência:
-> **o arquivo é a chave.** Trate-o como a `vpskey` e guarde uma cópia fora do PC
+> **o arquivo é a chave.** Trate-o como a `vpskey-ovh` e guarde uma cópia fora do PC
 > (pendrive num lugar diferente, cofre de senhas com anexo). Se o PC morrer e essa
 > chave for junto, os backups off-site viram bytes ilegíveis para sempre.
 
@@ -170,7 +170,7 @@ os 6 se comportaram como especificado.
 ### O jeito rápido (10 segundos)
 
 ```bash
-ssh -i ~/.advocme-secrets/vpskey root@74.208.118.111 "tail -5 /var/log/advocme-backup.log"
+ssh -i ~/.advocme-secrets/vpskey-ovh root@51.255.41.163 "tail -5 /var/log/advocme-backup.log"
 ```
 
 Uma execução saudável tem 4 linhas e termina em `concluído`:
@@ -225,7 +225,7 @@ Ligar leva 2 minutos — ver seção 9.
 A cópia local resolve; não precisa de chave GPG nenhuma.
 
 ```bash
-ssh -i ~/.advocme-secrets/vpskey root@74.208.118.111
+ssh -i ~/.advocme-secrets/vpskey-ovh root@51.255.41.163
 ls -lh /root/backups/                      # escolha o dia
 gunzip -t /root/backups/advocme-diario-2026-09-03.sql.gz   # o arquivo abre?
 ```
@@ -391,11 +391,11 @@ crontab -e   # 15 3 * * * /usr/local/bin/advocme-backup >> /var/log/advocme-back
 3. Copie a URL de ping (`https://hc-ping.com/<uuid>`) e cole na VPS:
 
 ```bash
-ssh -i ~/.advocme-secrets/vpskey root@74.208.118.111 \
+ssh -i ~/.advocme-secrets/vpskey-ovh root@51.255.41.163 \
   "sed -i 's|^ADVOCME_HC_URL=.*|ADVOCME_HC_URL=https://hc-ping.com/COLE-O-UUID-AQUI|' /etc/advocme-backup/backup.conf && grep HC_URL /etc/advocme-backup/backup.conf"
 ```
 
-4. Teste: `ssh -i ~/.advocme-secrets/vpskey root@74.208.118.111 /usr/local/bin/advocme-backup`
+4. Teste: `ssh -i ~/.advocme-secrets/vpskey-ovh root@51.255.41.163 /usr/local/bin/advocme-backup`
    — o check deve ficar verde no painel em segundos.
 
 A partir daí você recebe e-mail se o backup falhar **e** se ele simplesmente
@@ -405,7 +405,7 @@ parar de acontecer.
 
 ## 10. Trocar a VPS de produção
 
-O `authorized_keys` da VPS de backup trava a chave em `from="74.208.118.111"`. Com
+O `authorized_keys` da VPS de backup trava a chave em `from="51.255.41.163"`. Com
 outro IP, a entrega é recusada (e o Healthchecks avisa). Antes de desligar a VPS
 velha:
 
@@ -430,11 +430,11 @@ Depois rode o backup à mão na VPS nova e confira as 4 linhas de log.
 
 ```bash
 # Está tudo funcionando?
-ssh -i ~/.advocme-secrets/vpskey root@74.208.118.111 "tail -5 /var/log/advocme-backup.log"
+ssh -i ~/.advocme-secrets/vpskey-ovh root@51.255.41.163 "tail -5 /var/log/advocme-backup.log"
 ssh -i $BKPKEY root@$BKP "ls -lht /var/backups/advocme/ | head -5"
 
 # Backup agora, fora de hora (antes de um deploy arriscado)
-ssh -i ~/.advocme-secrets/vpskey root@74.208.118.111 /usr/local/bin/advocme-backup
+ssh -i ~/.advocme-secrets/vpskey-ovh root@51.255.41.163 /usr/local/bin/advocme-backup
 
 # Qual o backup mais recente lá fora?
 ssh -i $BKPKEY root@$BKP "ls -1t /var/backups/advocme/ | head -1"
@@ -448,10 +448,10 @@ gpg -d advocme-AAAA-MM-DD.tar.gpg | tar -xzf - -C aberto/
 gpg -d advocme-AAAA-MM-DD.tar.gpg | tar -tzf -
 
 # O arquivo local de um dia está íntegro?
-ssh -i ~/.advocme-secrets/vpskey root@74.208.118.111 "gunzip -t /root/backups/advocme-diario-AAAA-MM-DD.sql.gz && echo INTEGRO"
+ssh -i ~/.advocme-secrets/vpskey-ovh root@51.255.41.163 "gunzip -t /root/backups/advocme-diario-AAAA-MM-DD.sql.gz && echo INTEGRO"
 
 # Dump manual de segurança antes de mexer no schema
-ssh -i ~/.advocme-secrets/vpskey root@74.208.118.111 \
+ssh -i ~/.advocme-secrets/vpskey-ovh root@51.255.41.163 \
   'DB=$(grep -E "^DATABASE_URL=" /root/advocme-backend/.env | cut -d= -f2- | tr -d "\""); pg_dump --no-owner --no-acl "$DB" | gzip > /root/backups/advocme-$(date +%F-%H%M)-pre-mudanca.sql.gz'
 ```
 
