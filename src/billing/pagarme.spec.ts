@@ -8,7 +8,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest'
 import { UnauthorizedException } from '@nestjs/common'
-import { conferirEntrada, lerEnvelope, traduzir } from './pagarme'
+import { conferirEntrada, contaAutorizada, lerEnvelope, traduzir } from './pagarme'
 
 const HOJE = '2026-09-10T12:00:00.000Z'
 const PROXIMA = '2026-10-10T12:00:00.000Z'
@@ -133,6 +133,53 @@ describe('tradução', () => {
 
   it('o id do evento é o do provedor — é ele que faz a idempotência valer', () => {
     expect(traduzir(envelope('charge.paid', {}))?.id).toBe('hook_charge.paid')
+  })
+})
+
+describe('trava de conta', () => {
+  // Um backend só, duas contas na Pagar.me (teste e produção). Sem a trava, um
+  // pagamento FALSO de teste com o e-mail de uma conta real dá plano de verdade.
+  const PROD = 'acc_producao0000001'
+  const TESTE = 'acc_teste000000001'
+  const original = process.env.PAGARME_ACCOUNT_ID
+  afterEach(() => {
+    if (original === undefined) delete process.env.PAGARME_ACCOUNT_ID
+    else process.env.PAGARME_ACCOUNT_ID = original
+  })
+  const de = (account: unknown) =>
+    lerEnvelope({ id: 'hook_1', type: 'charge.paid', created_at: HOJE, account, data: {} })
+
+  it('lê a conta do envelope', () => {
+    expect(de({ id: PROD, name: 'Veacci' }).accountId).toBe(PROD)
+    expect(de(undefined).accountId).toBeUndefined()
+  })
+
+  it('sem PAGARME_ACCOUNT_ID configurada, não aplica nada (fail closed)', () => {
+    delete process.env.PAGARME_ACCOUNT_ID
+    expect(contaAutorizada(de({ id: PROD }))).toEqual({
+      ok: false,
+      motivo: 'PAGARME_ACCOUNT_ID não configurada',
+    })
+  })
+
+  it('evento do ambiente de TESTE não passa no servidor de produção', () => {
+    process.env.PAGARME_ACCOUNT_ID = PROD
+    expect(contaAutorizada(de({ id: PROD }))).toEqual({ ok: true })
+    const r = contaAutorizada(de({ id: TESTE }))
+    expect(r.ok).toBe(false)
+    // o motivo leva a conta: é o que responde "por que meu evento não foi aplicado"
+    expect(r.ok === false && r.motivo).toContain(TESTE)
+  })
+
+  it('evento sem conta não passa', () => {
+    process.env.PAGARME_ACCOUNT_ID = PROD
+    expect(contaAutorizada(de(undefined)).ok).toBe(false)
+  })
+
+  it('aceita lista separada por vírgula (servidor de testes que atende as duas)', () => {
+    process.env.PAGARME_ACCOUNT_ID = ` ${PROD} , ${TESTE} `
+    expect(contaAutorizada(de({ id: TESTE })).ok).toBe(true)
+    expect(contaAutorizada(de({ id: 'acc_outra' })).ok).toBe(false)
   })
 })
 

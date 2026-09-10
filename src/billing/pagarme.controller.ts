@@ -1,6 +1,6 @@
 import { Body, Controller, Headers, HttpCode, Ip, Param, Post, Req } from '@nestjs/common'
 import { BillingService, type ResultadoDoEvento } from './billing.service'
-import { conferirEntrada, lerEnvelope, traduzir, PROVEDOR } from './pagarme'
+import { conferirEntrada, contaAutorizada, lerEnvelope, traduzir, PROVEDOR } from './pagarme'
 import { BILLING_RATE_RULES, enforceRateLimit } from '../security/rate-limit'
 import { clientIp } from '../security/net'
 
@@ -49,6 +49,22 @@ export class PagarmeController {
 
     const envelope = lerEnvelope(body)
     const cru = req.rawBody?.toString('utf8') ?? ''
+
+    // Conta errada (o ambiente de TESTE batendo no servidor de produção, por
+    // exemplo) é registrada e não aplicada. Vem ANTES da tradução de propósito:
+    // não importa que tipo de evento é, dinheiro de outra conta não mexe em plano.
+    const conta = contaAutorizada(envelope)
+    if (!conta.ok) {
+      return this.billing.registrarBruto({
+        id: envelope.id,
+        provider: PROVEDOR,
+        type: envelope.type,
+        occurredAt: envelope.occurredAt,
+        payload: cru,
+        note: conta.motivo,
+      })
+    }
+
     const evento = traduzir(envelope)
 
     // Evento que não mexe em assinatura — `charge.created`, antifraude, estorno.
