@@ -52,7 +52,7 @@ resumo, e nesta ordem:
 1. **Chave SSH** — gerar par novo, testar a entrada com ele **ainda com o antigo
    funcionando**, e só então remover a linha velha do `authorized_keys`.
 2. **Senha do root** (`passwd`) — ela ainda vale para o console do provedor.
-3. **`AUTH_SESSION_SECRET`** — desloga todo mundo uma vez, e é o certo.
+3. **`AUTH_SESSION_SECRET`** — só deriva o token anti-CSRF. NÃO desloga ninguém (a sessão é linha de banco desde 21/08/2026); quem estiver com a página aberta toma um 403 no próximo salvamento, até recarregar.
 4. **`ADMIN_SESSION_SECRET`** e **`ADMIN_PASSWORD`**.
 5. **`ADMIN_TOKEN`** — apagar a linha. Em produção o código já não o aceita
    (`tokenEstaticoConfere`); mantê-lo é guardar um segredo que não protege nada.
@@ -903,5 +903,6 @@ node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 | `TRUST_PROXY` | `1` **se** houver Nginx/proxy à frente; senão deixe `0` |
 | `NODE_ENV` | `production` — **obrigatório**: é o que faz o cookie sair `Secure`. Sem ele (ou sem `TRUST_PROXY=1`), o `SameSite=None` cai para `Lax` e ninguém entra, sem erro nenhum no log. |
 
-Trocar `AUTH_SESSION_SECRET` **desloga todo mundo** (as sessões atuais foram
-assinadas com o valor antigo) — é o comportamento correto e só acontece uma vez.
+Trocar `AUTH_SESSION_SECRET` **não desloga ninguém**: desde 21/08/2026 a sessão é
+uma linha de banco, e este segredo só deriva o token anti-CSRF. O efeito é um 403
+no próximo salvamento de quem estiver com a página aberta, até recarregar.
