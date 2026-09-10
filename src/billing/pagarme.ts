@@ -70,6 +70,8 @@ export interface EnvelopePagarme {
   occurredAt: string
   /** o objeto do evento (uma charge, uma invoice, uma subscription) */
   data: Record<string, unknown>
+  /** `acc_...` — de QUAL conta da Pagar.me o evento veio (ver `contaAutorizada`) */
+  accountId?: string
 }
 
 function texto(v: unknown, max = 200): string | undefined {
@@ -105,7 +107,39 @@ export function lerEnvelope(raw: unknown): EnvelopePagarme {
     // eventos, mas o evento não é jogado fora — e o payload cru fica guardado.
     occurredAt: iso(corpo.created_at) ?? new Date().toISOString(),
     data: objeto(corpo.data),
+    accountId: texto(objeto(corpo.account).id, 120) ?? texto(corpo.account_id, 120),
   }
+}
+
+/**
+ * O evento veio da conta que este servidor atende?
+ *
+ * POR QUE EXISTE: há UM backend só, o de produção, e a Pagar.me separa teste e
+ * produção em CONTAS diferentes — cada uma com o seu webhook, e as duas capazes de
+ * apontar para o mesmo endereço. Sem esta trava, um pagamento FALSO feito no
+ * ambiente de teste com o e-mail de uma conta real (o do próprio dono, no primeiro
+ * teste que alguém fizer) daria plano Max de verdade a essa pessoa: `acharPerfil`
+ * casa pelo e-mail, e o token da URL é o mesmo.
+ *
+ * O token prova que quem chama conhece a URL. Esta trava prova que o dinheiro é da
+ * conta certa. São perguntas diferentes, e só a segunda separa teste de produção.
+ *
+ * `PAGARME_ACCOUNT_ID` aceita uma lista separada por vírgula. Sem ela configurada,
+ * NADA é aplicado — o evento só é registrado. Fail closed, como as trancas da porta:
+ * um servidor sem a conta definida não sabe distinguir teste de produção, e na
+ * dúvida o certo é não mexer no plano de ninguém.
+ */
+export function contaAutorizada(env: EnvelopePagarme): { ok: true } | { ok: false; motivo: string } {
+  const aceitas = (process.env.PAGARME_ACCOUNT_ID ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (!aceitas.length) return { ok: false, motivo: 'PAGARME_ACCOUNT_ID não configurada' }
+  if (!env.accountId) return { ok: false, motivo: 'evento sem conta' }
+  if (!aceitas.includes(env.accountId)) {
+    return { ok: false, motivo: `conta não autorizada: ${env.accountId}` }
+  }
+  return { ok: true }
 }
 
 // ---- Onde a Pagar.me esconde cada identificador --------------------------------
