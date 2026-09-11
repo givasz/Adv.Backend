@@ -105,6 +105,27 @@ export class AccountService {
       take: 1000,
     })
 
+    // Registros de documentos (contratos, procurações). Só a impressão digital de
+    // cada arquivo — o texto e os dados do cliente nunca estiveram aqui. O IP da
+    // declaração de revisão entra: é dado de quem pede, como o do aceite.
+    const documentos = await this.prisma.registroDocumento.findMany({
+      where: { userId },
+      select: {
+        codigo: true,
+        etapa: true,
+        modelo: true,
+        modeloVersao: true,
+        hash: true,
+        tamanho: true,
+        declaracaoVersao: true,
+        ip: true,
+        userAgent: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 1000,
+    })
+
     return {
       geradoEm: new Date().toISOString(),
       sobre:
@@ -130,7 +151,15 @@ export class AccountService {
       sessoesAbertas: user.sessions,
       historicoDeCobranca: cobranca,
       estatisticas: { visitasAoPerfil: visitas },
+      registrosDeDocumentos: {
+        porQue:
+          'Cada linha é a impressão digital (SHA-256) de um documento que você revisou e registrou, ' +
+          'com a data e o endereço de onde confirmou a revisão. Serve para conferir, depois, que o ' +
+          'arquivo não mudou. Some junto com a conta.',
+        registros: documentos,
+      },
       naoGuardamos: [
+        'O texto dos seus contratos e procurações e os dados dos seus clientes: ficam no seu aparelho e no PDF. Aqui fica só a impressão digital do arquivo.',
         'Dados de quem visita o seu perfil: o contato vai do aparelho do visitante direto para o seu WhatsApp.',
         'Sua senha em texto: guardamos apenas um hash scrypt, do qual ela não pode ser recuperada.',
         'Endereço IP de navegação: fora do registro de acesso acima (entrar na conta e publicar o perfil), o IP é usado só na hora, para limitar tentativas, e não é gravado.',

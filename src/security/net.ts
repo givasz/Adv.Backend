@@ -14,7 +14,9 @@ const TRUST_PROXY = process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY =
  * Nasceu como chave de rate limit e só isso — daí o aviso, que valeu até
  * 04/09/2026, de que nada dele era persistido. Deixou de valer: o registro de
  * acesso do art. 15 do Marco Civil (model AccessLog) e o aceite dos Termos
- * (User.termsIp) guardam o endereço. Fora desses dois lugares a regra antiga
+ * (User.termsIp) guardam o endereço. Em 10/09/2026 entrou o terceiro, pelo mesmo
+ * motivo do aceite: a declaração de revisão de um documento
+ * (RegistroDocumento.ip). Fora desses três lugares a regra antiga
  * continua inteira — nenhuma outra tabela recebe IP, e o visitante de perfil
  * público segue sem ser identificado.
  *
