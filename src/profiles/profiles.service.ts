@@ -410,7 +410,8 @@ export class ProfilesService {
   }
 
   // Grade do assistente virtual → colunas planas, com limites de sanidade. Dias sem
-  // horário válido são descartados: o assistente nunca oferece um dia vazio.
+  // horário válido são descartados: o assistente nunca oferece um dia vazio. O
+  // formato de cada dia na coluna é AssistantDayCol, no fim do arquivo.
   private assistantCols(a: any) {
     const clampInt = (v: unknown, min: number, max: number, dflt: number) => {
       const n = Math.round(Number(v))
@@ -418,19 +419,26 @@ export class ProfilesService {
     }
     const isTime = (t: unknown): t is string =>
       typeof t === 'string' && /^([01]\d|2[0-3]):([0-5]\d)$/.test(t.trim())
+    const hhmm = (t: unknown): t is string =>
+      typeof t === 'string' && /^([01]\d|2[0-3]):([0-5]\d)$/.test(t)
 
-    const byWeekday = new Map<number, string[]>()
+    const byWeekday = new Map<number, AssistantDayCol>()
     for (const day of Array.isArray(a?.days) ? a.days : []) {
       const wd = Number(day?.weekday)
       if (!Number.isInteger(wd) || wd < 0 || wd > 6) continue
       const raw: unknown[] = Array.isArray(day?.times) ? day.times : []
       const times = [...new Set(raw.filter(isTime))].sort()
       if (!times.length) continue
-      byWeekday.set(wd, times)
+      // Faixas ("das 07:00 às 11:00") são como o editor MONTA a grade; os horários
+      // continuam sendo o que a conversa oferece. Guardar as duas é o que deixa o
+      // advogado reabrir o editor e encontrar o que digitou, e não uma lista de horas.
+      const faixas = (Array.isArray(day?.faixas) ? day.faixas : [])
+        .filter((f: any) => hhmm(f?.inicio) && hhmm(f?.fim) && f.inicio < f.fim)
+        .slice(0, 12)
+        .map((f: any) => ({ inicio: f.inicio as string, fim: f.fim as string }))
+      byWeekday.set(wd, faixas.length ? { weekday: wd, times, faixas } : { weekday: wd, times })
     }
-    const days = [...byWeekday.entries()]
-      .sort((x, y) => x[0] - y[0])
-      .map(([weekday, times]) => ({ weekday, times }))
+    const days = [...byWeekday.values()].sort((x, y) => x.weekday - y.weekday)
 
     return {
       assistantDays: JSON.stringify(days),
@@ -478,7 +486,7 @@ export class ProfilesService {
   // janela — se a leitura não fechasse a porta, o perfil seguiria com o balão
   // dentro dela.
   private buildAssistant(p: any, plano: Plan) {
-    let days: { weekday: number; times: string[] }[] = []
+    let days: AssistantDayCol[] = []
     try {
       const parsed = JSON.parse(typeof p.assistantDays === 'string' ? p.assistantDays : '[]')
       if (Array.isArray(parsed)) days = parsed
@@ -1738,4 +1746,12 @@ function semEnderecoEscondido<T extends { addressPublic?: boolean | null }>(p: T
     addressComplement: null,
     addressDistrict: null,
   }
+}
+
+/** Um dia da grade do assistente como fica na coluna `assistantDays`. */
+interface AssistantDayCol {
+  weekday: number
+  times: string[]
+  /** faixas de atendimento que geraram os horários ("das 07:00 às 11:00") */
+  faixas?: { inicio: string; fim: string }[]
 }

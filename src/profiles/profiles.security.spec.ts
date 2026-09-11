@@ -228,6 +228,54 @@ describe('horários ocupados do assistente', () => {
   })
 })
 
+// Faixas de atendimento (assistant.days[].faixas) — "das 07:00 às 11:00".
+//
+// São só a forma como o editor monta a grade; o que a conversa oferece continua
+// sendo `times`. Mesmo assim chegam como JSON livre, então passam pelo mesmo crivo.
+describe('faixas de atendimento do assistente', () => {
+  it('guarda as faixas válidas junto dos horários e descarta o resto', async () => {
+    const { svc, gravado } = service()
+    await svc.update('u1', {
+      ...base,
+      assistant: {
+        days: [
+          {
+            weekday: 1,
+            times: ['07:00', '08:00'],
+            faixas: [
+              { inicio: '07:00', fim: '09:00' },
+              { inicio: '11:00', fim: '10:00' },
+              { inicio: '7:00', fim: '09:00' },
+              { inicio: '13:00' },
+              'lixo',
+              null,
+            ],
+          },
+        ],
+      },
+    })
+    expect(JSON.parse(gravado[0].assistantDays)).toEqual([
+      { weekday: 1, times: ['07:00', '08:00'], faixas: [{ inicio: '07:00', fim: '09:00' }] },
+    ])
+  })
+
+  it('grade antiga, sem faixa, segue gravando só os horários', async () => {
+    const { svc, gravado } = service()
+    await svc.update('u1', { ...base, assistant: { days: [{ weekday: 2, times: ['09:00'] }] } })
+    expect(JSON.parse(gravado[0].assistantDays)).toEqual([{ weekday: 2, times: ['09:00'] }])
+  })
+
+  it('põe teto nas faixas de um dia', async () => {
+    const { svc, gravado } = service()
+    const faixas = Array.from({ length: 50 }, () => ({ inicio: '08:00', fim: '09:00' }))
+    await svc.update('u1', {
+      ...base,
+      assistant: { days: [{ weekday: 3, times: ['08:00'], faixas }] },
+    })
+    expect(JSON.parse(gravado[0].assistantDays)[0].faixas).toHaveLength(12)
+  })
+})
+
 describe('plano', () => {
   it('o plano do corpo é ignorado — quem manda é a assinatura do banco', async () => {
     const { svc, gravado } = service('free')
