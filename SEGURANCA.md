@@ -816,7 +816,23 @@ No dia em que entrar SSE, upload de arquivo ou `_.template`, ele deixa de valer.
 
 ## Checklist de produção
 
-### Esta versão exige `prisma db push` (tabela `RegistroDocumento`) — ⏳ pendente
+### Esta versão exige `prisma db push` (tabela `RegistroDocumento`) — ✅ aplicado
+
+> Feito na VPS da OVH em 11/09/2026, 03h38 UTC, com dump em
+> `/root/advocme-antes-contratos-2026-09-11-0338.sql` e o código anterior em
+> `/root/advocme-backend/dist.old`. O `db push` sincronizou sem pedir
+> `--accept-data-loss`; tabela criada com os quatro índices, as 4 contas intactas,
+> pm2 de volta com `NODE_ENV=production` e `TRUST_PROXY=1`. Conferido em
+> produção, direto e pelo proxy do Netlify: conferência pública 200 com
+> `{"registros":[]}`, hash inválido 400, listar e registrar sem sessão 401. No
+> navegador, `/contratos/conferir` publicada e respondendo "Nenhum registro" para
+> um PDF qualquer; `/contratos` sem conta leva ao login. Sem conta de teste
+> criada na base real — o fluxo autenticado (Free 403, sem CSRF 403, declaração
+> em texto 400, Max 201) foi conferido contra a API local.
+>
+> Para voltar atrás: `cd /root/advocme-backend && rm -rf dist && mv dist.old dist
+> && pm2 restart advocme-backend`. A tabela nova pode ficar: nada a lê sem o
+> módulo.
 
 Contratos e procurações (10/09/2026). Tabela NOVA, sem mexer em nenhuma
 existente: o `db push` não pede `--accept-data-loss`.
