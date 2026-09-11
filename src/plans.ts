@@ -109,6 +109,14 @@ export function canUsePrintCard(plan: string | undefined): boolean {
   return plan === 'premium'
 }
 
+// Contratos e procurações: minuta por modelo, revisão e registro da impressão
+// digital do PDF — só no Max. Espelha canUseContratos de frontend/src/lib/plans.ts.
+// Vale para REGISTRAR um documento novo. Ver o histórico e conferir um arquivo
+// não dependem de plano: prova que some quando a assinatura vence não é prova.
+export function canUseContratos(plan: string | undefined): boolean {
+  return plan === 'premium'
+}
+
 // Agenda nativa (cliente marca dia/hora, advogado aceita/recusa) — também só nos pagos.
 export function canUseNativeAgenda(plan: string | undefined): boolean {
   return plan === 'pro' || plan === 'premium'

@@ -816,6 +816,35 @@ No dia em que entrar SSE, upload de arquivo ou `_.template`, ele deixa de valer.
 
 ## Checklist de produção
 
+### Esta versão exige `prisma db push` (tabela `RegistroDocumento`) — ⏳ pendente
+
+Contratos e procurações (10/09/2026). Tabela NOVA, sem mexer em nenhuma
+existente: o `db push` não pede `--accept-data-loss`.
+
+```bash
+# na VPS, com o dist novo já enviado:
+pg_dump ... > backup-antes.sql                    # nunca pule
+npx prisma db push                                # cria RegistroDocumento
+pm2 restart advocme-backend
+```
+
+O que conferir em produção depois:
+- `GET /api/contratos/conferir?h=<64 x "a">` responde 200 com `{"registros":[]}`;
+- `POST /api/contratos/registros` sem `x-csrf-token` é 403, e no Free é 403
+  "faz parte do plano Max";
+- a resposta da conferência NÃO traz `ip`, `userAgent` nem `userId`.
+
+**O que a tabela guarda** (e o motivo de ser a terceira a guardar IP, depois de
+`AccessLog` e `User.termsIp`): a impressão digital do PDF, o código impresso nele,
+a declaração de revisão com data, versão e IP, e uma fotografia do nome e da
+inscrição do perfil. **Nunca o texto do contrato nem dado do cliente** — esses
+ficam no aparelho do advogado. Segue a conta (cascade) e entra na exportação LGPD.
+
+**Pendente de decisão (não é deploy):** a Política de Privacidade não descreve
+este tratamento. A tela de registro diz, antes do clique, o que é e o que não é
+guardado; o texto da política só pode mudar junto com uma nova `TERMS_VERSION`,
+que pede reaceite de toda a base.
+
 ### Esta versão exige `prisma db push` e criar o primeiro administrador — ✅ aplicado
 
 > `db push` feito na VPS em 27/08/2026, 15h54, com dump em

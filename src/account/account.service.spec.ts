@@ -62,6 +62,25 @@ function service(opts: { firms?: Qualquer[]; user?: Qualquer | null } = {}) {
         ]),
       ),
     },
+    // Registros de documentos: impressão digital + declaração de revisão.
+    registroDocumento: {
+      findMany: vi.fn(() =>
+        Promise.resolve([
+          {
+            codigo: 'AVM-7K2P-9QXD',
+            etapa: 'revisado',
+            modelo: 'procuracao',
+            modeloVersao: '2026-09-10',
+            hash: 'a'.repeat(64),
+            tamanho: 4096,
+            declaracaoVersao: '2026-09-10',
+            ip: '198.51.100.7',
+            userAgent: 'Mozilla/5.0',
+            createdAt: new Date('2026-09-10'),
+          },
+        ]),
+      ),
+    },
     // Histórico de cobrança: dado sobre a PESSOA, então entra na exportação.
     billingEvent: {
       findMany: vi.fn(() =>
@@ -99,6 +118,16 @@ describe('exportar', () => {
     expect(d.historicoDeCobranca).toHaveLength(1)
     expect(d.historicoDeCobranca[0]).not.toHaveProperty('payload')
     expect(JSON.stringify(d)).not.toMatch(/billingCustomerId":"cus/)
+  })
+
+  it('entrega os registros de documentos — só a impressão digital, nunca o texto', async () => {
+    // O titular tem direito de ver a declaração que fez e de onde a fez. E a
+    // exportação é também a prova de que o texto do contrato não está aqui.
+    const { svc } = service()
+    const d: Record<string, any> = await svc.exportData('u1')
+    expect(d.registrosDeDocumentos.registros).toHaveLength(1)
+    expect(d.registrosDeDocumentos.registros[0].ip).toBe('198.51.100.7')
+    expect(d.naoGuardamos.some((l: string) => /contratos/.test(l))).toBe(true)
   })
 
   it('entrega a conta, o perfil e as estatísticas', async () => {

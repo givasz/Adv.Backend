@@ -14,6 +14,7 @@ import { RetencaoModule } from './retencao/retencao.module'
 import { BillingModule } from './billing/billing.module'
 import { BiModule } from './bi/bi.module'
 import { GeoModule } from './geo/geo.module'
+import { ContratosModule } from './contratos/contratos.module'
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { GeoModule } from './geo/geo.module'
     BillingModule,
     BiModule,
     GeoModule,
+    ContratosModule,
   ],
   controllers: [HealthController],
 })

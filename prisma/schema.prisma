@@ -130,6 +130,9 @@ model User {
   sessions        Session[]
   // Contestações que este advogado abriu contra medidas de moderação.
   appeals         Appeal[]
+  // Impressões digitais dos documentos (contratos, procurações) que ele revisou
+  // e registrou. Nunca o documento — ver model RegistroDocumento.
+  registrosDeDocumento RegistroDocumento[]
 }
 
 // Sessão de login. O cookie HttpOnly leva um segredo aleatório; aqui fica o hash
@@ -788,6 +791,76 @@ model Appeal {
 
   @@index([status, respondeAte])
   @@index([userId, createdAt])
+}
+
+// REGISTRO DE DOCUMENTO — a impressão digital de um contrato, NUNCA o contrato.
+//
+// O advogado monta a minuta (honorários, procuração, substabelecimento,
+// declaração) a partir de um modelo, revisa cláusula por cláusula e confirma que
+// revisou. O PDF nasce no aparelho dele; o que chega aqui é só o SHA-256 do
+// arquivo, o código impresso no rodapé e a declaração de revisão.
+//
+// POR QUE NÃO GUARDAMOS O TEXTO
+// ----------------------------
+// Um contrato de honorários tem CPF, endereço, valores e o assunto do caso do
+// cliente — dado coberto por sigilo profissional, de uma pessoa que nunca teve
+// conta aqui. O produto inteiro foi desenhado para não guardar dado de terceiro
+// (ver "Não guardamos dado de visitante"); um cofre de contratos seria o maior
+// alvo do banco, para um ganho que o próprio PDF já entrega a quem o tem. O hash
+// basta para o que importa: provar, depois, que o arquivo é o mesmo.
+//
+// O QUE A LINHA PROVA — e o que não prova
+// ---------------------------------------
+// Prova que ESTA CONTA declarou, NESTE MOMENTO e deste endereço, ter revisado o
+// arquivo com ESTA impressão digital. Não prova que o conteúdo é válido, que as
+// partes assinaram, nem quem é o advogado: a plataforma nunca atesta documento
+// de ninguém. Nome e inscrição são uma fotografia do que ELE informou no perfil.
+//
+// Segue a conta: excluir a conta apaga os registros (cascade), e a conferência
+// pública deixa de encontrá-los — a tela de exclusão diz isso.
+model RegistroDocumento {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // "AVM-XXXX-XXXX", sorteado no aparelho ANTES de gerar o PDF (ele é impresso
+  // no rodapé, e o hash cobre o rodapé). A versão assinada repete o código do
+  // documento de origem — é o mesmo documento, com assinaturas.
+  codigo String
+  // SHA-256 do arquivo, em hexadecimal minúsculo (64 caracteres).
+  hash   String
+  // Tamanho em bytes. Guardado porque o assinador acrescenta ao FIM do arquivo:
+  // saber onde o original terminava é o que permite reconhecê-lo dentro da
+  // versão assinada.
+  tamanho Int @default(0)
+  // "revisado" → minuta revisada e confirmada pelo advogado;
+  // "assinado" → um arquivo assinado derivado dela.
+  etapa  String
+  // "honorarios" | "procuracao" | "substabelecimento" | "hipossuficiencia"
+  modelo       String
+  // Revisão do texto-base do modelo (data ISO). Ver src/contratos/modelos.ts.
+  modeloVersao String
+  // Registro "revisado" de que a versão assinada deriva.
+  origemId     String?
+
+  // A declaração de revisão — só na etapa "revisado". A versão aponta para o
+  // texto exato que o advogado confirmou (DECLARACAO_DE_REVISAO_VERSAO).
+  declaracaoVersao String   @default("")
+  // De onde partiu. O endereço, não um hash — mesmo regime de User.termsIp:
+  // é prova de declaração, e um hash não identifica lugar nenhum.
+  ip               String   @default("")
+  userAgent        String   @default("")
+
+  // Fotografia do que o advogado informou no perfil NO MOMENTO do registro.
+  // Mudar o nome depois não reescreve o passado.
+  advogadoNome String @default("")
+  advogadoOab  String @default("")
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([hash])
+  @@index([codigo])
 }
 
 // ---------------------------------------------------------------------------
