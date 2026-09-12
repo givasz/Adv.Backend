@@ -44,7 +44,7 @@ export interface ConfigDoCorreio {
  * A partir de qual versão dos Termos a Política de Privacidade declara o
  * provedor de e-mail. `null` = ainda não declara, e em produção nada sai.
  */
-export const CORREIO_NA_POLITICA_DESDE: string | null = null
+export const CORREIO_NA_POLITICA_DESDE: string | null = '2026-09-12'
 
 /** A versão vigente dos documentos já declara o provedor de e-mail? */
 export function politicaDeclaraCorreio(
