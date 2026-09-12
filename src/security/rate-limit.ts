@@ -34,18 +34,42 @@ export function checkRateLimit(key: string, rule: Rule): boolean {
   return true
 }
 
-/** Aplica várias regras de uma vez; lança 429 na primeira que estourar. */
+/**
+ * Aplica várias regras de uma vez; lança 429 na primeira que estourar.
+ * A mensagem pode ser uma função da regra que estourou — é o que deixa dizer
+ * "poderá gerar de novo às 14:32" em vez de um "aguarde" sem prazo.
+ */
 export function enforceRateLimit(
   entradas: [key: string, rule: Rule][],
-  mensagem = 'Muitas tentativas em pouco tempo. Aguarde alguns minutos e tente novamente.',
+  mensagem: string | ((key: string, rule: Rule) => string) = 'Muitas tentativas em pouco tempo. Aguarde alguns minutos e tente novamente.',
 ): void {
   for (const [key, rule] of entradas) {
     if (!checkRateLimit(key, rule)) {
       // O estouro é o sinal mais barato de ataque em curso — vale a linha de log.
       logSecurityEvent({ event: 'rate_limited', resource: key, result: 'negado' })
-      throw new HttpException(mensagem, HttpStatus.TOO_MANY_REQUESTS)
+      throw new HttpException(
+        typeof mensagem === 'function' ? mensagem(key, rule) : mensagem,
+        HttpStatus.TOO_MANY_REQUESTS,
+      )
     }
   }
+}
+
+/** Quantos acessos ainda cabem na janela. Só olha: não registra nada. */
+export function restantes(key: string, rule: Rule): number {
+  const cutoff = Date.now() - rule.windowMs
+  const recent = (hits.get(key) ?? []).filter((t) => t > cutoff)
+  return Math.max(0, rule.max - recent.length)
+}
+
+/** Quando abre a próxima vaga (epoch ms), ou null se já existe vaga. Só olha. */
+export function proximaVaga(key: string, rule: Rule): number | null {
+  const cutoff = Date.now() - rule.windowMs
+  const recent = (hits.get(key) ?? []).filter((t) => t > cutoff)
+  if (recent.length < rule.max) return null
+  // Os acessos entram em ordem; a vaga abre quando o mais antigo dos que
+  // excedem sair da janela.
+  return recent[recent.length - rule.max] + rule.windowMs
 }
 
 // Remove chaves cujos acessos já expiraram. A janela máxima considerada é 24 h
@@ -100,28 +124,54 @@ export const AUTH_RATE_RULES = {
 // em produção hoje, custa COTA de um tier grátis, que é ainda mais escassa. Sem
 // teto, um laço de terminal esvazia o orçamento da conta em minutos.
 //
-// Três alturas de teto (04/09/2026):
+// Alturas de teto (04/09/2026; apertadas em 12/09/2026):
 //
-//   • por MINUTO/HORA — segura o laço de terminal e o clique nervoso;
-//   • por DIA — segura o uso legítimo mas exagerado: uma pessoa gerando a bio
-//     sessenta vezes num dia não é ataque, mas cada pedido pode virar até
-//     quatro chamadas ao provedor (geração + três reparos). A cota diária do
-//     tier grátis do Gemini se mede em centenas de pedidos, e ela é de TODOS;
+//   • RESPIRO — uma geração por vez: duas no mesmo punhado de segundos são o
+//     clique duplo ou o "gerar de novo" sem ler o que veio;
+//   • por MINUTO/HORA — segura o laço de terminal e a rajada;
+//   • por DIA, conforme o PLANO — segura o uso legítimo mas exagerado. Cada
+//     pedido pode virar até quatro chamadas ao provedor (geração + três
+//     reparos), e a cota do tier grátis é de TODOS. Era 80 por dia para
+//     qualquer conta: o suficiente para uma pessoa gerar a bio sem parar a tarde
+//     inteira. Um perfil se escreve com meia dúzia de gerações; o teto do Free
+//     cobre isso com folga, e o de quem paga cresce com o plano;
+//   • por IP no dia, somando TODO mundo — a fábrica de contas grátis;
 //   • GLOBAL por hora — o guarda-chuva das chaves: seja quem for e de onde for,
 //     a plataforma inteira não passa disto por hora. É o teto que impede que
 //     um dia de procura acima do normal derrube o "Gerar com IA" de todo mundo
 //     à tarde. Ajustável sem deploy por AI_TETO_GLOBAL_HORA.
 //
+// É janela deslizante de 24 h, não dia do calendário — por isso a tela fala em
+// "últimas 24 horas" e a mensagem de estouro diz a hora em que a vaga abre.
 // A janela diária pede que pruneExpired abaixo enxergue 24 h, não 1 h.
 const DIA = 24 * 60 * 60 * 1000
+const HORA = 60 * 60 * 1000
 export const AI_RATE_RULES = {
-  perIp: { windowMs: 60 * 60 * 1000, max: 40 } as Rule,
-  perIpBurst: { windowMs: 60 * 1000, max: 8 } as Rule,
-  perUser: { windowMs: 60 * 60 * 1000, max: 120 } as Rule,
-  // Sem conta (Free anônimo) o dia é mais curto: é a porta pública da rota.
-  perIpDay: { windowMs: DIA, max: 30 } as Rule,
-  perUserDay: { windowMs: DIA, max: 80 } as Rule,
-  global: { windowMs: 60 * 60 * 1000, max: tetoGlobalPorHora() } as Rule,
+  // Endereço — com ou sem conta. O de hora é folgado porque um escritório inteiro
+  // pode sair pelo mesmo IP.
+  perIpBurst: { windowMs: 60 * 1000, max: 6 } as Rule,
+  perIp: { windowMs: HORA, max: 40 } as Rule,
+  perIpDayTotal: { windowMs: DIA, max: 120 } as Rule,
+  // Quem gera (conta; sem conta, o IP). O respiro é 4 s e a tela espera 5: a
+  // diferença absorve a latência, para o botão nunca liberar antes do servidor.
+  respiro: { windowMs: 4_000, max: 1 } as Rule,
+  perUser: { windowMs: HORA, max: 20 } as Rule,
+  global: { windowMs: HORA, max: tetoGlobalPorHora() } as Rule,
+}
+
+/** Quem pede: o plano vigente de uma conta, ou ninguém logado. */
+export type QuemGera = 'anonimo' | 'free' | 'pro' | 'premium'
+
+/** Gerações de IA por 24 horas. Quem decide o plano é o servidor (planoVigente). */
+export const AI_GERACOES_POR_DIA: Record<QuemGera, number> = {
+  anonimo: 8,
+  free: 15,
+  pro: 30,
+  premium: 60,
+}
+
+export function regraDoDia(quem: QuemGera): Rule {
+  return { windowMs: DIA, max: AI_GERACOES_POR_DIA[quem] }
 }
 
 /** O teto global por hora, com override pelo .env (número inteiro positivo). */

@@ -87,6 +87,8 @@ export interface GenerateResult {
   complianceNotes: string[]
   /** true se o texto veio do template seguro (IA reprovada no check pós-geração) */
   usedFallback?: boolean
+  /** Gerações que ainda cabem nas 24 h de quem pediu — preenchido pelo controller. */
+  limite?: { restantesHoje: number; tetoHoje: number }
   /** versão da política de publicidade aplicada na verificação */
   policyVersion?: string
 }
