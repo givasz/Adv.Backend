@@ -25,6 +25,8 @@ import {
   safeUrl,
 } from '../security/sanitize'
 import { hasBlockingIssue } from '../oab/compliance'
+import { fingerprint } from '../security/audit-log'
+import { CorreioService } from '../mail/correio.service'
 
 // Mesmo formato aceito no cadastro (auth.service).
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -61,6 +63,9 @@ export class FirmsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly profiles: ProfilesService,
+    // Opcional só para os testes que não tratam de e-mail. No app o módulo
+    // importa o CorreioModule.
+    private readonly correio?: CorreioService,
   ) {}
 
   // ---- Leitura pública ------------------------------------------------------
@@ -494,7 +499,38 @@ export class FirmsService {
     }
 
     await this.syncSeats(firm.id)
+    await this.avisarConvidado(firm.id, email, role, convidado?.id ?? null)
     return this.manageView(firm.id)
+  }
+
+  /**
+   * O convite chega por e-mail — o painel sozinho só avisa quem já entrou.
+   *
+   * Sai só DEPOIS de o convite existir: um convite recusado (e-mail inválido,
+   * advogado de outro escritório) não manda nada. O texto é o mesmo tenha a
+   * pessoa conta ou não, e a resposta da rota não muda por causa do e-mail —
+   * nenhum dos dois pode virar consulta de quem está cadastrado.
+   *
+   * Um por endereço por escritório por dia: quem convida escolhe o endereço, e
+   * cancelar e refazer o convite não pode virar rajada na caixa de alguém. O
+   * teto por conta (20/h, firms.controller) cuida do volume entre endereços.
+   */
+  private async avisarConvidado(
+    firmId: string,
+    email: string,
+    role: 'admin' | 'member',
+    userId: string | null,
+  ): Promise<void> {
+    if (!this.correio) return
+    const firma = await this.prisma.firm.findUnique({ where: { id: firmId }, select: { name: true } })
+    if (!firma?.name) return
+    await this.correio.enfileirar({
+      modelo: 'convite-escritorio',
+      para: email,
+      userId,
+      chave: `convite:${firmId}:${fingerprint(email)}:${new Date().toISOString().slice(0, 10)}`,
+      dados: { escritorio: firma.name, papel: role },
+    })
   }
 
   // Remove um vínculo ou cancela um convite por e-mail. NUNCA apaga o perfil: ele

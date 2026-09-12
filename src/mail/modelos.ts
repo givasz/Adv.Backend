@@ -2,20 +2,25 @@
 //
 // REGRAS QUE VALEM PARA TODOS
 //
-//   • Só aviso sobre a conta, sobre uma denúncia ou sobre os documentos legais.
-//     Nada de novidade, promoção ou "conheça o plano Max": e-mail de publicidade
-//     é outro regime, e a plataforma que diz ao advogado o que ele pode anunciar
-//     não pode ser a primeira a mandar anúncio sem pedir.
+//   • Só aviso sobre a conta, sobre uma denúncia, sobre um convite de escritório
+//     ou sobre os documentos legais. Nada de novidade, promoção ou "conheça o
+//     plano Max": e-mail de publicidade é outro regime, e a plataforma que diz ao
+//     advogado o que ele pode anunciar não pode ser a primeira a mandar anúncio
+//     sem pedir.
 //   • Todo dado variável passa por `esc` antes de entrar no HTML. O motivo de uma
 //     sanção é texto escrito pelo administrador, e o nome é texto escrito pelo
 //     próprio advogado — nenhum dos dois pode virar marcação.
+//   • Texto digitado por usuário nunca vai no ASSUNTO. O assunto é o que aparece
+//     na lista da caixa de entrada, com o nosso remetente ao lado: um nome de
+//     escritório "Seu cartão foi bloqueado" ali seria phishing assinado por nós.
+//     No corpo, esse texto vai emoldurado e rotulado (ver `destaque`).
 //   • Todo link é o endereço do site (decidido no servidor) mais um caminho fixo
 //     daqui. Os dados do aviso nunca trazem URL: um campo "link" nos dados seria o
 //     jeito mais curto de alguém fazer a plataforma assinar um e-mail de phishing.
 //   • Token vai depois do `#`. O fragmento não viaja em requisição nenhuma — não
 //     entra em log de proxy, nem no cabeçalho Referer de quem a página chamar.
-//   • Rodapé com quem está falando (razão social e CNPJ). Aviso de suspensão sem
-//     remetente identificado é indistinguível de golpe.
+//   • Rodapé com quem está falando (razão social e CNPJ) e por que a pessoa
+//     recebeu. Aviso de suspensão sem remetente identificado é indistinguível de golpe.
 //
 // Os dados chegam do banco (JSON), então cada leitura é defensiva: faltou um
 // campo, o texto se ajusta; faltou o token de um link obrigatório, o modelo
@@ -36,6 +41,7 @@ export const MODELOS = [
   'conta-encerrada',
   'contestacao-recebida',
   'contestacao-respondida',
+  'convite-escritorio',
   'termos-atualizados',
 ] as const
 
@@ -48,7 +54,7 @@ export function modeloValido(m: unknown): m is Modelo {
 /**
  * Ordem de saída quando a fila acumula.
  *   0 → alguém está esperando na tela (senha nova, confirmação);
- *   1 → aviso sobre a conta, com prazo correndo;
+ *   1 → aviso sobre a conta, com prazo correndo, ou convite recém-feito;
  *   2 → aviso em massa, que nunca passa na frente dos outros nem gasta a reserva do dia.
  */
 export const PRIORIDADE: Record<Modelo, 0 | 1 | 2> = {
@@ -63,6 +69,7 @@ export const PRIORIDADE: Record<Modelo, 0 | 1 | 2> = {
   'conta-encerrada': 1,
   'contestacao-recebida': 1,
   'contestacao-respondida': 1,
+  'convite-escritorio': 1,
   'termos-atualizados': 2,
 }
 
@@ -80,17 +87,20 @@ interface Link {
   caminho: string
 }
 
+/** Por que a pessoa está recebendo — é a primeira frase do rodapé. */
+type Motivo = 'conta' | 'denuncia' | 'convite'
+
 interface Corpo {
   assunto: string
   titulo: string
   paragrafos: string[]
-  /** Texto escrito por uma pessoa (motivo, resposta) — vai emoldurado e rotulado. */
+  /** Texto escrito por uma pessoa (motivo, resposta, nome) — vai emoldurado e rotulado. */
   destaque?: { rotulo: string; texto: string }
   botao?: Link
   depois?: string[]
   links?: Link[]
-  /** Quem recebe não tem conta (quem denunciou): o rodapé não fala em "sua conta". */
-  semConta?: boolean
+  /** Padrão: `conta`. Quem denunciou e quem foi convidado podem não ter conta. */
+  motivo?: Motivo
 }
 
 // ---- Leitura defensiva dos dados --------------------------------------------
@@ -210,7 +220,7 @@ const CORPOS: Record<Modelo, (d: Dados) => Corpo> = {
   },
 
   'denuncia-recebida': () => ({
-    semConta: true,
+    motivo: 'denuncia',
     assunto: 'Recebemos sua denúncia',
     titulo: 'Recebemos sua denúncia',
     paragrafos: [
@@ -226,7 +236,7 @@ const CORPOS: Record<Modelo, (d: Dados) => Corpo> = {
   'denuncia-analisada': (d) => {
     const quando = dia(d.enviadaEm)
     return {
-      semConta: true,
+      motivo: 'denuncia',
       assunto: 'Sua denúncia foi analisada',
       titulo: 'Sua denúncia foi analisada',
       paragrafos: [
@@ -347,6 +357,36 @@ const CORPOS: Record<Modelo, (d: Dados) => Corpo> = {
     }
   },
 
+  'convite-escritorio': (d) => {
+    // O nome é do escritório, digitado por quem convidou. Sem ele não há o que
+    // dizer à pessoa — e um convite "de um escritório" sem nome é convite a
+    // desconfiar, com razão.
+    const escritorio = texto(d.escritorio, 90)
+    if (!escritorio) throw new Error('convite sem nome de escritório')
+    const administra = d.papel === 'admin'
+    return {
+      motivo: 'convite',
+      // Assunto FIXO: o nome do escritório não entra aqui (ver regras no topo).
+      assunto: 'Convite para a equipe de um escritório no advoc.me',
+      titulo: 'Você foi convidado para um escritório',
+      paragrafos: [
+        'Um escritório com página no advoc.me convidou este e-mail para fazer parte da equipe.',
+      ],
+      destaque: { rotulo: 'Escritório', texto: escritorio },
+      depois: [
+        administra
+          ? 'O convite é para administrar a página do escritório: editar as informações da sociedade e convidar outros advogados, além de cuidar do seu próprio perfil.'
+          : 'Com o convite aceito, você aparece na página do escritório e continua cuidando só do seu próprio perfil.',
+        // O mesmo texto para quem tem conta e para quem não tem: o e-mail não
+        // pode dizer a ninguém quem está cadastrado aqui.
+        'Se você já tem conta com este e-mail, o convite está no seu painel. Se ainda não tem, crie a conta com este mesmo e-mail e ele aparece lá. Aceitar ou recusar é decisão sua.',
+        'O advoc.me não confere escritórios nem inscrições na OAB. Se você não reconhece este escritório, ignore esta mensagem.',
+      ],
+      botao: { rotulo: 'Ver o convite', caminho: '/painel' },
+      links: [{ rotulo: 'Ainda não tenho conta', caminho: '/criar-conta?next=%2Fpainel' }],
+    }
+  },
+
   'termos-atualizados': (d) => {
     const desde = versaoPorExtenso(d.versao)
     return {
@@ -380,13 +420,23 @@ function urlDe(site: string, caminho: string): string {
   return `${site}${caminho}`
 }
 
+const POR_QUE: Record<Motivo, { porque: string; canal: string }> = {
+  conta: {
+    porque: 'Você recebeu esta mensagem porque ela trata da sua conta no advoc.me.',
+    canal: 'Esta caixa não recebe respostas — para falar com a gente, use o Suporte dentro da sua conta.',
+  },
+  denuncia: {
+    porque: 'Você recebeu esta mensagem porque este endereço foi informado numa denúncia feita no advoc.me.',
+    canal: 'Esta caixa não recebe respostas.',
+  },
+  convite: {
+    porque: 'Você recebeu esta mensagem porque um escritório informou este endereço ao convidar um advogado no advoc.me.',
+    canal: 'Esta caixa não recebe respostas.',
+  },
+}
+
 function rodape(corpo: Corpo): string {
-  const porque = corpo.semConta
-    ? 'Você recebeu esta mensagem porque este endereço foi informado numa denúncia feita no advoc.me.'
-    : 'Você recebeu esta mensagem porque ela trata da sua conta no advoc.me.'
-  const canal = corpo.semConta
-    ? 'Esta caixa não recebe respostas.'
-    : 'Esta caixa não recebe respostas — para falar com a gente, use o Suporte dentro da sua conta.'
+  const { porque, canal } = POR_QUE[corpo.motivo ?? 'conta']
   return `${porque} ${canal} O advoc.me é operado por ${OPERADOR.razaoSocial}, CNPJ ${OPERADOR.cnpj}.`
 }
 
