@@ -87,6 +87,16 @@ const PUBLICAS: Record<string, string> = {
   'POST /auth/logout':
     'sair é intenção que nunca pode ficar presa; responde 204 mesmo sem sessão, e o CSRF é dispensado de propósito',
 
+  // --- Correio: o link chega por e-mail, e quem o usa pode não estar logado ----
+  'GET /auth/correio':
+    'diz só se o envio de e-mails está ligado, para a tela não oferecer "esqueci minha senha" quando nada sairia. Não lê banco nem diz nada sobre ninguém',
+  'POST /auth/senha/esqueci':
+    'quem esqueceu a senha, por definição, não entra. Responde 202 idêntico exista a conta ou não, e o trabalho roda depois da resposta (nem o tempo entrega); teto por IP e por impressão digital do e-mail',
+  'POST /auth/senha/redefinir':
+    'a credencial é o token do link: 256 bits, 1 hora, uso único, só o hash no banco, e só vale para o endereço ao qual foi enviado. Derruba todas as sessões da conta; teto por IP',
+  'POST /auth/email/confirmar':
+    'o link costuma ser aberto em outro aparelho, sem sessão. A credencial é o token (uso único, só o hash no banco) e ele só confirma o endereço para o qual foi enviado; teto por IP',
+
   // --- Credencial conferida sem abrir sessão ---------------------------------
   'POST /appeals/contestar':
     'o canal de quem a sanção impediu de entrar: confere e-mail e senha e NÃO abre sessão. Bloqueá-lo com login seria tirar o direito de contestar justamente de quem foi suspenso',

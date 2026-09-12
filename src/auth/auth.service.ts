@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
@@ -15,9 +16,11 @@ import { passwordProblem } from '../password'
 import { clampText, EMAIL_MAX } from '../security/sanitize'
 import { NAME_MAX } from '../plans'
 import { planoVigente } from '../assinatura'
+import { CorreioService } from '../mail/correio.service'
+import { conferirToken, emitirToken, gastarToken } from './tokens-de-email'
 
-// Formato de e-mail simples (o mesmo do front). A validação forte fica a cargo
-// da confirmação de e-mail (fora do escopo do protótipo).
+// Formato de e-mail simples (o mesmo do front). Quem prova que o endereço existe
+// e é da pessoa é a confirmação por e-mail (confirmarEmail, abaixo).
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export interface AuthSession {
@@ -43,6 +46,13 @@ export interface AuthSession {
     termsPending: boolean
     /** Versão aceita por esta conta — vazia quando nunca houve aceite. */
     termsVersion: string
+    /**
+     * Falta confirmar o e-mail — e o correio está ligado para mandar o link.
+     *
+     * Com o correio desligado é sempre `false`: pedir a confirmação de um link
+     * que não vai chegar seria uma faixa que ninguém consegue fazer sumir.
+     */
+    emailPending: boolean
   }
 }
 
@@ -51,7 +61,15 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly sessions: SessionService,
+    // Opcional só para os testes que não tratam de e-mail. No app o módulo
+    // importa o CorreioModule, e a ausência derrubaria o boot — que é o certo.
+    private readonly correio?: CorreioService,
   ) {}
+
+  /** O envio de e-mails está ligado? */
+  get correioAtivo(): boolean {
+    return !!this.correio?.ativo
+  }
 
   // Coerção antes de qualquer coisa: o corpo é JSON livre, e `email: 12345`
   // chegando num `.trim()` viraria 500 (erro interno vazado) em vez de 400.
@@ -87,6 +105,7 @@ export class AuthService {
     plan: string,
     lembrar: boolean,
     termsVersion: string,
+    emailVerifiedAt: Date | null,
   ): Promise<AuthSession> {
     const { expiresAt, csrfToken, remember } = await this.sessions.abrir(req, id, lembrar)
     return {
@@ -100,6 +119,7 @@ export class AuthService {
         plan,
         termsVersion,
         termsPending: !aceiteVigente(termsVersion),
+        emailPending: !emailVerifiedAt && this.correioAtivo,
       },
     }
   }
@@ -149,6 +169,12 @@ export class AuthService {
       select: { id: true, email: true, profile: { select: { id: true, name: true, plan: true } } },
     })
     if (user.profile) await this.resolvePendingInvites(mail, user.profile.id)
+
+    // Confirmação do e-mail. NÃO trava o cadastro: a pessoa entra na hora, monta
+    // o perfil, e o painel lembra de confirmar. Travar aqui seria mandar embora,
+    // no primeiro minuto, quem digitou o e-mail certo e só não abriu a caixa.
+    await this.enviarConfirmacao(user.id, user.email, user.profile?.name || cleanName)
+
     return this.sessionFor(
       req,
       user.id,
@@ -157,6 +183,7 @@ export class AuthService {
       user.profile ? planoVigente(user.profile) : 'free',
       lembrar,
       TERMS_VERSION,
+      null,
     )
   }
 
@@ -219,6 +246,7 @@ export class AuthService {
         closedAt: true,
         closedReason: true,
         termsVersion: true,
+        emailVerifiedAt: true,
         // Plano VIGENTE, não o contratado: o retrato da sessão é o que a tela
         // consulta antes de o perfil chegar, e um "premium" aqui destravaria por
         // um instante o que a assinatura vencida não entrega mais.
@@ -276,16 +304,17 @@ export class AuthService {
       user.profile ? planoVigente(user.profile) : 'free',
       lembrar,
       user.termsVersion,
+      user.emailVerifiedAt,
     )
   }
 
   /**
    * Troca a senha de quem JÁ está dentro — exige a senha atual.
    *
-   * Isto NÃO é "esqueci minha senha": aquele fluxo precisa de e-mail, que a
-   * plataforma ainda não envia. Este não precisa de nada além do que a pessoa já
-   * tem, e por isso pôde vir antes: era o item 6 de "Em aberto" do SEGURANCA.md,
-   * e sem ele quem desconfiava da própria senha não tinha o que fazer.
+   * Isto NÃO é "esqueci minha senha" (ver pedirRedefinicao, abaixo). Este não
+   * precisa de nada além do que a pessoa já tem, e por isso veio antes: era o
+   * item 6 de "Em aberto" do SEGURANCA.md, e sem ele quem desconfiava da própria
+   * senha não tinha o que fazer.
    *
    * Pedir a senha atual é o que impede que um cookie roubado vire posse da conta:
    * sem essa etapa, quem tivesse a sessão trocaria a senha e trancaria o dono do
@@ -333,9 +362,160 @@ export class AuthService {
     // varredura levaria a nova junto e a pessoa seria expulsa da própria troca.
     const encerradas = await this.sessions.encerrarTodas(userId, req)
     await this.sessions.abrir(req, userId, true)
+    await this.avisarSenhaAlterada(user.id, user.email, false)
 
     return { outrasSessoesEncerradas: Math.max(0, encerradas - 1) }
   }
+
+  // ---- E-mail: esqueci a senha e confirmação ---------------------------------
+
+  /**
+   * "Esqueci minha senha" — o pedido.
+   *
+   * Não devolve nada e nunca lança para quem chama: a rota responde a MESMA
+   * coisa exista a conta ou não, e dispara isto depois de responder. Assim nem o
+   * texto nem o tempo da resposta dizem se o e-mail tem conta aqui.
+   *
+   * Vale também para conta suspensa ou encerrada. Não devolve acesso (o login
+   * continua recusando), e é a senha que abre a contestação de quem não
+   * consegue entrar — trancar a redefinição tiraria o canal de recurso de quem
+   * esqueceu a senha justamente quando mais precisa dela.
+   */
+  async pedirRedefinicao(email: unknown): Promise<void> {
+    if (!this.correio?.ativo) return
+    const mail = this.normalizeEmail(email)
+    if (!EMAIL_RE.test(mail)) return
+    const user = await this.prisma.user.findUnique({
+      where: { email: mail },
+      select: { id: true, email: true },
+    })
+    if (!user) return
+    const { token, expiraEm } = await emitirToken(this.prisma, user.id, user.email, 'redefinir')
+    await this.correio.enfileirar({
+      modelo: 'redefinir-senha',
+      para: user.email,
+      userId: user.id,
+      validoAte: expiraEm,
+      dados: { token },
+    })
+  }
+
+  /**
+   * "Esqueci minha senha" — o link usado.
+   *
+   * O link conferido, a senha nova conferida, e só então o link é gasto: uma
+   * senha fraca recusada não pode custar o link, senão a pessoa voltaria à caixa
+   * de entrada a cada tentativa.
+   *
+   * Derruba TODAS as sessões e não abre nenhuma. Quem pede redefinição pode
+   * estar fugindo de alguém que está dentro da conta; entrar em seguida, com a
+   * senha nova, é um passo a mais que custa pouco a quem é o dono.
+   *
+   * Redefinir pelo link também confirma o e-mail: é a mesma prova — a pessoa
+   * abriu uma mensagem que só chegou naquela caixa.
+   */
+  async redefinirSenha(req: RequisicaoComAuth, token: unknown, nova: unknown): Promise<{ ok: true }> {
+    const invalido = new BadRequestException(
+      'Este link não vale mais — ele vence em 1 hora e funciona uma vez só. Peça outro em "Esqueci minha senha".',
+    )
+    const alvo = await conferirToken(this.prisma, token, 'redefinir')
+    if (!alvo) throw invalido
+    const user = await this.prisma.user.findUnique({
+      where: { id: alvo.userId },
+      select: { id: true, email: true, emailVerifiedAt: true },
+    })
+    // O link foi para um endereço que não é mais o da conta: não vale.
+    if (!user || user.email !== alvo.email) throw invalido
+
+    const senhaNova = typeof nova === 'string' ? nova : ''
+    const problema = passwordProblem(senhaNova, user.email)
+    if (problema) throw new BadRequestException(problema)
+
+    if (!(await gastarToken(this.prisma, alvo.id))) throw invalido
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: await hashPassword(senhaNova),
+        emailVerifiedAt: user.emailVerifiedAt ?? new Date(),
+      },
+    })
+    await this.sessions.encerrarTodas(user.id, req)
+    await this.avisarSenhaAlterada(user.id, user.email, true)
+    return { ok: true }
+  }
+
+  /**
+   * Confirma o e-mail pelo link. Não exige sessão: o link costuma ser aberto no
+   * celular, e a conta foi criada no computador.
+   */
+  async confirmarEmail(token: unknown): Promise<{ ok: true }> {
+    const invalido = new BadRequestException(
+      'Este link já foi usado ou venceu. Se você já confirmou, não precisa fazer mais nada; ' +
+        'senão, entre na sua conta e peça outro pelo painel.',
+    )
+    const alvo = await conferirToken(this.prisma, token, 'confirmar')
+    if (!alvo) throw invalido
+    const user = await this.prisma.user.findUnique({
+      where: { id: alvo.userId },
+      select: { id: true, email: true, emailVerifiedAt: true },
+    })
+    if (!user || user.email !== alvo.email) throw invalido
+    if (!(await gastarToken(this.prisma, alvo.id))) throw invalido
+    if (!user.emailVerifiedAt) {
+      await this.prisma.user.update({ where: { id: user.id }, data: { emailVerifiedAt: new Date() } })
+    }
+    return { ok: true }
+  }
+
+  /** Manda de novo o link de confirmação (o anterior deixa de valer). */
+  async reenviarConfirmacao(userId: string): Promise<{ enviado: boolean; jaConfirmado: boolean }> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true, emailVerifiedAt: true, profile: { select: { name: true } } },
+    })
+    if (!user) throw new UnauthorizedException('Entre na sua conta.')
+    if (user.emailVerifiedAt) return { enviado: false, jaConfirmado: true }
+    if (!this.correio?.ativo) {
+      throw new ServiceUnavailableException('O envio de e-mails está desligado no momento. Tente mais tarde.')
+    }
+    const enviado = await this.enviarConfirmacao(userId, user.email, user.profile?.name || undefined)
+    if (!enviado) {
+      throw new ServiceUnavailableException('Não foi possível enviar agora. Tente de novo em alguns minutos.')
+    }
+    return { enviado: true, jaConfirmado: false }
+  }
+
+  /** Emite o link e põe na fila. Nunca lança: é consequência, não requisito. */
+  private async enviarConfirmacao(userId: string, email: string, nome?: string): Promise<boolean> {
+    if (!this.correio?.ativo) return false
+    try {
+      const { token, expiraEm } = await emitirToken(this.prisma, userId, email, 'confirmar')
+      return await this.correio.enfileirar({
+        modelo: 'confirmar-email',
+        para: email,
+        userId,
+        validoAte: expiraEm,
+        dados: { token, nome: nome ?? '' },
+      })
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * "Sua senha foi alterada." É o único aviso que chega a quem PERDEU a conta:
+   * se foi outra pessoa que trocou, este e-mail é a primeira notícia — e traz o
+   * caminho de volta.
+   */
+  private async avisarSenhaAlterada(userId: string, email: string, porLink: boolean): Promise<void> {
+    await this.correio?.enfileirar({
+      modelo: 'senha-alterada',
+      para: email,
+      userId,
+      dados: { quando: new Date().toISOString(), porLink },
+    })
+  }
+
   async me(userId: string): Promise<AuthSession['user']> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -343,6 +523,7 @@ export class AuthService {
         id: true,
         email: true,
         termsVersion: true,
+        emailVerifiedAt: true,
         // Vigente, não contratado — mesma razão do login: este é o retrato que a
         // tela consulta ANTES de o perfil chegar (ver frontend lib/auth.ts).
         profile: {
@@ -364,6 +545,7 @@ export class AuthService {
       plan: user.profile ? planoVigente(user.profile) : 'free',
       termsVersion: user.termsVersion,
       termsPending: !aceiteVigente(user.termsVersion),
+      emailPending: !user.emailVerifiedAt && this.correioAtivo,
     }
   }
 }

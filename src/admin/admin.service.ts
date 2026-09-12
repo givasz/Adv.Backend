@@ -33,6 +33,7 @@ import {
 } from '../auth/user-auth'
 import { fingerprint, logSecurityEvent } from '../security/audit-log'
 import { IS_PROD } from '../security/config'
+import { CorreioService } from '../mail/correio.service'
 import {
   ADMIN_COOKIE,
   ADMIN_COOKIE_PATH,
@@ -53,7 +54,7 @@ import {
 } from './admin-roles'
 import { novoSegredoTotp, otpauthUrl, segredoLegivel, totpConfere } from './totp'
 import { faixaTrilha, trilha } from './paginacao'
-import { venceEm } from './sancoes'
+import { degrau, venceEm } from './sancoes'
 
 /** Quem está usando o painel nesta requisição. */
 export interface AdminAtual {
@@ -93,7 +94,27 @@ export class AdminService {
    *  papel `owner` é protegida contra desativação (ver atualizarAdmin). */
   private jaTemAdmin = false
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // Opcional só para os testes do painel que não tratam de e-mail. No app o
+    // módulo importa o CorreioModule.
+    private readonly correio?: CorreioService,
+  ) {}
+
+  /**
+   * Avisa o dono da conta por e-mail. A sanção vale sem o e-mail — mas o prazo
+   * de contestação correndo contra quem não soube da sanção não é prazo, então
+   * toda decisão sobre a conta passa por aqui.
+   */
+  private async avisarConta(
+    userId: string,
+    modelo: 'conta-suspensa' | 'conta-reativada' | 'conta-encerrada',
+    dados: Record<string, unknown> = {},
+  ): Promise<void> {
+    if (!this.correio) return
+    const u = await this.prisma.user.findUnique({ where: { id: userId }, select: { email: true } })
+    if (u) await this.correio.enfileirar({ modelo, para: u.email, userId, dados })
+  }
 
   // ---- Existe algum administrador? -----------------------------------------
 
@@ -733,6 +754,11 @@ export class AdminService {
       after: { ate: ate?.toISOString() ?? null, perfilRestrito: !!alvo.profile },
       ip,
     })
+    await this.avisarConta(userId, 'conta-suspensa', {
+      motivo,
+      ate,
+      cobrancaPausada: !!alvo.profile && alvo.profile.plan !== 'free',
+    })
     return { ok: true, ate }
   }
 
@@ -777,6 +803,7 @@ export class AdminService {
       reason: motivo,
       ip,
     })
+    await this.avisarConta(userId, 'conta-reativada')
     return { ok: true }
   }
 
@@ -818,7 +845,7 @@ export class AdminService {
         email: true,
         closedAt: true,
         suspendedUntil: true,
-        profile: { select: { id: true, slug: true } },
+        profile: { select: { id: true, slug: true, plan: true } },
       },
     })
     if (!alvo) throw new BadRequestException('Conta não encontrada.')
@@ -893,6 +920,12 @@ export class AdminService {
       subject: fingerprint(alvo.email),
       resource: 'admin:encerrar',
       result: 'ok',
+    })
+    await this.avisarConta(userId, 'conta-encerrada', {
+      motivo,
+      // A mesma janela que fecha a contestação sem sessão (appeals.service.ts).
+      contestarAte: new Date(Date.now() + (degrau('close')?.contestacaoDias ?? 30) * 24 * 60 * 60 * 1000),
+      planoPago: !!alvo.profile && alvo.profile.plan !== 'free',
     })
     return { ok: true, enderecoLiberado: alvo.profile?.slug ?? null }
   }

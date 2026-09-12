@@ -37,6 +37,7 @@ export class AccountService {
         id: true,
         email: true,
         createdAt: true,
+        emailVerifiedAt: true,
         termsAcceptedAt: true,
         termsVersion: true,
         profile: {
@@ -131,7 +132,23 @@ export class AccountService {
       sobre:
         'Tudo o que o advoc.me guarda sobre esta conta. Denúncias aparecem apenas ' +
         'pelo motivo e pela data: o contato de quem denunciou pertence a outra pessoa.',
-      conta: { id: user.id, email: user.email, criadaEm: user.createdAt },
+      conta: {
+        id: user.id,
+        email: user.email,
+        criadaEm: user.createdAt,
+        emailConfirmadoEm: user.emailVerifiedAt ?? null,
+      },
+      avisosPorEmail: {
+        porQue:
+          'Os avisos que mandamos para o seu e-mail: qual, quando e se saiu. O texto de cada um não é ' +
+          'guardado, e o endereço e os dados do aviso são apagados assim que ele sai. Somem em 30 dias.',
+        registros: await this.prisma.mailOutbox.findMany({
+          where: { userId },
+          select: { modelo: true, status: true, createdAt: true, enviadoEm: true },
+          orderBy: { createdAt: 'desc' },
+          take: 500,
+        }),
+      },
       aceiteDosTermos: user.termsAcceptedAt
         ? {
             em: user.termsAcceptedAt,

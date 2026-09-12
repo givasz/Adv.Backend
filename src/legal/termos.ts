@@ -18,6 +18,19 @@
 export const TERMS_VERSION = '2026-09-04'
 
 /**
+ * Quem opera a plataforma — espelha OPERADOR do front (frontend/src/lib/legalIdentity.ts).
+ *
+ * Mora aqui para o rodapé dos e-mails: um aviso que diz "sua conta foi suspensa"
+ * sem dizer QUEM está falando é indistinguível de golpe, e é parte identificada
+ * que o CDC pede em toda comunicação com o consumidor. A paridade com o front é
+ * conferida em termos.spec.ts.
+ */
+export const OPERADOR = {
+  razaoSocial: 'VEACCI SERVIÇOS DE T.I LTDA — ME',
+  cnpj: '43.563.547/0001-08',
+} as const
+
+/**
  * O aceite gravado ainda vale?
  *
  * Comparação por igualdade, e não "é mais nova que": uma conta carimbada com uma

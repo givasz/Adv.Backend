@@ -81,6 +81,14 @@ function service(opts: { firms?: Qualquer[]; user?: Qualquer | null } = {}) {
         ]),
       ),
     },
+    // Avisos por e-mail: só modelo, situação e datas — nunca o endereço nem o texto.
+    mailOutbox: {
+      findMany: vi.fn(() =>
+        Promise.resolve([
+          { modelo: 'senha-alterada', status: 'enviado', createdAt: new Date(), enviadoEm: new Date() },
+        ]),
+      ),
+    },
     // Histórico de cobrança: dado sobre a PESSOA, então entra na exportação.
     billingEvent: {
       findMany: vi.fn(() =>

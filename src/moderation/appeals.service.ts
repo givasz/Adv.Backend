@@ -20,12 +20,16 @@
 // Conta suspensa não loga, e sem logar não há como escrever. Daí a autenticação
 // por e-mail e senha SEM abrir sessão (`abrirPorCredencial`): a pessoa prova
 // quem é, escreve, e não ganha acesso a mais nada.
+//
+// Os dois lados do prazo chegam por e-mail: o recibo com a data-limite, na
+// abertura, e a resposta, na decisão.
 
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { verifyPassword, burnPasswordTime } from '../auth/user-auth'
 import { degrau } from '../admin/sancoes'
 import { faixa, pagina } from '../admin/paginacao'
+import { CorreioService } from '../mail/correio.service'
 
 /** Dias que a plataforma tem para responder. Ver política, § 5. */
 const RESPOSTA_DIAS = 10
@@ -35,6 +39,7 @@ const TEXTO_MAX = 4000
 
 interface Alvo {
   userId: string
+  email: string
   alvo: 'profile' | 'account'
   medida: string
   /** Prazo atual da medida no perfil, se houver. */
@@ -44,7 +49,10 @@ interface Alvo {
 
 @Injectable()
 export class AppealsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly correio?: CorreioService,
+  ) {}
 
   // ---- Descobrir o que há para contestar ------------------------------------
 
@@ -59,6 +67,7 @@ export class AppealsService {
       where: { id: userId },
       select: {
         id: true,
+        email: true,
         closedAt: true,
         suspendedUntil: true,
         profile: {
@@ -69,17 +78,12 @@ export class AppealsService {
     if (!u) return null
 
     const agora = Date.now()
+    const base = { userId, email: u.email, profileId: u.profile?.id ?? null }
     if (u.closedAt) {
-      return { userId, alvo: 'account', medida: 'close', prazoAtual: null, profileId: u.profile?.id ?? null }
+      return { ...base, alvo: 'account', medida: 'close', prazoAtual: null }
     }
     if (u.suspendedUntil && u.suspendedUntil.getTime() > agora) {
-      return {
-        userId,
-        alvo: 'account',
-        medida: 'suspend',
-        prazoAtual: u.suspendedUntil,
-        profileId: u.profile?.id ?? null,
-      }
+      return { ...base, alvo: 'account', medida: 'suspend', prazoAtual: u.suspendedUntil }
     }
     const p = u.profile
     if (p && p.moderationStatus !== 'active') {
@@ -87,7 +91,7 @@ export class AppealsService {
       if (p.moderationUntil && p.moderationUntil.getTime() <= agora) return null
       const medida =
         p.moderationStatus === 'warned' ? 'warn' : p.moderationStatus === 'partial' ? 'partial' : 'restrict'
-      return { userId, alvo: 'profile', medida, prazoAtual: p.moderationUntil, profileId: p.id }
+      return { ...base, alvo: 'profile', medida, prazoAtual: p.moderationUntil }
     }
     return null
   }
@@ -175,6 +179,15 @@ export class AppealsService {
         await tx.profile.update({ where: { id: alvo.profileId }, data: { moderationUntil: novoPrazo } })
       }
       return a
+    })
+
+    // O recibo com a data-limite por escrito — é o comprovante de que o prazo
+    // começou a correr, na caixa de quem contestou.
+    await this.correio?.enfileirar({
+      modelo: 'contestacao-recebida',
+      para: alvo.email,
+      userId,
+      dados: { respondeAte: criada.respondeAte },
     })
 
     return { ok: true, respondeAte: criada.respondeAte, id: criada.id }
@@ -277,7 +290,14 @@ export class AppealsService {
   ) {
     const a = await this.prisma.appeal.findUnique({
       where: { id },
-      select: { id: true, userId: true, alvo: true, status: true, prazoOriginal: true },
+      select: {
+        id: true,
+        userId: true,
+        alvo: true,
+        status: true,
+        prazoOriginal: true,
+        user: { select: { email: true } },
+      },
     })
     if (!a) throw new NotFoundException('Contestação não encontrada.')
     if (a.status !== 'open') throw new BadRequestException('Esta contestação já foi respondida.')
@@ -334,6 +354,14 @@ export class AppealsService {
           })
         }
       }
+    })
+
+    // A resposta é o texto que o revisor escreveu — o mesmo que fica no registro.
+    await this.correio?.enfileirar({
+      modelo: 'contestacao-respondida',
+      para: a.user.email,
+      userId: a.userId,
+      dados: { aceita, resposta: resposta.slice(0, 2000), ate: aceita ? null : a.prazoOriginal },
     })
 
     return { ok: true, aceita }

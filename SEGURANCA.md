@@ -735,10 +735,17 @@ perguntar ao servidor quem está logado antes de decidir o que desenhar.
 ## Em aberto (com o motivo)
 
 1. **Enumeração de contas no cadastro.** `POST /auth/signup` responde "já existe uma
-   conta com este e-mail". A regra pede resposta neutra — mas isso só funciona com
-   **confirmação por e-mail**, que a plataforma ainda não tem: sem ela, a pessoa
-   ficaria sem saber por que a conta não foi criada. Mitigado por hora com o teto de
-   8 cadastros/hora por IP. *Resolver junto com o envio de e-mail.*
+   conta com este e-mail". A regra pede resposta neutra — e isso só funciona com
+   **confirmação por e-mail**. Desde 12/09/2026 o envio existe (`src/mail/`), mas a
+   confirmação foi feita **sem trancar** o cadastro: a pessoa entra na hora e o painel
+   pede para confirmar. A resposta neutra exigiria o contrário — "confira seu e-mail
+   para continuar" antes de qualquer acesso —, o que muda o onboarding inteiro e é
+   decisão de produto. Continua mitigado com o teto de 8 cadastros/hora por IP.
+
+   O "esqueci minha senha", ao contrário, já nasceu neutro: `POST /auth/senha/esqueci`
+   responde 202 idêntico exista a conta ou não, e o trabalho roda depois da resposta.
+   Em produção o envio segue desligado até a Política de Privacidade declarar o
+   provedor (`CORREIO_NA_POLITICA_DESDE` em `src/mail/config.ts`).
 
 2. **Cookie de terceiros no arranjo atual.** Com o front no Netlify e a API na VPS,
    o cookie da sessão é `SameSite=None` — e navegadores vêm apertando o cerco a

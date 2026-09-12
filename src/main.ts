@@ -5,6 +5,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express'
 import { AppModule } from './app.module'
 import { assertSecureConfig } from './security/config'
 import { avisarSobreTreinoDeIa, descreverCadeia } from './ai/provedores'
+import { configDoCorreio, descreverCorreio } from './mail/config'
 import { securityHeaders } from './security/headers'
 import { sessionContext } from './auth/session-context'
 import { CSRF_HEADER, origemPermitida } from './auth/csrf'
@@ -25,6 +26,10 @@ async function bootstrap() {
   // E o que a cadeia tem DE VERDADE: nomes no .env não são chaves. Esta linha
   // é a primeira coisa a conferir depois de um `pm2 restart`.
   console.log(`[ia] ${descreverCadeia(process.env)}`)
+  // O correio diz em uma linha se está ligado, por onde sai e — quando está
+  // desligado — por quê. Chave no .env não é e-mail saindo: a Política de
+  // Privacidade precisa declarar o provedor (ver mail/config.ts).
+  console.log(`[correio] ${descreverCorreio(configDoCorreio(process.env))}`)
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bodyParser: true,

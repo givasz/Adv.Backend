@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { aceiteVigente, TERMS_VERSION } from './termos'
+import { aceiteVigente, OPERADOR, TERMS_VERSION } from './termos'
+import { CORREIO_NA_POLITICA_DESDE } from '../mail/config'
 
 // Trava de paridade — mesmo princípio do ruleset da OAB (oab/oab.rules.spec.ts).
 //
@@ -11,9 +12,12 @@ import { aceiteVigente, TERMS_VERSION } from './termos'
 // "vigente" apontando para um texto que ninguém viu.
 const RAIZ = join(__dirname, '..', '..', '..')
 
+function arquivoDoFront(...partes: string[]): string {
+  return readFileSync(join(RAIZ, 'frontend', 'src', 'lib', ...partes), 'utf8')
+}
+
 function constanteDoFront(nome: string): string {
-  const arquivo = readFileSync(join(RAIZ, 'frontend', 'src', 'lib', 'legalIdentity.ts'), 'utf8')
-  const achado = new RegExp(`export const ${nome} = '([^']+)'`).exec(arquivo)
+  const achado = new RegExp(`export const ${nome} = '([^']+)'`).exec(arquivoDoFront('legalIdentity.ts'))
   if (!achado) throw new Error(`${nome} não encontrada em frontend/src/lib/legalIdentity.ts`)
   return achado[1]
 }
@@ -25,6 +29,25 @@ describe('trava de paridade dos documentos legais (backend ↔ front)', () => {
 
   it('a versão é uma data ISO — é assim que o aceite fica legível num relatório', () => {
     expect(TERMS_VERSION).toMatch(/^\d{4}-\d{2}-\d{2}(-\d+)?$/)
+  })
+
+  it('o operador do rodapé dos e-mails é o mesmo que os documentos identificam', () => {
+    // Um e-mail assinado por uma razão social e uns Termos por outra são duas
+    // partes diferentes para quem lê — e para quem julga.
+    const fonte = arquivoDoFront('legalIdentity.ts')
+    expect(fonte).toContain(`razaoSocial: '${OPERADOR.razaoSocial}'`)
+    expect(fonte).toContain(`cnpj: '${OPERADOR.cnpj}'`)
+  })
+})
+
+describe('o correio só liga quando a Política declara o provedor', () => {
+  it('se a constante diz que declara, o texto da Política de fato menciona o Resend', () => {
+    // A constante é a chave que liga o envio em produção (ver mail/config.ts).
+    // Sem esta conferência, bastaria trocá-la para ligar o correio com a
+    // Política ainda calada sobre quem recebe o e-mail de cada pessoa.
+    if (CORREIO_NA_POLITICA_DESDE === null) return
+    expect(TERMS_VERSION >= CORREIO_NA_POLITICA_DESDE).toBe(true)
+    expect(arquivoDoFront('legalContent.ts')).toMatch(/Resend/)
   })
 })
 
