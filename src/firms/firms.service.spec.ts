@@ -114,6 +114,65 @@ describe('convite', () => {
   })
 })
 
+describe('convite por e-mail', () => {
+  // O convite fica no painel de qualquer jeito; o e-mail é o que faz a pessoa
+  // saber que ele existe. Testado aqui o que o serviço PEDE ao correio.
+  function comCorreio(opts: { convidado?: Qualquer } = {}) {
+    const base = service(opts)
+    base.prisma.firm.findUnique.mockResolvedValue({
+      id: 'firm1',
+      name: 'Andrade & Vieira Advogados',
+      slug: 'x',
+      members: [],
+      invites: [],
+      roster: [],
+    })
+    const correio = { ativo: true, enfileirar: vi.fn(async () => true) }
+    const svc = new FirmsService(base.prisma as any, base.profiles as any, correio as any)
+    return { ...base, svc, correio }
+  }
+
+  it('sem conta: sai com o nome do escritório, o papel e uma trava de repetição', async () => {
+    const { svc, correio } = comCorreio()
+    await svc.invite('u1', '  Novo@Exemplo.adv.br ', 'admin')
+    expect(correio.enfileirar).toHaveBeenCalledTimes(1)
+    const aviso = (correio.enfileirar.mock.calls[0] as any[])[0]
+    expect(aviso).toMatchObject({
+      modelo: 'convite-escritorio',
+      para: 'novo@exemplo.adv.br',
+      userId: null,
+      dados: { escritorio: 'Andrade & Vieira Advogados', papel: 'admin' },
+    })
+    // A trava leva o escritório e a impressão digital — nunca o endereço.
+    expect(aviso.chave).toMatch(/^convite:firm1:[0-9a-f]{12}:\d{4}-\d{2}-\d{2}$/)
+    expect(aviso.chave).not.toContain('exemplo')
+  })
+
+  it('com conta: também sai, ligado à conta de quem foi convidado', async () => {
+    const { svc, correio } = comCorreio({
+      convidado: { id: 'u2', profile: { id: 'p2', firmMembership: null } },
+    })
+    await svc.invite('u1', 'socio@exemplo.adv.br')
+    expect((correio.enfileirar.mock.calls[0] as any[])[0]).toMatchObject({ userId: 'u2', dados: { papel: 'member' } })
+  })
+
+  it('associar e-mail a um advogado listado manda o mesmo convite', async () => {
+    const { svc, prisma, correio } = comCorreio()
+    prisma.firmRosterLawyer.findUnique.mockResolvedValue({ id: 'r1', firmId: 'firm1' })
+    await svc.linkRosterLawyer('u1', 'r1', 'marina@exemplo.com', 'member')
+    expect(correio.enfileirar).toHaveBeenCalledTimes(1)
+  })
+
+  it('convite recusado não manda e-mail nenhum', async () => {
+    const { svc, correio } = comCorreio({
+      convidado: { id: 'u2', profile: { id: 'p2', firmMembership: { firmId: 'outra' } } },
+    })
+    await expect(svc.invite('u1', 'socio@exemplo.adv.br')).rejects.toThrow(/outro escritório/i)
+    await expect(svc.invite('u1', 'nao-e-email')).rejects.toThrow(/e-mail válido/i)
+    expect(correio.enfileirar).not.toHaveBeenCalled()
+  })
+})
+
 describe('saída do escritório', () => {
   const ativo = {
     id: 'm1',

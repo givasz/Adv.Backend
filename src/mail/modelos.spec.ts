@@ -31,6 +31,7 @@ const DADOS: Record<Modelo, Record<string, unknown>> = {
   'conta-encerrada': { motivo: 'Fraude confirmada.', contestarAte: '2026-10-12T12:00:00Z', planoPago: true },
   'contestacao-recebida': { respondeAte: '2026-09-22T12:00:00Z' },
   'contestacao-respondida': { aceita: false, resposta: 'A frase continua prometendo resultado.' },
+  'convite-escritorio': { escritorio: 'Andrade & Vieira Advogados', papel: 'member' },
   'termos-atualizados': { versao: '2026-09-12' },
 }
 
@@ -114,5 +115,31 @@ describe('os modelos de e-mail', () => {
   it('ao liberar o perfil, o motivo interno não vai no e-mail', () => {
     const r = renderizar('moderacao-decisao', { acao: 'clear', motivo: 'nota interna do painel' }, { site: SITE })
     expect(r.texto).not.toContain('nota interna')
+  })
+
+  it('convite de escritório: o nome digitado não vai no assunto nem vira marcação', () => {
+    // Quem cria o escritório escolhe o nome, e o convite vai para qualquer
+    // endereço que ele digitar: o nome é a isca perfeita se chegar ao assunto.
+    const isca = 'Seu cartão foi bloqueado <b>clique aqui</b>'
+    const r = renderizar('convite-escritorio', { escritorio: isca, papel: 'member' }, { site: SITE })
+    expect(r.assunto).not.toContain('cartão')
+    expect(r.html).not.toContain('<b>clique')
+    expect(r.texto).toContain('Escritório:')
+  })
+
+  it('convite de escritório: o mesmo texto para quem tem conta e para quem não tem', () => {
+    const r = renderizar('convite-escritorio', { escritorio: 'Andrade & Vieira', papel: 'member' }, { site: SITE })
+    expect(r.texto).toContain('Se você já tem conta com este e-mail')
+    expect(r.texto).toContain('Se ainda não tem')
+    expect(r.texto).toMatch(/não confere escritórios nem inscrições/)
+    // Quem recebe pode não ter conta: o rodapé diz o motivo certo.
+    expect(r.texto).toMatch(/um escritório informou este endereço/)
+    expect(r.texto).not.toMatch(/trata da sua conta/)
+  })
+
+  it('convite de escritório: diz o que administrar abre, e sem nome não sai', () => {
+    const admin = renderizar('convite-escritorio', { escritorio: 'Andrade & Vieira', papel: 'admin' }, { site: SITE })
+    expect(admin.texto).toMatch(/administrar a página do escritório/)
+    expect(() => renderizar('convite-escritorio', { papel: 'member' }, { site: SITE })).toThrow()
   })
 })
