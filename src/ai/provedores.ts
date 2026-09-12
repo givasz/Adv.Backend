@@ -59,6 +59,19 @@ export interface Provedor {
    * Ausente quer dizer que o provedor tem caminho próprio no ai.service.
    */
   baseOpenAi?: string
+  /**
+   * Campos a mais no corpo do `/chat/completions`, decididos pelo MODELO.
+   *
+   * Existe por causa dos modelos que raciocinam antes de responder: o raciocínio
+   * sai do mesmo `max_tokens` do texto, e com o orçamento de um headline (220) ou
+   * de uma bio (450) ele gasta tudo e a resposta volta VAZIA. Medido no Groq em
+   * 12/09/2026: gpt-oss-120b com 450 tokens devolveu 0 caracteres de texto e 1.600
+   * de raciocínio; com `reasoning_effort: 'low'`, 317 caracteres em 0,7 s.
+   *
+   * É função do modelo, e não do provedor, porque o mesmo parâmetro derruba outro
+   * modelo do mesmo endereço (`allam-2-7b` responde 400 "not supported").
+   */
+  corpoExtra?: (modelo: string) => Record<string, unknown>
   /** Roda sem chave nenhuma — só o LLM local. */
   semChave?: boolean
   /** Como está a gratuidade hoje. Só documentação: nada no código lê isto. */
@@ -127,11 +140,26 @@ export const PROVEDORES: Record<Provider, Provedor> = {
   // GroqCloud (console.groq.com) — NÃO é o Grok da xAI, apesar do nome.
   // É o melhor reserva que existe hoje: tier grátis de verdade, sem cartão,
   // limitado por taxa (dezenas de pedidos por minuto) e absurdamente rápido.
+  //
+  // ⚠️ Em 12/09/2026 o `llama-3.3-70b-versatile` já não existia (404
+  // model_not_found) e a reserva caía no template em TODO pedido. Medido com
+  // chave de verdade e os prompts reais: gpt-oss-120b escreveu bem em ~0,7 s;
+  // gpt-oss-20b cortou o texto, qwen3.8 errou português e qwen3.6 vazou o
+  // <think>. Lista vigente:
+  //     curl -s -H "Authorization: Bearer $GROQ_API_KEY" https://api.groq.com/openai/v1/models
   groq: {
     nome: 'groq',
     envs: ['GROQ_API_KEY'],
     baseOpenAi: 'https://api.groq.com/openai/v1',
-    modeloPadrao: 'llama-3.3-70b-versatile',
+    modeloPadrao: 'openai/gpt-oss-120b',
+    // gpt-oss aceita low/medium/high; qwen3 aceita none/default; os demais
+    // recusam o campo com 400. Ver `corpoExtra` na interface.
+    corpoExtra: (modelo) =>
+      /^openai\/gpt-oss/.test(modelo)
+        ? { reasoning_effort: 'low' }
+        : /^qwen\/qwen3/.test(modelo)
+          ? { reasoning_effort: 'none' }
+          : {},
     custo: 'gratis',
     treinaComOsDados: 'talvez',
   },
