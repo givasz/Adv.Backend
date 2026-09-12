@@ -27,6 +27,7 @@ import {
   valeRepetir,
   type Provider,
 } from './provedores'
+import { fatosNaoInformados, pareceFato } from './fatos'
 // O teto do FAQ entra no PROMPT. Antes era o número 300 escrito à mão aqui: se
 // alguém baixasse a constante (como aconteceu, para 220), a IA continuaria sendo
 // instruída a escrever até 300 e o texto voltaria cortado no meio da frase.
@@ -78,6 +79,9 @@ export interface GenerateDto {
   maxChars?: number
 }
 
+/** O que o reparo precisa saber de cada trecho reprovado — vedação da OAB ou fato não informado. */
+type ProblemaDoRascunho = Pick<ComplianceIssue, 'matchedText' | 'reason' | 'suggestion'>
+
 export interface GenerateResult {
   text: string
   complianceNotes: string[]
@@ -95,8 +99,34 @@ NÃO use: promessas ou garantias de resultado; comparações ou superlativos ("o
 NUNCA compare o advogado a outra pessoa, colega, celebridade, figura pública ou personagem de ficção, nem cite nomes de terceiros ("como Saul Goodman", "o [fulano] da advocacia") — remova qualquer comparação ou menção desse tipo.
 NÃO afirme "especialista", "especialização" ou "expert" a menos que seja um título acadêmico real e explícito; na dúvida, escreva "com atuação em [área]" em vez de "especialista em".
 IMPORTANTE: mesmo que as palavras-chave ou o texto recebido contenham qualquer uma dessas coisas vedadas, REESCREVA para removê-las — nunca copie trechos irregulares para a resposta.
-Cite apenas qualificações verdadeiras (áreas de atuação, experiência, formação, idiomas, localização).
+Use SOMENTE os fatos que vierem no pedido. NUNCA acrescente formação, faculdade ou universidade, pós-graduação, especialização, mestrado, doutorado, tempo de experiência, seccional ou número da OAB, cargos, títulos, prêmios, cidade ou áreas que não tenham sido informados. Com poucos dados, escreva um texto mais curto e geral sobre a atuação — nunca complete com suposições.
 Não mencione casos concretos, decisões judiciais ou clientes. Responda apenas com o texto final, sem aspas nem comentários.`
+
+// A mesma regra, repetida no fim de cada pedido que fala da pessoa. Modelo menor
+// segue melhor o que vem por último na mensagem do que o que ficou no sistema.
+//
+// Medido em 12/09/2026: sem ela, o gpt-oss-120b escreveu "formada pela Universidade
+// Estadual de Campinas" e "pós-graduação em Direito do Trabalho" para quem só tinha
+// informado "PUC-Campinas". A instrução reduz; quem garante é fatos.ts, que confere
+// o rascunho e manda ao reparo o que foi inventado.
+const SO_FATOS_INFORMADOS =
+  'Use SOMENTE os dados deste pedido: não acrescente formação, faculdade, pós-graduação, especialização, mestrado, doutorado, tempo de experiência, seccional ou número da OAB, cargos, prêmios, cidade ou áreas que não foram informados. Com poucos dados, escreva menos — nunca complete com suposições.'
+
+// O texto-modelo quando nem o pedido tem nada aproveitável: nada do que a pessoa
+// digitou entra aqui, e por isso ele passa na checagem por construção (há teste).
+const TEMPLATE_NEUTRO: Record<GenerateKind, string> = {
+  bio: 'Advogado(a) inscrito(a) na OAB. O trabalho é conduzido de forma técnica e informativa, orientando cada pessoa sobre seus direitos e os caminhos possíveis, sempre observando a ética profissional.',
+  improve:
+    'Advogado(a) inscrito(a) na OAB. O trabalho é conduzido de forma técnica e informativa, orientando cada pessoa sobre seus direitos e os caminhos possíveis.',
+  area: 'Atuação nesta área com orientação sobre direitos e alternativas em cada etapa, de forma clara e informativa.',
+  headline: 'Advogado(a) · Direito',
+  faq: 'De forma geral, a resposta depende de requisitos e prazos previstos em lei, que mudam conforme a situação de cada pessoa. O caminho começa por reunir os documentos e verificar qual regra se aplica. Cada caso exige análise própria.',
+}
+
+/** "a, b e c". */
+function juntar(itens: string[]): string {
+  return itens.length > 1 ? `${itens.slice(0, -1).join(', ')} e ${itens[itens.length - 1]}` : (itens[0] ?? '')
+}
 
 // Qual motor de IA escreve, e o que acontece quando ele para de responder, vive
 // em provedores.ts — inclusive a leitura de `AI_PROVIDER` (que hoje aceita uma
@@ -151,11 +181,11 @@ export class AiService {
       // reparo (vira template, que já é regular), nunca a resposta.
       !usedFallback &&
       attempt <= MAX_REPAIRS &&
-      hasBlockingIssue(text) &&
+      this.problemas(text, dto).length > 0 &&
       restante(prazo) >= MINIMO_PARA_TENTAR_MS;
       attempt++
     ) {
-      const blocking = checkCompliance(text).filter((i) => i.severity === 'block')
+      const blocking = this.problemas(text, dto)
       this.logger.warn(
         `Rascunho reprovado (reparo ${attempt}/${MAX_REPAIRS}) — trechos: ${blocking
           .map((i) => `"${i.matchedText}"`)
@@ -171,7 +201,7 @@ export class AiService {
 
     // Guarda-corpo pós-geração (fonte da verdade): se NEM o reparo aprovou, aí sim
     // caímos no template seguro OAB-compliant. Ver REGRAS.md.
-    if (hasBlockingIssue(text)) {
+    if (this.problemas(text, dto).length) {
       this.logger.warn('IA reprovada após os reparos — usando template seguro (último recurso).')
       text = this.safeTemplate(dto)
       usedFallback = true
@@ -404,28 +434,24 @@ export class AiService {
     return this.viaOpenAiCompativel(provedor, base, modelo, chave, prompt, maxTokens, limiteMs)
   }
 
-  private list(dto: GenerateDto): string {
-    const kw = dto.keywords.map((k) => k.trim()).filter(Boolean)
-    if (kw.length > 1) return `${kw.slice(0, -1).join(', ')} e ${kw[kw.length - 1]}`
-    return kw[0] ?? (dto.areas?.filter(Boolean).join(', ') || 'sua área de atuação')
-  }
-
-  // Palavras-chave SANITIZADAS para o template de segurança (fallback). O prompt
-  // do Gemini já limpa; isto garante que o fallback nunca despeje comparações ou
-  // "especialista" crus do usuário (ex.: "... como saul goodman").
-  private cleanList(dto: GenerateDto): string {
-    const kw = dto.keywords
+  /**
+   * Os itens do pedido que o texto-modelo pode escrever.
+   *
+   * Até 12/09/2026 era só "tira comparação e 'especialista'" — e o resto entrava
+   * cru. Medido: palavras-chave "a melhor advogada" e "garanto resultado" viraram
+   * "com atuação em a melhor advogada e garanto resultado", devolvido ao editor
+   * com duas vedações. Agora o item entra só se passar LIMPO na checagem (nem
+   * aviso) e não for currículo ("10 anos", "PUC-Campinas" não são área de atuação).
+   */
+  private itensSeguros(itens: (string | undefined)[] | undefined): string[] {
+    return (itens ?? [])
       .map((k) =>
-        k
+        (k ?? '')
           .replace(/\b(como|igual a|tipo|feito)\b.*/i, '') // corta comparações a terceiros
-          .replace(/\bespecialist\w*\b/gi, '')
-          .replace(/\bexpert\w*\b/gi, '')
           .replace(/\s{2,}/g, ' ')
           .trim(),
       )
-      .filter(Boolean)
-    if (kw.length > 1) return `${kw.slice(0, -1).join(', ')} e ${kw[kw.length - 1]}`
-    return kw[0] ?? (dto.areas?.filter(Boolean).join(', ') || 'sua área de atuação')
+      .filter((k) => k && checkCompliance(k).length === 0 && !pareceFato(k))
   }
 
   private buildPrompt(dto: GenerateDto): string {
@@ -450,17 +476,17 @@ export class AiService {
       case 'area':
         return `Escreva a descrição da área de atuação "${dto.areaLabel ?? ''}"${
           kws ? ` abordando estes temas: ${kws}` : ''
-        }. Explique de forma clara e factual o que o(a) advogado(a) faz nessa área.${ctx} ${sentences}, sem emojis.`
+        }. Explique de forma clara e factual o que o(a) advogado(a) faz nessa área.${ctx} ${sentences}, sem emojis. ${SO_FATOS_INFORMADOS}`
 
       case 'headline':
         return `Escreva UMA frase de apresentação curta (headline) para o perfil${
           dto.name ? ` de ${dto.name}` : ''
         }, indicando a atuação${
           kws ? ` em: ${kws}` : dto.areas?.length ? ` em: ${dto.areas.filter(Boolean).join(', ')}` : ''
-        }. Máximo de 8 palavras${dto.maxChars ? ` e ${dto.maxChars} caracteres` : ''}, factual e sóbria, sem ponto final. Exemplo de estilo: "Advogada · Direito de Família e Sucessões". Responda apenas a frase.`
+        }. Máximo de 8 palavras${dto.maxChars ? ` e ${dto.maxChars} caracteres` : ''}, factual e sóbria, sem ponto final. Exemplo de estilo: "Advogada · Direito de Família e Sucessões". ${SO_FATOS_INFORMADOS} Responda apenas a frase.`
 
       case 'improve':
-        return `Revise e reescreva o texto abaixo para ficar mais claro, sóbrio e dentro das normas da OAB, preservando o sentido e os fatos. Não invente qualificações nem dados.${ctx} ${sentences}, sem emojis.\n\nTexto:\n"""${dto.currentText ?? ''}"""`
+        return `Revise e reescreva o texto abaixo para ficar mais claro, sóbrio e dentro das normas da OAB, preservando o sentido e os fatos. Não invente qualificações nem dados. ${SO_FATOS_INFORMADOS}${ctx} ${sentences}, sem emojis.\n\nTexto:\n"""${dto.currentText ?? ''}"""`
 
       case 'faq': {
         // A pergunta chega em `areaLabel` (é o assunto da resposta); a resposta que o
@@ -487,6 +513,7 @@ Regras obrigatórias (normas de publicidade da advocacia, Provimento 205/2021 da
 - Pode explicar como a lei trata o tema e citar o dispositivo ou instituto aplicável.
 - NÃO prometa resultado, prazo ou êxito; não diga que "resolve" ou "garante" nada.
 - NÃO cite casos, clientes, processos, valores de honorários nem preços.
+- Não fale de formação, experiência, cargos ou títulos de quem responde.
 - Sem superlativos ("o melhor", "especialista renomado") e sem comparar advogados.
 - Sem captação: não convide a contratar, não use "fale comigo" nem "me chame".
 - Termine lembrando, em poucas palavras, que cada caso exige análise própria.
@@ -496,15 +523,48 @@ Regras obrigatórias (normas de publicidade da advocacia, Provimento 205/2021 da
       case 'bio':
       default: {
         const who = dto.name ? `de ${dto.name}, que é advogado(a) no Brasil` : 'de um(a) advogado(a) brasileiro(a)'
-        return `Escreva, em primeira pessoa, a bio de apresentação ${who}. Atua em: ${this.list(dto)}.${ctx} ${sentences}, sem emojis.`
+        // Até 12/09/2026 as palavras-chave entravam como "Atua em: ...": "10 anos,
+        // PUC-Campinas" chegava ao modelo como área de atuação, e ele completava o
+        // resto. Palavra-chave é o que a pessoa escreveu, e o prompt diz só isso.
+        const informado = kws
+          ? `O que o(a) advogado(a) informou sobre a atuação: ${kws}.`
+          : `Áreas de atuação: ${dto.areas?.filter(Boolean).join(', ') || 'não informadas'}.`
+        return `Escreva, em primeira pessoa, a bio de apresentação ${who}. ${informado}${ctx} ${sentences}, sem emojis. ${SO_FATOS_INFORMADOS}`
       }
     }
   }
 
+  /**
+   * O que impede um rascunho da IA de voltar: vedação da OAB (block) e fato de
+   * currículo que o pedido não trouxe (ver fatos.ts). Os dois vão ao mesmo reparo.
+   *
+   * O FAQ fica fora da segunda conferência: é texto educativo sobre a lei, e "2
+   * anos", "faculdade" ou "perito" ali são assunto, não currículo de quem responde.
+   */
+  private problemas(text: string, dto: GenerateDto): ProblemaDoRascunho[] {
+    const vedacoes = checkCompliance(text).filter((i) => i.severity === 'block')
+    if (dto.kind === 'faq') return vedacoes
+    return [...vedacoes, ...fatosNaoInformados(text, dto, dto.kind === 'area' ? 'area' : 'perfil')]
+  }
+
+  /** Os dados do pedido, para o reparo não trocar uma invenção por outra. Nada além do que o prompt já enviou. */
+  private resumoDosDados(dto: GenerateDto): string {
+    const premium = dto.plan === 'premium'
+    const areas = dto.areas?.filter(Boolean) ?? []
+    const partes = [
+      dto.name && `nome: ${dto.name}`,
+      dto.areaLabel && `${dto.kind === 'faq' ? 'pergunta' : 'área'}: ${dto.areaLabel}`,
+      (premium || dto.kind === 'headline') && areas.length && `áreas: ${areas.join(', ')}`,
+      premium && dto.city && `cidade: ${dto.city}`,
+      dto.keywords.length && `palavras-chave: ${dto.keywords.join(', ')}`,
+    ].filter(Boolean)
+    return partes.length ? partes.join('; ') : 'nenhum além do próprio texto'
+  }
+
   // Prompt de reparo: devolve à IA os trechos exatos reprovados (e a orientação de
-  // cada regra) e pede reescrita PONTUAL, preservando assunto/tom/fatos legítimos.
+  // cada regra) e pede reescrita PONTUAL, preservando assunto/tom/fatos informados.
   // É o que evita cair no template genérico ao primeiro tropeço.
-  private buildRepairPrompt(dto: GenerateDto, text: string, issues: ComplianceIssue[]): string {
+  private buildRepairPrompt(dto: GenerateDto, text: string, issues: ProblemaDoRascunho[]): string {
     // Deduplica por trecho para não repetir a mesma orientação várias vezes.
     const seen = new Set<string>()
     const problems = issues
@@ -512,7 +572,9 @@ Regras obrigatórias (normas de publicidade da advocacia, Provimento 205/2021 da
       .map((i) => `- Trecho "${i.matchedText}": ${i.reason} ${i.suggestion}`)
       .join('\n')
 
-    return `O texto abaixo é para o perfil de um(a) advogado(a) e contém trechos que violam as normas de publicidade da OAB (Prov. 205/2021). Reescreva-o CORRIGINDO apenas os problemas listados e MANTENDO o mesmo assunto, o tom sóbrio e todas as informações legítimas (áreas, formação, experiência). Não encurte para um texto genérico.
+    return `O texto abaixo é para o perfil de um(a) advogado(a) e contém trechos que violam as normas de publicidade da OAB (Prov. 205/2021). Reescreva-o CORRIGINDO apenas os problemas listados e MANTENDO o mesmo assunto, o tom sóbrio e as informações que constam nos dados informados. Não encurte para um texto genérico.
+
+Dados informados pelo(a) advogado(a): ${this.resumoDosDados(dto)}.
 
 Texto atual:
 """${text}"""
@@ -522,33 +584,53 @@ ${problems}
 
 Devolva o texto completo já corrigido — sem promessas ou garantias de resultado, sem preços, sem comparações, superlativos ou menção a terceiros.${
       dto.maxChars ? ` Use no máximo ${dto.maxChars} caracteres.` : ''
-    } Responda apenas com o texto final.`
+    } ${SO_FATOS_INFORMADOS} Responda apenas com o texto final.`
   }
 
-  // Template garantidamente compliant, usado quando a IA não produz texto aprovado.
+  /**
+   * O texto-modelo: o ÚLTIMO recurso, quando a IA não entrega texto aprovado.
+   *
+   * A promessa dele é absoluta — nunca devolver texto reprovado —, e é por isso
+   * que o generate() pode confiar nele sem conferir de novo. Duas travas:
+   *   1. só entra item do pedido que passa limpo (ver itensSeguros);
+   *   2. o texto montado é conferido; se ainda assim tiver vedação (um nome como
+   *      "Dra. Ana, a número 1"), sai o TEMPLATE_NEUTRO, sem nada do pedido.
+   */
   private safeTemplate(dto: GenerateDto): string {
-    const list = this.cleanList(dto)
+    const texto = this.montarTemplate(dto)
+    return hasBlockingIssue(texto) || fatosNaoInformados(texto, dto).length ? TEMPLATE_NEUTRO[dto.kind] : texto
+  }
+
+  private montarTemplate(dto: GenerateDto): string {
+    const temas = this.itensSeguros(dto.keywords)
+    const areas = this.itensSeguros(dto.areas)
+    const atuacao = juntar(areas.length ? areas : temas)
+    const onde = atuacao ? `, com atuação em ${atuacao}` : ''
     switch (dto.kind) {
       case 'area': {
-        const area = dto.areaLabel ?? 'esta área'
-        return `Atuação em ${area}, com foco em ${list}. O trabalho é orientar sobre direitos e alternativas em cada etapa, de forma clara e informativa.`
+        const area = this.itensSeguros([dto.areaLabel])[0]
+        const foco = juntar(temas)
+        return `${area ? `Atuação em ${area}` : 'Atuação nesta área'}${foco ? `, com foco em ${foco}` : ''}. O trabalho é orientar sobre direitos e alternativas em cada etapa, de forma clara e informativa.`
       }
-      case 'headline': {
-        const area = dto.areaLabel || dto.areas?.filter(Boolean)[0] || dto.keywords.filter(Boolean)[0] || 'Direito'
-        return `Advogado(a) · ${area}`
+      case 'headline':
+        return `Advogado(a) · ${this.itensSeguros([dto.areaLabel])[0] || areas[0] || temas[0] || 'Direito'}`
+      case 'improve': {
+        // Devolver o próprio texto da pessoa só quando ele não tem vedação: o
+        // template não pode ser o caminho pelo qual um texto reprovado volta.
+        const atual = dto.currentText?.trim()
+        if (atual && !hasBlockingIssue(atual)) return atual
+        return `Advogado(a) inscrito(a) na OAB${onde}. O trabalho é conduzido de forma técnica e informativa, orientando cada pessoa sobre seus direitos e os caminhos possíveis.`
       }
-      case 'improve':
-        return dto.currentText?.trim()
-          ? dto.currentText.trim()
-          : `Advogado(a) inscrito(a) na OAB, com atuação em ${list}. O trabalho é conduzido de forma técnica e informativa, orientando cada pessoa sobre seus direitos e caminhos possíveis.`
-      case 'faq': {
-        const tema = dto.areaLabel || dto.areas?.filter(Boolean)[0] || 'o tema'
-        return `De forma geral, ${tema} segue requisitos e prazos previstos em lei, que mudam conforme a situação de cada pessoa. O caminho começa por reunir os documentos e verificar qual regra se aplica. Cada caso exige análise própria.`
-      }
+      case 'faq':
+        // A pergunta chega em `areaLabel` (ver buildPrompt). Antes ela entrava como
+        // sujeito: "De forma geral, Qual o prazo...? segue requisitos". Resposta de
+        // reserva é genérica de propósito — é ponto de partida, não resposta.
+        return TEMPLATE_NEUTRO.faq
       case 'bio':
       default: {
-        const who = dto.name ? `${dto.name} é advogado(a) inscrito(a) na OAB` : 'Advogado(a) inscrito(a) na OAB'
-        return `${who}, com atuação em ${list}. O trabalho é conduzido de forma técnica e informativa, orientando cada pessoa sobre seus direitos e os caminhos possíveis, sempre observando a ética profissional.`
+        const nome = this.itensSeguros([dto.name])[0]
+        const who = nome ? `${nome} é advogado(a) inscrito(a) na OAB` : 'Advogado(a) inscrito(a) na OAB'
+        return `${who}${onde}. O trabalho é conduzido de forma técnica e informativa, orientando cada pessoa sobre seus direitos e os caminhos possíveis, sempre observando a ética profissional.`
       }
     }
   }
