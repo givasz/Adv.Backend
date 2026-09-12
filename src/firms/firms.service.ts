@@ -9,6 +9,8 @@ import { PrismaService } from '../prisma/prisma.service'
 import { FIRM_PRICING, firmMonthlyPrice, slugify, type Plan } from '../plans'
 import { avatarPublico, ProfilesService } from '../profiles/profiles.service'
 import { perfilVisivelAoPublico, secoesCensuradas } from '../profiles/visibilidade'
+import { agendaPublica } from '../profiles/agenda-publica'
+import { planoVigente } from '../assinatura'
 import {
   clampOrNull,
   clampText,
@@ -709,6 +711,10 @@ export class FirmsService {
           // Só serve ao encaminhamento do assistente (assistantRoute: 'lawyer');
           // o card do grid não mostra o número de ninguém.
           whatsapp: p.whatsapp ?? undefined,
+          // A agenda do próprio advogado, quando ele usa o assistente no perfil: é
+          // ela que deixa a conversa do escritório oferecer horário de verdade em
+          // vez de só "esta semana, de manhã". Ver profiles/agenda-publica.ts.
+          agenda: agendaPublica(p, planoVigente(p)),
         }
       })
       // Advogados LISTADOS pelo escritório, que ainda não têm conta. Entram na
@@ -735,6 +741,8 @@ export class FirmsService {
             // porque não há número dele aqui — cai no institucional, como já faz
             // quando o advogado escolhido não tem número.
             whatsapp: undefined,
+            // Sem conta não há perfil, e sem perfil não há agenda: a conversa pergunta período.
+            agenda: undefined,
           })),
       )
       // Ordem NEUTRA (alfabética) — sem hierarquia por senioridade/destaque.
