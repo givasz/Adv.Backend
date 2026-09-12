@@ -653,6 +653,7 @@ Devolva o texto completo já corrigido — sem promessas ou garantias de resulta
         model: modelo,
         temperature: 0.7,
         max_tokens: maxTokens,
+        ...PROVEDORES[provedor].corpoExtra?.(modelo),
         messages: [
           { role: 'system', content: OAB_SYSTEM },
           { role: 'user', content: prompt },

@@ -132,6 +132,25 @@ describe('modeloDe', () => {
   })
 })
 
+describe('corpoExtra — modelo que raciocina não pode gastar o texto pensando', () => {
+  const extra = (modelo: string) => PROVEDORES.groq.corpoExtra?.(modelo) ?? {}
+
+  it('o modelo padrão do Groq sai com raciocínio curto', () => {
+    // Sem isto, o gpt-oss-120b gastava os 450 tokens de uma bio raciocinando e a
+    // resposta voltava vazia — a reserva existia e caía no template sempre.
+    expect(extra(PROVEDORES.groq.modeloPadrao)).toEqual({ reasoning_effort: 'low' })
+  })
+
+  it('qwen3 desliga o raciocínio (senão o <think> vaza para o texto)', () => {
+    expect(extra('qwen/qwen3.8-27b')).toEqual({ reasoning_effort: 'none' })
+  })
+
+  it('modelo sem raciocínio não recebe o campo — o Groq recusa com 400', () => {
+    expect(extra('allam-2-7b')).toEqual({})
+    expect(extra('llama-3.1-8b-instant')).toEqual({})
+  })
+})
+
 describe('chaveQueimada', () => {
   it('cota estourada e chave recusada pedem a próxima chave', () => {
     expect(chaveQueimada(429)).toBe(true)
@@ -381,7 +400,7 @@ describe('descreverCadeia — a linha de boot diz o que a cadeia tem de verdade'
       env({ AI_PROVIDER: 'gemini,groq,openrouter', GEMINI_API_KEY: 'a,b', GROQ_API_KEY: 'c' }),
     )
     expect(linha).toContain('gemini [gemini-flash-lite-latest, 2 chave(s)]')
-    expect(linha).toContain('groq [llama-3.3-70b-versatile, 1 chave(s)]')
+    expect(linha).toContain('groq [openai/gpt-oss-120b, 1 chave(s)]')
     expect(linha).toContain('sem chave (pulados): openrouter')
     expect(linha).not.toContain('SEM PLANO B')
   })
