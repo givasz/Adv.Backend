@@ -744,8 +744,10 @@ perguntar ao servidor quem está logado antes de decidir o que desenhar.
 
    O "esqueci minha senha", ao contrário, já nasceu neutro: `POST /auth/senha/esqueci`
    responde 202 idêntico exista a conta ou não, e o trabalho roda depois da resposta.
-   Em produção o envio segue desligado até a Política de Privacidade declarar o
-   provedor (`CORREIO_NA_POLITICA_DESDE` em `src/mail/config.ts`).
+   O envio está ligado em produção desde 12/09/2026: domínio `avisos.advoc.me`
+   verificado no Resend, Política de Privacidade e Termos na versão 2026-09-12
+   declarando o provedor (`CORREIO_NA_POLITICA_DESDE`), sem rastreio de clique nem
+   de abertura.
 
 2. **Cookie de terceiros no arranjo atual.** Com o front no Netlify e a API na VPS,
    o cookie da sessão é `SameSite=None` — e navegadores vêm apertando o cerco a

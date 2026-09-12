@@ -15,7 +15,7 @@
 // registro que aponta para o vazio.
 
 /** Versão vigente — é a data da revisão. Espelha TERMS_VERSION do front. */
-export const TERMS_VERSION = '2026-09-04'
+export const TERMS_VERSION = '2026-09-12'
 
 /**
  * Quem opera a plataforma — espelha OPERADOR do front (frontend/src/lib/legalIdentity.ts).
