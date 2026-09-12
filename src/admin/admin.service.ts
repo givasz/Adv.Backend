@@ -55,6 +55,7 @@ import {
 import { novoSegredoTotp, otpauthUrl, segredoLegivel, totpConfere } from './totp'
 import { faixaTrilha, trilha } from './paginacao'
 import { degrau, venceEm } from './sancoes'
+import { avisarIndexNow } from '../seo/indexnow'
 
 /** Quem está usando o painel nesta requisição. */
 export interface AdminAtual {
@@ -901,6 +902,10 @@ export class AdminService {
         })
       }
     })
+
+    // A página saiu do ar e o endereço foi liberado: o buscador é avisado para
+    // derrubar o resultado antigo (enfileirado; ver seo/indexnow.ts).
+    if (alvo.profile?.slug) avisarIndexNow([`/${alvo.profile.slug}`])
 
     await this.registrar(quem, {
       action: 'conta.encerrar',

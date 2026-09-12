@@ -13,6 +13,7 @@ import { faixa, pagina } from '../admin/paginacao'
 import { blockingFields, POLICY_VERSION, publicStatus, RULESET_REV } from '../oab/compliance'
 import { aceiteVigente, TERMS_VERSION } from '../legal/termos'
 import { devoRegistrarEdicao, registrarAcesso } from '../security/access-log'
+import { avisarIndexNow } from '../seo/indexnow'
 import {
   AREA_LIMIT,
   canUseFaq,
@@ -332,9 +333,35 @@ export class ProfilesService {
       where: this.visivelAoPublico(),
       orderBy: [{ updatedAt: 'desc' }],
       take: 5000,
-      select: { slug: true, updatedAt: true },
+      // `bio` e a contagem de áreas entram só para a REGRA abaixo — não saem.
+      select: { slug: true, updatedAt: true, bio: true, _count: { select: { areas: true } } },
     })
-    return rows.map((r) => ({ slug: r.slug, updatedAt: r.updatedAt.toISOString() }))
+    // A mesma régua de `perfilIndexavel` (frontend/src/lib/ogTags.ts): um perfil
+    // sem área e sem bio recebe `noindex` na borda, e listar no sitemap o que a
+    // própria página manda não indexar é o tipo de contradição que o Search
+    // Console cobra como erro. Quando o advogado preenche, entra sozinho.
+    const perfis = rows
+      .filter((r) => r._count.areas > 0 || (r.bio ?? '').trim().length >= 80)
+      .map((r) => ({ slug: r.slug, updatedAt: r.updatedAt.toISOString() }))
+
+    // Escritórios com alguém dentro (membro ativo ou advogado listado à mão) ou
+    // com texto institucional. Uma sociedade recém-criada, vazia, ainda não é
+    // uma página — é um formulário pela metade.
+    const firms = await this.prisma.firm.findMany({
+      orderBy: [{ updatedAt: 'desc' }],
+      take: 2000,
+      select: {
+        slug: true,
+        updatedAt: true,
+        about: true,
+        _count: { select: { roster: true, members: { where: { status: 'active' } } } },
+      },
+    })
+    const escritorios = firms
+      .filter((f) => f._count.members > 0 || f._count.roster > 0 || (f.about ?? '').trim().length >= 80)
+      .map((f) => ({ slug: f.slug, updatedAt: f.updatedAt.toISOString() }))
+
+    return { perfis, escritorios }
   }
 
   // Aplica a censura parcial (moderationStatus == partial) e remove os campos
@@ -1367,6 +1394,18 @@ export class ProfilesService {
       })
     }
 
+    // Avisa o buscador que a página mudou — inclusive quando ela DEIXOU de ser
+    // pública (despublicar é mudança) e quando trocou de endereço (o antigo
+    // passa a responder 404, e é bom que ele saiba logo). Rascunho que nunca
+    // foi ao ar não avisa nada: não há página. Enfileirado; nunca segura o save.
+    if (jaPublicado || data.published) {
+      const anterior = (current as { slug?: string } | null)?.slug
+      avisarIndexNow([
+        `/${updated.slug}`,
+        ...(anterior && anterior !== updated.slug ? [`/${anterior}`] : []),
+      ])
+    }
+
     return this.toApi(updated)
   }
 
@@ -1567,6 +1606,8 @@ export class ProfilesService {
       where: { id: p.id },
       data: { slug: novo, slugGraceUntil: null },
     })
+    // O endereço antigo morreu e o novo nasceu: os dois vão ao buscador.
+    avisarIndexNow([`/${anterior}`, `/${novo}`])
 
     // O endereço é a coisa mais pública do perfil: a troca vai para a trilha, com
     // o de antes e o de agora. É o registro que responde "por que meu QR parou de

@@ -6,6 +6,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
+import { avisarIndexNow } from '../seo/indexnow'
 import { FIRM_PRICING, firmMonthlyPrice, slugify, type Plan } from '../plans'
 import { avatarPublico, ProfilesService } from '../profiles/profiles.service'
 import { perfilVisivelAoPublico, secoesCensuradas } from '../profiles/visibilidade'
@@ -322,8 +323,15 @@ export class FirmsService {
     }
 
     if (managed) {
+      const antes = await this.prisma.firm.findUnique({ where: { id: managed.id }, select: { slug: true } })
       await this.prisma.firm.update({ where: { id: managed.id }, data: fields })
       await this.syncSeats(managed.id)
+      // A página da sociedade mudou (e talvez de endereço): o buscador é avisado
+      // — enfileirado, nunca segurando o save. Ver seo/indexnow.ts.
+      avisarIndexNow([
+        `/escritorio/${slug}`,
+        ...(antes?.slug && antes.slug !== slug ? [`/escritorio/${antes.slug}`] : []),
+      ])
       return this.manageView(managed.id)
     }
 
@@ -341,6 +349,7 @@ export class FirmsService {
         .catch(() => {})
     }
     await this.syncSeats(firm.id)
+    avisarIndexNow([`/escritorio/${firm.slug}`])
     return this.manageView(firm.id)
   }
 

@@ -120,14 +120,22 @@ export class ProfilesController {
   // página: estourou, a visita apenas não conta. Sem ele, um laço de terminal
   // gravava uma linha de LinkEvent por requisição, para sempre — e "Quem visita
   // você", que é métrica vendida no plano pago, virava número forjável de fora.
+  //
+  // `?origem=borda` é a edge function do Netlify buscando o perfil para montar
+  // as meta tags e o HTML estático (frontend/netlify/edge-functions/perfil.ts).
+  // Ela chama ANTES de o navegador do visitante chamar — sem esta marca, toda
+  // abertura de página contava duas visitas, e todo robô de prévia contava uma.
+  // Qualquer um pode pôr o parâmetro; o único efeito é a visita não contar.
   @Get('profiles/:slug')
   getBySlug(
     @Param('slug') slug: string,
+    @Query('origem') origem?: string,
     @Ip() ip?: string,
     @Headers('x-forwarded-for') forwardedFor?: string,
   ) {
     const chave = `view:${clientIp(ip, forwardedFor)}`
     const contarVisita =
+      origem !== 'borda' &&
       checkRateLimit(chave, { windowMs: 60_000, max: 60 }) &&
       checkRateLimit(chave, { windowMs: 3_600_000, max: 600 })
     return this.profiles.getBySlug(slug, contarVisita)
