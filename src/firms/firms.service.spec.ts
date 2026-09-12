@@ -405,6 +405,48 @@ describe('página pública do escritório', () => {
     ])
   })
 
+  // A conversa do escritório oferece os horários de quem usa o assistente no
+  // próprio perfil. Quem não usa — ou foi só listado, sem conta — segue com a
+  // pergunta de período, e para isso a agenda dele NÃO pode vir.
+  it('leva a agenda de quem usa o assistente, e só dessa pessoa', async () => {
+    const { svc, prisma } = servicoPublico()
+    const comum = {
+      areas: [],
+      socials: [],
+      bio: '',
+      oabNumber: '',
+      avatarUrl: null,
+      plan: 'premium',
+      planStatus: 'active',
+    }
+    prisma.firm.findUnique = vi.fn().mockResolvedValue({
+      id: 'firm1',
+      slug: 'andrade-vieira',
+      roster: [{ id: 'r1', name: 'Rui Listado' }],
+      members: [
+        {
+          profile: {
+            ...comum,
+            id: 'p1',
+            slug: 'ana',
+            name: 'Ana',
+            schedulingMode: 'assistant',
+            assistantDays: JSON.stringify([{ weekday: 2, times: ['14:00'] }]),
+            assistantBusy: '[]',
+            assistantDurationMin: 60,
+          },
+        },
+        { profile: { ...comum, id: 'p2', slug: 'bia', name: 'Bia', schedulingMode: 'off' } },
+      ],
+    })
+    const out: any = await svc.getBySlug('andrade-vieira')
+    const porNome = Object.fromEntries(out.lawyers.map((l: any) => [l.name, l]))
+    expect(porNome.Ana.agenda.days).toEqual([{ weekday: 2, times: ['14:00'] }])
+    expect(porNome.Ana.agenda.durationMin).toBe(60)
+    expect(porNome.Bia.agenda).toBeUndefined()
+    expect(porNome['Rui Listado'].agenda).toBeUndefined()
+  })
+
   it('o EDITOR continua vendo todo mundo — inclusive quem está fora do ar', async () => {
     // Quem administra precisa enxergar o membro restrito ou por publicar; é o que
     // lhe permite cobrar a regularização em vez de ficar sem entender por que a

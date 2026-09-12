@@ -7,6 +7,7 @@ import {
 import { createHash } from 'node:crypto'
 import { PrismaService } from '../prisma/prisma.service'
 import { perfilVisivelAoPublico, secoesCensuradas } from './visibilidade'
+import { type AssistantDayCol, gradeDoAssistente, horariosOcupados } from './agenda-publica'
 import { areaComMaisDeUma, perguntaComMaisDeUma } from '../campo-unico'
 import { faixa, pagina } from '../admin/paginacao'
 import { blockingFields, POLICY_VERSION, publicStatus, RULESET_REV } from '../oab/compliance'
@@ -411,7 +412,7 @@ export class ProfilesService {
 
   // Grade do assistente virtual → colunas planas, com limites de sanidade. Dias sem
   // horário válido são descartados: o assistente nunca oferece um dia vazio. O
-  // formato de cada dia na coluna é AssistantDayCol, no fim do arquivo.
+  // formato de cada dia na coluna é AssistantDayCol, em agenda-publica.ts.
   private assistantCols(a: any) {
     const clampInt = (v: unknown, min: number, max: number, dflt: number) => {
       const n = Math.round(Number(v))
@@ -467,15 +468,8 @@ export class ProfilesService {
    * guarda quando, e mais nada.
    */
   private assistantBusy(raw: unknown): string[] {
-    const corte = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
-    const ok = (v: unknown): v is string =>
-      typeof v === 'string' &&
-      /^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):([0-5]\d)$/.test(v) &&
-      v.slice(0, 10) >= corte &&
-      !Number.isNaN(Date.parse(`${v}:00Z`))
-    const lista = Array.isArray(raw) ? raw.filter(ok) : []
-    // Teto: 400 marcações cobrem meses de agenda cheia; acima disso é abuso ou bug.
-    return [...new Set(lista)].sort().slice(0, 400)
+    // A regra mora em agenda-publica.ts: a página do escritório lê a mesma lista.
+    return horariosOcupados(raw)
   }
 
   // Colunas planas → objeto `assistant` do frontend.
@@ -486,25 +480,8 @@ export class ProfilesService {
   // janela — se a leitura não fechasse a porta, o perfil seguiria com o balão
   // dentro dela.
   private buildAssistant(p: any, plano: Plan) {
-    let days: AssistantDayCol[] = []
-    try {
-      const parsed = JSON.parse(typeof p.assistantDays === 'string' ? p.assistantDays : '[]')
-      if (Array.isArray(parsed)) days = parsed
-    } catch {
-      /* JSON inválido → grade vazia (o front cai no padrão) */
-    }
-    let busy: string[] = []
-    try {
-      busy = this.assistantBusy(JSON.parse(typeof p.assistantBusy === 'string' ? p.assistantBusy : '[]'))
-    } catch {
-      /* JSON inválido → nenhum horário ocupado (a grade volta inteira) */
-    }
     return {
-      days,
-      busy,
-      durationMin: p.assistantDurationMin ?? 45,
-      leadHours: p.assistantLeadHours ?? 12,
-      horizonDays: p.assistantHorizonDays ?? 14,
+      ...gradeDoAssistente(p),
       greeting: p.assistantGreeting ?? '',
       floating: canUseScheduling(plano) && p.assistantFloating === true,
     }
@@ -1746,12 +1723,4 @@ function semEnderecoEscondido<T extends { addressPublic?: boolean | null }>(p: T
     addressComplement: null,
     addressDistrict: null,
   }
-}
-
-/** Um dia da grade do assistente como fica na coluna `assistantDays`. */
-interface AssistantDayCol {
-  weekday: number
-  times: string[]
-  /** faixas de atendimento que geraram os horários ("das 07:00 às 11:00") */
-  faixas?: { inicio: string; fim: string }[]
 }
