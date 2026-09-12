@@ -3,7 +3,14 @@ import { AiService, type GenerateDto, type GenerateResult } from './ai.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { SessionService } from '../auth/session.service'
 import type { RequisicaoComAuth } from '../auth/session-context'
-import { AI_RATE_RULES, enforceRateLimit } from '../security/rate-limit'
+import {
+  AI_RATE_RULES,
+  enforceRateLimit,
+  proximaVaga,
+  regraDoDia,
+  restantes,
+  type QuemGera,
+} from '../security/rate-limit'
 import { clientIp } from '../security/net'
 import { planoVigente } from '../assinatura'
 
@@ -28,7 +35,7 @@ export class AiController {
     private readonly sessions: SessionService,
   ) {}
 
-  // POST /api/ai/generate  → { text, complianceNotes }
+  // POST /api/ai/generate  → { text, complianceNotes, limite }
   @Post('generate')
   async generate(
     @Body() dto: GenerateDto,
@@ -37,32 +44,23 @@ export class AiController {
     @Headers('x-forwarded-for') xff?: string,
   ): Promise<GenerateResult> {
     const userId = await this.sessions.userIdFrom(req)
+    const ipCliente = clientIp(ip, xff)
 
-    // Cada geração custa dinheiro num provedor pago. Sem teto, um laço de terminal
-    // esvazia o orçamento da conta em minutos — e a rota é pública de propósito
-    // (o Free sem conta usa a IA de bio/área).
-    const limites: [string, (typeof AI_RATE_RULES)['perIp']][] = [
-      [`ai:ip:${clientIp(ip, xff)}`, AI_RATE_RULES.perIp],
-      [`ai:burst:${clientIp(ip, xff)}`, AI_RATE_RULES.perIpBurst],
-    ]
-    if (userId) {
-      limites.push([`ai:user:${userId}`, AI_RATE_RULES.perUser])
-      limites.push([`ai:user-dia:${userId}`, AI_RATE_RULES.perUserDay])
-    } else {
-      // Sem conta, o dia é do IP — e mais curto (ver AI_RATE_RULES).
-      limites.push([`ai:ip-dia:${clientIp(ip, xff)}`, AI_RATE_RULES.perIpDay])
-    }
-    enforceRateLimit(limites, 'Muitas gerações em pouco tempo. Aguarde um instante e tente de novo.')
-    // O guarda-chuva das chaves: a plataforma inteira, por hora. Vem DEPOIS dos
-    // tetos individuais para uma pessoa exagerando não consumir o global de
-    // todo mundo — e a mensagem é outra, porque a culpa não é de quem clicou.
+    // 1. O ENDEREÇO, com ou sem conta — antes de qualquer consulta ao banco. Cada
+    //    geração custa cota num provedor, e a rota é pública de propósito (o Free
+    //    sem conta usa a IA de bio/área).
     enforceRateLimit(
-      [['ai:global', AI_RATE_RULES.global]],
-      'A IA está com muita procura agora. Tente de novo em alguns minutos — ou comece por um modelo pronto.',
+      [
+        [`ai:burst:${ipCliente}`, AI_RATE_RULES.perIpBurst],
+        [`ai:ip:${ipCliente}`, AI_RATE_RULES.perIp],
+        [`ai:ip-dia:${ipCliente}`, AI_RATE_RULES.perIpDayTotal],
+      ],
+      'Muitas gerações em pouco tempo. Aguarde um instante e tente de novo.',
     )
 
-    // O PLANO É DO SERVIDOR (mesma regra do PUT /profiles/me): vem da assinatura
-    // gravada no banco. Sem sessão, é free — e free só gera bio e área.
+    // 2. O PLANO É DO SERVIDOR (mesma regra do PUT /profiles/me): vem da assinatura
+    //    gravada no banco. Sem sessão, é free — e free só gera bio e área.
+    //    Vem ANTES das cotas da pessoa: pedido recusado não gasta a cota de ninguém.
     const plan = await this.planoDoUsuario(userId)
     const kind = typeof dto?.kind === 'string' ? dto.kind : 'bio'
     const minimo = AI_MIN_PLAN[kind] ?? 'premium'
@@ -70,7 +68,37 @@ export class AiController {
       throw new ForbiddenException('Esse recurso de IA faz parte de um plano superior.')
     }
 
-    return this.ai.generate({ ...dto, kind: kind as GenerateDto['kind'], plan })
+    // 3. A PESSOA: respiro, hora e o dia do plano. Sem conta, a pessoa é o IP.
+    const ator = userId ? `conta:${userId}` : `ip:${ipCliente}`
+    enforceRateLimit(
+      [[`ai:respiro:${ator}`, AI_RATE_RULES.respiro]],
+      'Aguarde alguns segundos entre uma geração e outra.',
+    )
+    if (userId) {
+      enforceRateLimit(
+        [[`ai:hora:${ator}`, AI_RATE_RULES.perUser]],
+        'Muitas gerações nesta hora. Faça uma pausa e tente de novo daqui a pouco.',
+      )
+    }
+    const quem: QuemGera = userId ? plan : 'anonimo'
+    const chaveDoDia = `ai:dia:${ator}`
+    const regraDia = regraDoDia(quem)
+    enforceRateLimit([[chaveDoDia, regraDia]], (key, rule) =>
+      mensagemDoDia(quem, rule.max, proximaVaga(key, rule)),
+    )
+
+    // 4. O guarda-chuva das chaves: a plataforma inteira, por hora. Vem DEPOIS dos
+    //    tetos individuais para uma pessoa exagerando não consumir o global de
+    //    todo mundo — e a mensagem é outra, porque a culpa não é de quem clicou.
+    enforceRateLimit(
+      [['ai:global', AI_RATE_RULES.global]],
+      'A IA está com muita procura agora. Tente de novo em alguns minutos — ou comece por um modelo pronto.',
+    )
+
+    const resultado = await this.ai.generate({ ...dto, kind: kind as GenerateDto['kind'], plan })
+    // A tela mostra quanto resta: quem vê "restam 3 de 15" não descobre o limite
+    // pelo erro.
+    return { ...resultado, limite: { restantesHoje: restantes(chaveDoDia, regraDia), tetoHoje: regraDia.max } }
   }
 
   private async planoDoUsuario(userId: string | null): Promise<'free' | 'pro' | 'premium'> {
@@ -88,4 +116,32 @@ export class AiController {
       return 'free'
     }
   }
+}
+
+/**
+ * O 429 do teto diário. Diz o teto, QUANDO a vaga abre (janela de 24 h, não dia
+ * do calendário) e o que dá para fazer enquanto isso. A menção a limite maior é
+ * informação, não chamada para contratar: nada de urgência nem link.
+ */
+export function mensagemDoDia(quem: QuemGera, teto: number, vaga: number | null, agora = Date.now()): string {
+  const quando = vaga ? ` Você poderá gerar de novo ${quandoAbre(vaga, agora)}.` : ''
+  const maior =
+    quem === 'anonimo'
+      ? ' Com uma conta, o limite é maior.'
+      : quem === 'free'
+        ? ' Nos planos pagos, o limite diário é maior.'
+        : quem === 'pro'
+          ? ' No Max, o limite diário é maior.'
+          : ''
+  return `Você usou as ${teto} gerações de IA das últimas 24 horas.${quando} Enquanto isso, dá para editar o texto à mão.${maior}`
+}
+
+/** "às 14:32" ou "amanhã às 14:32", no horário de Brasília, arredondado PARA CIMA. */
+function quandoAbre(vaga: number, agora: number): string {
+  const tz = { timeZone: 'America/Sao_Paulo' } as const
+  // Arredondar para baixo prometeria uma vaga que ainda não abriu.
+  const minuto = Math.ceil(vaga / 60_000) * 60_000
+  const hora = new Date(minuto).toLocaleTimeString('pt-BR', { ...tz, hour: '2-digit', minute: '2-digit' })
+  const dia = (t: number) => new Date(t).toLocaleDateString('pt-BR', tz)
+  return dia(minuto) === dia(agora) ? `às ${hora}` : `amanhã às ${hora}`
 }
