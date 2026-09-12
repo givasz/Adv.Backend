@@ -47,6 +47,10 @@ datasource db {
 model User {
   id              String          @id @default(cuid())
   email           String          @unique
+  // Quando a pessoa provou que a caixa é dela — pelo link de confirmação, ou por
+  // uma redefinição de senha, que prova a mesma coisa. Nulo = nunca provou.
+  // Não tranca nada: decide só se o painel ainda pede a confirmação.
+  emailVerifiedAt DateTime?
   password        String // hash (argon2)
   createdAt       DateTime        @default(now())
   // ---- Aceite dos Termos ----
@@ -100,6 +104,10 @@ model User {
   // Impressões digitais dos documentos (contratos, procurações) que ele revisou
   // e registrou. Nunca o documento — ver model RegistroDocumento.
   registrosDeDocumento RegistroDocumento[]
+  // Links de confirmar e-mail e de redefinir senha (só o hash) — ver EmailToken.
+  emailTokens          EmailToken[]
+  // Avisos por e-mail endereçados a esta conta — ver MailOutbox.
+  avisosPorEmail       MailOutbox[]
 }
 
 // Sessão de login. O cookie HttpOnly leva um segredo aleatório; aqui fica o hash
@@ -188,6 +196,80 @@ model AccessLog {
 
   @@index([userId, createdAt])
   @@index([subject, createdAt])
+  @@index([createdAt])
+}
+
+// LINK DE UMA VEZ SÓ — confirmar o e-mail e redefinir a senha.
+//
+// Mesmo desenho da sessão: o link leva um segredo sorteado e aqui fica só o
+// SHA-256 dele. Ver src/auth/tokens-de-email.ts.
+//
+// `email` é o endereço para o qual o link FOI enviado. Se ele não for mais o da
+// conta quando o link for usado, o link não vale — senão um link que chegou a um
+// endereço antigo confirmaria o novo.
+model EmailToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // "confirmar" | "redefinir"
+  tipo      String
+  tokenHash String    @unique
+  email     String
+  expiraEm  DateTime
+  // Usado uma vez, não serve mais — nem para quem tiver copiado o link.
+  usadoEm   DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, tipo])
+  @@index([expiraEm])
+}
+
+// FILA DE E-MAIL — o aviso não se perde porque o provedor caiu.
+//
+// Todo e-mail entra aqui antes de sair, e sai por um despachante que tenta de
+// novo com espera crescente (src/mail/correio.service.ts). Sem a fila, uma queda
+// do provedor no minuto em que uma conta é suspensa faria a pessoa nunca saber da
+// suspensão — e prazo de contestação correndo contra quem não foi avisado não é
+// prazo.
+//
+// O QUE FICA DEPOIS DO ENVIO: que saiu, qual modelo, para quem (impressão digital)
+// e quando. O endereço e os dados — que podem levar um link de redefinição de
+// senha — são apagados na hora em que o aviso sai, falha ou vence. O corpo da
+// mensagem nunca é guardado: é montado na saída, a partir dos dados.
+model MailOutbox {
+  id               String    @id @default(cuid())
+  // Nome do modelo (src/mail/modelos.ts).
+  modelo           String
+  // Endereço de destino, só enquanto o aviso não sai.
+  para             String    @default("")
+  // Impressão digital do endereço: o que resta para saber "para quem foi".
+  destinatario     String    @default("")
+  // Conta a que o aviso se refere. Nulo no retorno a quem denunciou, que não tem
+  // conta. Cascade: excluir a conta leva junto o que ainda não saiu.
+  userId           String?
+  user             User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // JSON com o que o modelo precisa (nome, motivo, prazo, token).
+  dados            String    @default("{}")
+  // Trava contra aviso repetido: "termos:<versão>:<conta>", "denuncia:<digital>:<dia>".
+  chave            String?   @unique
+  // 0 = alguém esperando na tela; 1 = aviso sobre a conta; 2 = aviso em massa.
+  prioridade       Int       @default(1)
+  // pendente | enviado | falhou | expirado
+  status           String    @default("pendente")
+  tentativas       Int       @default(0)
+  proximaTentativa DateTime  @default(now())
+  // Link com prazo: passou daqui, o aviso não sai mais — um botão morto na caixa
+  // da pessoa é pior do que nenhum.
+  validoAte        DateTime?
+  // Último erro do provedor, sem endereço de e-mail dentro.
+  erro             String    @default("")
+  provedorId       String    @default("")
+  createdAt        DateTime  @default(now())
+  enviadoEm        DateTime?
+
+  @@index([status, prioridade, proximaTentativa])
+  @@index([status, enviadoEm])
+  @@index([userId, createdAt])
   @@index([createdAt])
 }
 

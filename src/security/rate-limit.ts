@@ -138,3 +138,24 @@ export function tetoGlobalPorHora(env: NodeJS.ProcessEnv = process.env): number 
 export const BILLING_RATE_RULES = {
   perIp: { windowMs: 60 * 1000, max: 240 } as Rule,
 }
+
+// Correio — pedir um link por e-mail e usar o link.
+//
+// Todo pedido aqui faz a plataforma MANDAR UM E-MAIL para um endereço digitado
+// por quem pede. Sem teto, a rota vira um jeito de encher a caixa de alguém com
+// mensagens assinadas por nós (e de queimar a reputação do domínio, que é o que
+// faz os avisos de verdade caírem no spam).
+//
+// O teto por e-mail usa a impressão digital, nunca o endereço — a chave vai para
+// o log quando estoura (ver enforceRateLimit).
+export const CORREIO_RATE_RULES = {
+  esqueciPorIp: { windowMs: 60 * 60 * 1000, max: 10 } as Rule,
+  // Cinco, e não um: quem espera o e-mail e não vê pede de novo — e cada pedido
+  // mata o link anterior. Travar no primeiro deixaria a pessoa sem link nenhum.
+  esqueciPorEmail: { windowMs: 60 * 60 * 1000, max: 5 } as Rule,
+  // Usar o link: o token tem 256 bits, então isto não protege o token — protege
+  // o scrypt da senha nova, que custa CPU a cada tentativa.
+  redefinirPorIp: { windowMs: 15 * 60 * 1000, max: 20 } as Rule,
+  confirmarPorIp: { windowMs: 15 * 60 * 1000, max: 30 } as Rule,
+  reenviarPorConta: { windowMs: 60 * 60 * 1000, max: 3 } as Rule,
+}

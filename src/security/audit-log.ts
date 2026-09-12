@@ -29,6 +29,11 @@ export type SecurityEvent =
   // não sumir — ver security/access-log.ts.
   | 'access_log_fail'
   | 'terms_accepted'
+  // Correio. O pedido de redefinição é registrado sempre, exista a conta ou não —
+  // o log também não pode ser um oráculo para quem o ler.
+  | 'password_reset_requested'
+  | 'password_reset'
+  | 'email_confirmed'
 
 interface Registro {
   event: SecurityEvent

@@ -15,7 +15,8 @@ async function main() {
     const r = await app.get(RetencaoService).expurgar()
     console.log(
       `Expurgo: ${r.eventos} eventos, ${r.auditoria} registros de auditoria, ` +
-        `${r.cobranca} eventos de cobrança e ${r.acesso} registros de acesso apagados.`,
+        `${r.cobranca} eventos de cobrança, ${r.acesso} registros de acesso, ` +
+        `${r.correio} avisos por e-mail e ${r.links} links de e-mail apagados.`,
     )
   } finally {
     await app.close()

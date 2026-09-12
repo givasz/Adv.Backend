@@ -12,7 +12,7 @@ import {
 import { AuthService } from './auth.service'
 import { SessionService } from './session.service'
 import type { RequisicaoComAuth } from './session-context'
-import { AUTH_RATE_RULES, enforceRateLimit } from '../security/rate-limit'
+import { AUTH_RATE_RULES, CORREIO_RATE_RULES, enforceRateLimit } from '../security/rate-limit'
 import { clientIp } from '../security/net'
 import { fingerprint, logSecurityEvent } from '../security/audit-log'
 import { registrarAcesso } from '../security/access-log'
@@ -258,6 +258,96 @@ export class AuthController {
     const resultado = await this.auth.trocarSenha(req, userId, body?.atual, body?.nova)
     logSecurityEvent({ event: 'password_changed', userId, result: 'ok' })
     return resultado
+  }
+
+  // ---- E-mail --------------------------------------------------------------
+
+  /**
+   * GET /api/auth/correio → { ativo } — o envio de e-mails está ligado?
+   *
+   * A tela de entrada só oferece "esqueci minha senha" quando a resposta é sim.
+   * Oferecer um link que nunca chega seria a plataforma prometendo o que não faz.
+   */
+  @Get('correio')
+  correio() {
+    return { ativo: this.auth.correioAtivo }
+  }
+
+  /**
+   * POST /api/auth/senha/esqueci  { email } → 202 { ok: true }, SEMPRE.
+   *
+   * Responde antes de olhar o banco. O trabalho (achar a conta, gerar o link,
+   * pôr na fila) roda depois da resposta — então nem o texto nem o TEMPO dizem
+   * se o e-mail tem conta aqui. É o mesmo cuidado do login, por outro caminho.
+   *
+   * Dois tetos: por IP (varredura) e por impressão digital do e-mail (a caixa de
+   * alguém não vira alvo de rajada de mensagens nossas).
+   */
+  @Post('senha/esqueci')
+  @HttpCode(202)
+  esqueciSenha(
+    @Body() body: { email?: string },
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') xff?: string,
+  ) {
+    const endereco = clientIp(ip, xff)
+    const subject = fingerprint(typeof body?.email === 'string' ? body.email : undefined)
+    enforceRateLimit(
+      [
+        [`esqueci:ip:${endereco}`, CORREIO_RATE_RULES.esqueciPorIp],
+        [`esqueci:email:${subject ?? 'sem-email'}`, CORREIO_RATE_RULES.esqueciPorEmail],
+      ],
+      'Muitos pedidos em pouco tempo. Aguarde alguns minutos e tente novamente.',
+    )
+    void this.auth.pedirRedefinicao(body?.email).catch(() => undefined)
+    logSecurityEvent({ event: 'password_reset_requested', ip: endereco, subject, result: 'ok' })
+    return { ok: true }
+  }
+
+  /**
+   * POST /api/auth/senha/redefinir  { token, nova } — usa o link do e-mail.
+   *
+   * A credencial é o token: 256 bits, uma hora, uso único, só o hash no banco.
+   * Derruba todas as sessões da conta e não abre nenhuma — a pessoa entra em
+   * seguida com a senha nova.
+   */
+  @Post('senha/redefinir')
+  async redefinirSenha(
+    @Req() req: RequisicaoComAuth,
+    @Body() body: { token?: string; nova?: string },
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') xff?: string,
+  ) {
+    const endereco = clientIp(ip, xff)
+    enforceRateLimit([[`redefinir:ip:${endereco}`, CORREIO_RATE_RULES.redefinirPorIp]])
+    const r = await this.auth.redefinirSenha(req, body?.token, body?.nova)
+    logSecurityEvent({ event: 'password_reset', ip: endereco, result: 'ok' })
+    return r
+  }
+
+  /** POST /api/auth/email/confirmar  { token } — o link de confirmação, com ou sem sessão. */
+  @Post('email/confirmar')
+  async confirmarEmail(
+    @Body() body: { token?: string },
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') xff?: string,
+  ) {
+    const endereco = clientIp(ip, xff)
+    enforceRateLimit([[`confirmar:ip:${endereco}`, CORREIO_RATE_RULES.confirmarPorIp]])
+    const r = await this.auth.confirmarEmail(body?.token)
+    logSecurityEvent({ event: 'email_confirmed', ip: endereco, result: 'ok' })
+    return r
+  }
+
+  /** POST /api/auth/email/reenviar — manda o link de confirmação de novo. */
+  @Post('email/reenviar')
+  async reenviarConfirmacao(@Req() req: RequisicaoComAuth) {
+    const userId = await this.sessions.requireUser(req)
+    enforceRateLimit(
+      [[`reenviar:user:${userId}`, CORREIO_RATE_RULES.reenviarPorConta]],
+      'Você já pediu alguns e-mails agora. Confira a caixa de entrada e o spam, e tente de novo mais tarde.',
+    )
+    return this.auth.reenviarConfirmacao(userId)
   }
 
   /**

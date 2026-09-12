@@ -58,11 +58,31 @@ export const RETENCAO_COBRANCA_DIAS = 365
  */
 export const RETENCAO_ACESSO_DIAS = 180
 
+/**
+ * Fila de e-mail (MailOutbox). O que sobra de um aviso depois de sair é o modelo,
+ * a impressão digital de quem recebeu e a data — 30 dias cobrem o "não recebi" e
+ * a depuração de uma entrega. O que não saiu em 30 dias também vai: um aviso de
+ * um mês atrás chegando agora confunde mais do que informa.
+ */
+export const RETENCAO_CORREIO_DIAS = 30
+
+/** Links de confirmar e-mail e redefinir senha, depois de vencidos. Só o hash, mas sem uso. */
+export const RETENCAO_LINKS_DIAS = 7
+
 const INTERVALO_MS = 24 * 60 * 60 * 1000
 // Espera antes da primeira passagem: subir a aplicação e imediatamente disparar
 // um DELETE grande disputaria o banco justamente no instante em que o pm2 está
 // conferindo se o processo respondeu. Cinco minutos tiram um do caminho do outro.
 const PRIMEIRA_MS = 5 * 60 * 1000
+
+export interface ResultadoDoExpurgo {
+  eventos: number
+  auditoria: number
+  cobranca: number
+  acesso: number
+  correio: number
+  links: number
+}
 
 @Injectable()
 export class RetencaoService implements OnModuleInit, OnModuleDestroy {
@@ -93,14 +113,9 @@ export class RetencaoService implements OnModuleInit, OnModuleDestroy {
    * Apaga o que passou do prazo. Público para o `npm run retencao` poder chamar
    * uma passagem avulsa — útil logo depois de um deploy, sem esperar o intervalo.
    */
-  async expurgar(): Promise<{
-    eventos: number
-    auditoria: number
-    cobranca: number
-    acesso: number
-  }> {
+  async expurgar(): Promise<ResultadoDoExpurgo> {
     try {
-      const [eventos, auditoria, cobranca, acesso] = await Promise.all([
+      const [eventos, auditoria, cobranca, acesso, correio, links] = await Promise.all([
         this.prisma.linkEvent.deleteMany({ where: { createdAt: { lt: limite(RETENCAO_EVENTOS_DIAS) } } }),
         this.prisma.auditLog.deleteMany({ where: { createdAt: { lt: limite(RETENCAO_AUDITORIA_DIAS) } } }),
         this.prisma.billingEvent.deleteMany({
@@ -109,29 +124,41 @@ export class RetencaoService implements OnModuleInit, OnModuleDestroy {
         this.prisma.accessLog.deleteMany({
           where: { createdAt: { lt: limite(RETENCAO_ACESSO_DIAS) } },
         }),
+        this.prisma.mailOutbox.deleteMany({
+          where: { createdAt: { lt: limite(RETENCAO_CORREIO_DIAS) } },
+        }),
+        // Todo link vence em no máximo 48 h depois de criado, então "vencido há
+        // uma semana" alcança também os que foram usados.
+        this.prisma.emailToken.deleteMany({
+          where: { expiraEm: { lt: limite(RETENCAO_LINKS_DIAS) } },
+        }),
       ])
-      const total = eventos.count + auditoria.count + cobranca.count + acesso.count
-      // Só registra quando houve o que apagar: uma linha de log por dia dizendo
-      // "apaguei zero" é ruído que faz o log parar de ser lido.
-      if (total > 0) {
-        this.log.log(
-          `expurgo: ${eventos.count} eventos (>${RETENCAO_EVENTOS_DIAS}d), ` +
-            `${auditoria.count} registros de auditoria (>${RETENCAO_AUDITORIA_DIAS}d), ` +
-            `${cobranca.count} eventos de cobrança (>${RETENCAO_COBRANCA_DIAS}d), ` +
-            `${acesso.count} registros de acesso (>${RETENCAO_ACESSO_DIAS}d)`,
-        )
-      }
-      return {
+      const r: ResultadoDoExpurgo = {
         eventos: eventos.count,
         auditoria: auditoria.count,
         cobranca: cobranca.count,
         acesso: acesso.count,
+        correio: correio.count,
+        links: links.count,
       }
+      // Só registra quando houve o que apagar: uma linha de log por dia dizendo
+      // "apaguei zero" é ruído que faz o log parar de ser lido.
+      if (Object.values(r).some((n) => n > 0)) {
+        this.log.log(
+          `expurgo: ${r.eventos} eventos (>${RETENCAO_EVENTOS_DIAS}d), ` +
+            `${r.auditoria} registros de auditoria (>${RETENCAO_AUDITORIA_DIAS}d), ` +
+            `${r.cobranca} eventos de cobrança (>${RETENCAO_COBRANCA_DIAS}d), ` +
+            `${r.acesso} registros de acesso (>${RETENCAO_ACESSO_DIAS}d), ` +
+            `${r.correio} avisos por e-mail (>${RETENCAO_CORREIO_DIAS}d), ` +
+            `${r.links} links de e-mail vencidos (>${RETENCAO_LINKS_DIAS}d)`,
+        )
+      }
+      return r
     } catch (e) {
       // Uma falha de limpeza não pode derrubar a API: o pior efeito de não
       // apagar hoje é apagar amanhã.
       this.log.warn(`expurgo falhou: ${e instanceof Error ? e.message : e}`)
-      return { eventos: 0, auditoria: 0, cobranca: 0, acesso: 0 }
+      return { eventos: 0, auditoria: 0, cobranca: 0, acesso: 0, correio: 0, links: 0 }
     }
   }
 }

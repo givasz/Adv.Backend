@@ -13,6 +13,8 @@ import { isValidAction, isValidReason, type ModerationAction } from './moderatio
 import { checkRateLimit, REPORT_RATE_RULES } from './rate-limit'
 import { perfilVisivelAoPublico } from '../profiles/visibilidade'
 import { safeEmail } from '../security/sanitize'
+import { fingerprint } from '../security/audit-log'
+import { CorreioService } from '../mail/correio.service'
 
 // Mapeia a ação do admin para o novo estado de moderação do perfil.
 const ACTION_TO_STATUS: Record<ModerationAction, 'warned' | 'partial' | 'restricted' | 'active'> = {
@@ -21,6 +23,8 @@ const ACTION_TO_STATUS: Record<ModerationAction, 'warned' | 'partial' | 'restric
   restrict: 'restricted',
   clear: 'active',
 }
+
+const DIA = 24 * 60 * 60 * 1000
 
 interface CreateReportInput {
   reason: string
@@ -41,7 +45,10 @@ interface ModerateInput {
 
 @Injectable()
 export class ModerationService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly correio?: CorreioService,
+  ) {}
 
   // ---- Denúncia pública ----
 
@@ -86,6 +93,21 @@ export class ModerationService {
     if (!checkRateLimit(`report:ip:${ip}`, REPORT_RATE_RULES.perIp)) throw tooMany()
     if (!checkRateLimit(`report:ip:${ip}:slug:${slug}`, REPORT_RATE_RULES.perIpProfile)) {
       throw tooMany()
+    }
+
+    // Recibo a quem denunciou — ANTES de saber se o perfil existe, e com o mesmo
+    // texto em qualquer caso. Se o e-mail só chegasse quando o endereço pedido
+    // existe, a caixa de entrada viraria o oráculo que a resposta idêntica abaixo
+    // existe para não ser.
+    //
+    // Um por endereço por dia: o formulário aceita o e-mail de qualquer pessoa,
+    // e não pode virar um jeito de encher a caixa de alguém com mensagens nossas.
+    if (email) {
+      await this.correio?.enfileirar({
+        modelo: 'denuncia-recebida',
+        para: email,
+        chave: `denuncia:${fingerprint(email)}:${new Date().toISOString().slice(0, 10)}`,
+      })
     }
 
     // A MESMA regra de visibilidade das outras portas públicas — e, quando o
@@ -231,6 +253,11 @@ export class ModerationService {
    *  - partial: censura seções (hiddenSections), perfil segue no ar
    *  - restrict: retira o perfil inteiro do ar
    *  - clear: remove qualquer restrição (volta a active)
+   *
+   * Toda decisão chega por e-mail a quem ela alcança: ao dono do perfil, com o
+   * motivo e o prazo para contestar, e a quem denunciou, dizendo só que a
+   * análise terminou. Uma decisão que a pessoa não fica sabendo é uma decisão
+   * contra a qual o prazo de contestação corre às escuras.
    */
   async moderateProfile(profileId: string, input: ModerateInput) {
     if (!isValidAction(input.action)) {
@@ -250,7 +277,14 @@ export class ModerationService {
 
     const profile = await this.prisma.profile.findUnique({
       where: { id: profileId },
-      select: { id: true, bio: true, plan: true, billingPausedAt: true, planStatus: true },
+      select: {
+        id: true,
+        bio: true,
+        plan: true,
+        billingPausedAt: true,
+        planStatus: true,
+        user: { select: { id: true, email: true } },
+      },
     })
     if (!profile) throw new NotFoundException('Perfil não encontrado')
     const perfilPago = profile.plan !== 'free'
@@ -301,16 +335,20 @@ export class ModerationService {
       },
     })
 
-    // Resolve denúncias: as indicadas, ou todas as abertas do perfil.
+    // Resolve denúncias: as indicadas, ou todas as abertas do perfil. Quem deixou
+    // e-mail é lido ANTES de resolver — depois, "abertas" já não as encontra.
+    const denunciasResolvidas = {
+      profileId,
+      status: 'open' as const,
+      ...(input.reportIds && input.reportIds.length ? { id: { in: input.reportIds } } : {}),
+    }
+    const comRetorno = await this.prisma.report.findMany({
+      where: { ...denunciasResolvidas, reporterEmail: { not: null } },
+      select: { id: true, reporterEmail: true, createdAt: true },
+    })
     const resolvedStatus = action === 'clear' ? 'dismissed' : 'resolved'
     await this.prisma.report.updateMany({
-      where: {
-        profileId,
-        status: 'open',
-        ...(input.reportIds && input.reportIds.length
-          ? { id: { in: input.reportIds } }
-          : {}),
-      },
+      where: denunciasResolvidas,
       data: { status: resolvedStatus, resolution: action, handledAt: new Date() },
     })
 
@@ -325,17 +363,59 @@ export class ModerationService {
       },
     })
 
+    // Ao liberar, o motivo não vai no e-mail: ele é do histórico do painel (ver
+    // moderation.controller), e o que importa ao dono é que a medida acabou.
+    await this.correio?.enfileirar({
+      modelo: 'moderacao-decisao',
+      para: profile.user.email,
+      userId: profile.user.id,
+      dados:
+        action === 'clear'
+          ? { acao: 'clear' }
+          : {
+              acao: action,
+              motivo: note,
+              ate,
+              cobrancaPausada: pausaCobranca,
+              contestarAte: new Date(Date.now() + (degrau(action)?.contestacaoDias ?? 15) * DIA),
+            },
+    })
+    await this.avisarQuemDenunciou(comRetorno)
+
     return this.getProfileForModeration(profileId)
   }
 
   /** Arquiva uma denúncia isolada (sem penalizar o perfil). */
   async dismissReport(reportId: string) {
-    const report = await this.prisma.report.findUnique({ where: { id: reportId }, select: { id: true } })
+    const report = await this.prisma.report.findUnique({
+      where: { id: reportId },
+      select: { id: true, reporterEmail: true, createdAt: true },
+    })
     if (!report) throw new NotFoundException('Denúncia não encontrada')
     await this.prisma.report.update({
       where: { id: reportId },
       data: { status: 'dismissed', resolution: 'dismiss', handledAt: new Date() },
     })
+    await this.avisarQuemDenunciou([report])
     return { ok: true }
+  }
+
+  /**
+   * "Sua denúncia foi analisada." O e-mail que o formulário prometeu ao pedir
+   * contato para retorno. Não diz a decisão: aviso ao advogado não é público, e
+   * o que for público (perfil fora do ar) quem denunciou vê no próprio perfil.
+   */
+  private async avisarQuemDenunciou(
+    denuncias: { id: string; reporterEmail: string | null; createdAt: Date }[],
+  ) {
+    for (const d of denuncias) {
+      if (!d.reporterEmail) continue
+      await this.correio?.enfileirar({
+        modelo: 'denuncia-analisada',
+        para: d.reporterEmail,
+        chave: `denuncia-analisada:${d.id}`,
+        dados: { enviadaEm: d.createdAt },
+      })
+    }
   }
 }
