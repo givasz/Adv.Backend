@@ -132,6 +132,18 @@ export function canUseContratos(plan: string | undefined): boolean {
   return plan === 'premium'
 }
 
+// Assistente de TRIAGEM: as perguntas que o advogado escolhe fazer antes de
+// encaminhar um atendimento — só no Max. Espelha canUseTriagem de
+// frontend/src/lib/plans.ts.
+//
+// FONTE ÚNICA da autorização, dos dois lados. Vale na ESCRITA (fora do Max as
+// colunas nem entram no update, então descer de plano não apaga a triagem
+// montada) e na LEITURA (fora do Max o objeto some da resposta, e a conversa
+// pública volta a ser só a de agendamento) — a mesma regra do vídeo e da marca.
+export function canUseTriagem(plan: string | undefined): boolean {
+  return plan === 'premium'
+}
+
 // Modelos de documento escritos pelo próprio advogado — só no Max, até 3.
 // Espelha MODELOS_PROPRIOS_LIMITE de frontend/src/lib/plans.ts.
 export const MODELOS_PROPRIOS_LIMITE = 3

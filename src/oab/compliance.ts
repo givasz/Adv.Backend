@@ -120,6 +120,7 @@ export interface PublicTextSource {
   branding?: { brandName?: string | null } | null
   assistant?: { greeting?: string | null } | null
   card?: { tagline?: string | null } | null
+  triage?: { questions?: { label?: string | null; options?: (string | null)[] | null }[] | null } | null
 }
 
 export interface PublicText {
@@ -150,6 +151,13 @@ export function publicTexts(p: PublicTextSource): PublicText[] {
   }
   add('Legenda do vídeo', 'video', p.videoCaption)
   add('Abertura do assistente', 'agenda', p.assistant?.greeting)
+  // Triagem: enunciado E opções. O visitante lê os dois, e uma vedação escondida
+  // dentro de uma opção de resposta ("Quero garantir meu direito") é publicidade
+  // irregular igual à que estaria na bio.
+  for (const q of p.triage?.questions ?? []) {
+    add('Pergunta da triagem', 'triagem', q?.label)
+    for (const o of q?.options ?? []) add('Opção de resposta da triagem', 'triagem', o)
+  }
   add('Nome no rodapé do perfil', 'marca', p.branding?.brandName)
   // Cartão de visita: não fica na página, mas é divulgação impressa saída daqui —
   // a mesma checagem vale (Prov. 205/2021 não distingue suporte).
