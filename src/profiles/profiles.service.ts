@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto'
 import { PrismaService } from '../prisma/prisma.service'
 import { perfilVisivelAoPublico, secoesCensuradas } from './visibilidade'
 import { type AssistantDayCol, gradeDoAssistente, horariosOcupados } from './agenda-publica'
+import { botaoFlutuantePublico, colunasDoBotaoFlutuante } from './botao-flutuante'
 import { areaComMaisDeUma, perguntaComMaisDeUma } from '../campo-unico'
 import { faixa, pagina } from '../admin/paginacao'
 import { blockingFields, POLICY_VERSION, publicStatus, RULESET_REV } from '../oab/compliance'
@@ -510,7 +511,9 @@ export class ProfilesService {
     return {
       ...gradeDoAssistente(p),
       greeting: p.assistantGreeting ?? '',
-      floating: canUseScheduling(plano) && p.assistantFloating === true,
+      // LEGADO: o site anterior lia o balão por aqui. A escolha de verdade sai em
+      // `floating`, no nível do perfil (ver botao-flutuante.ts).
+      floating: botaoFlutuantePublico(p, plano) === 'assistant',
     }
   }
 
@@ -661,6 +664,9 @@ export class ProfilesService {
         horizonDays: p.bookingHorizonDays ?? 30,
       },
       assistant: this.buildAssistant(p, plano),
+      // O botão no canto do perfil: 'whatsapp', 'assistant' ou 'off'. Já sai 'off'
+      // fora do Pro e do Max — ver botao-flutuante.ts.
+      floating: botaoFlutuantePublico(p, plano),
       plan: plano,
       theme: resolveTheme(p.theme, plano),
       published: p.published,
@@ -1284,6 +1290,10 @@ export class ProfilesService {
         schedulingMode: this.sanitizeMode(data.schedulingMode, plan),
         ...this.bookingCols(data.booking),
         ...this.assistantCols(data.assistant),
+        // Botão flutuante (WhatsApp, assistente ou nenhum). Vem DEPOIS de
+        // assistantCols de propósito: grava também o balão antigo, coerente com a
+        // escolha, e é ele que tem de valer. Ver botao-flutuante.ts.
+        ...colunasDoBotaoFlutuante(data),
         // Tema é gated por plano: o editor deixa PROVAR um tema travado na
         // prévia, e é aqui que a prova para de ser prova.
         theme: resolveTheme(data.theme, plan),

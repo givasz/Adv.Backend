@@ -173,6 +173,31 @@ describe('balão de conversa', () => {
   })
 })
 
+// O botão no canto do perfil (floating): WhatsApp, assistente ou nenhum.
+describe('botão flutuante', () => {
+  it('grava a escolha — e WhatsApp não liga o balão antigo do assistente', async () => {
+    const { svc, gravado } = service()
+    await svc.update('u1', { ...base, floating: 'whatsapp' })
+    expect(gravado[0].floatingButton).toBe('whatsapp')
+    expect(gravado[0].assistantFloating).toBe(false)
+  })
+
+  it('o assistente grava as duas colunas', async () => {
+    const { svc, gravado } = service()
+    await svc.update('u1', { ...base, floating: 'assistant' })
+    expect(gravado[0].floatingButton).toBe('assistant')
+    expect(gravado[0].assistantFloating).toBe(true)
+  })
+
+  it('valor desconhecido desliga', async () => {
+    for (const lixo of ['sim', true, 1, 'WHATSAPP']) {
+      const { svc, gravado } = service()
+      await svc.update('u1', { ...base, floating: lixo })
+      expect(gravado[0].floatingButton, `"${JSON.stringify(lixo)}" ligou um botão`).toBe('off')
+    }
+  })
+})
+
 // Horários ocupados (assistant.busy) — o advogado dizendo "esse já foi".
 //
 // A lista chega como JSON livre e é lida por visitantes (é o que faz um horário

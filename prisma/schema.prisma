@@ -548,6 +548,12 @@ model Profile {
   // oposto da sobriedade que o Prov. 205/2021 exige, e quem o liga tem de ser o
   // advogado, sabendo o que está ligando. Só Pro e Max (ver plans.ts).
   assistantFloating     Boolean          @default(false)
+  // Botão que acompanha a rolagem no canto do perfil: "whatsapp", "assistant" ou
+  // "off" — um só, e quem escolhe é o advogado. NULO de propósito nos perfis
+  // anteriores à escolha: aí vale o assistantFloating acima (o balão antigo, que
+  // só existia para o assistente). Desligado por padrão pelo mesmo motivo do
+  // balão, e só Pro e Max. Ver src/profiles/botao-flutuante.ts.
+  floatingButton        String?
   // ---- Vídeo de apresentação (plano Max) ----
   // Guardamos só o LINK (YouTube/Vimeo) já normalizado — nunca o arquivo. A
   // validação do provedor é do servidor: ver src/video.ts.
