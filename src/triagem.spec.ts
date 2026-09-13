@@ -16,7 +16,15 @@ import {
 // diferente da tela, o advogado monta uma triagem e reencontra outra.
 
 const PERGUNTAS: PerguntaDeTriagem[] = [
-  { id: 'q1', kind: 'escolha', label: 'Qual assunto?', options: ['Família', 'Trabalhista'] },
+  {
+    id: 'q1',
+    kind: 'escolha',
+    label: 'Qual assunto?',
+    options: [
+      { id: 'o1', texto: 'Família' },
+      { id: 'o2', texto: 'Trabalhista' },
+    ],
+  },
   { id: 'q2', kind: 'sim-nao', label: 'Já possui processo?' },
   { id: 'q3', kind: 'texto-longo', label: 'Conte brevemente o que aconteceu.' },
 ]
@@ -85,13 +93,16 @@ describe('normalizarTriagem — o que o servidor aceita gravar', () => {
         id: `q${i}`,
         kind: 'escolha' as const,
         label: 'x'.repeat(400),
-        options: Array.from({ length: 40 }, (_, j) => `${j}-${'o'.repeat(90)}`),
+        options: Array.from({ length: 40 }, (_, j) => ({
+          id: `x${j}`,
+          texto: `${j}-${'o'.repeat(90)}`,
+        })),
       })),
     })
     expect(questions).toHaveLength(TRIAGEM_MAX_PERGUNTAS)
     expect(questions[0].label).toHaveLength(TRIAGEM_LABEL_MAX)
     expect(questions[0].options).toHaveLength(TRIAGEM_MAX_OPCOES)
-    expect(questions[0].options!.every((o) => o.length <= TRIAGEM_OPCAO_MAX)).toBe(true)
+    expect(questions[0].options!.every((o) => o.texto.length <= TRIAGEM_OPCAO_MAX)).toBe(true)
   })
 
   it('id forjado é trocado, e nenhum se repete', () => {
@@ -112,9 +123,21 @@ describe('normalizarTriagem — o que o servidor aceita gravar', () => {
   it('opções vazias e repetidas somem', () => {
     const { questions } = normalizarTriagem({
       enabled: true,
-      questions: [{ id: 'a', kind: 'escolha', label: 'Qual?', options: ['Um', '', 'Um', ' Dois '] }],
+      questions: [
+        {
+          id: 'a',
+          kind: 'escolha',
+          label: 'Qual?',
+          options: [
+            { id: 'a1', texto: 'Um' },
+            { id: 'a2', texto: '' },
+            { id: 'a3', texto: 'Um' },
+            { id: 'a4', texto: ' Dois ' },
+          ],
+        },
+      ],
     })
-    expect(questions[0].options).toEqual(['Um', 'Dois'])
+    expect(questions[0].options!.map((o) => o.texto)).toEqual(['Um', 'Dois'])
   })
 
   it('corpo malformado nunca lança — vira triagem vazia e desligada', () => {
@@ -139,13 +162,31 @@ describe('o que chega a valer de fato', () => {
 })
 
 describe('os enunciados são texto público', () => {
-  it('enunciado e opções saem para a checagem da OAB', () => {
+  it('enunciado e opções ESCRITAS saem para a checagem da OAB', () => {
     expect(textosDaTriagem({ enabled: true, questions: PERGUNTAS })).toEqual([
       'Qual assunto?',
       'Família',
       'Trabalhista',
       'Já possui processo?',
       'Conte brevemente o que aconteceu.',
+    ])
+  })
+
+  it('as opções FIXAS não entram — "Sim" e "Presencial" são nossas', () => {
+    const { questions } = normalizarTriagem({
+      enabled: true,
+      questions: [
+        { id: 'a', kind: 'sim-nao', label: 'Já tem processo?' },
+        { id: 'b', kind: 'atendimento', label: 'Como prefere?' },
+      ],
+    })
+    // O normalizador preencheu as duas listas...
+    expect(questions[0].options).toHaveLength(2)
+    expect(questions[1].options).toHaveLength(2)
+    // ...e nenhuma delas vai para o motor de conformidade.
+    expect(textosDaTriagem({ enabled: true, questions })).toEqual([
+      'Já tem processo?',
+      'Como prefere?',
     ])
   })
 })
