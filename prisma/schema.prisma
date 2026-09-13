@@ -137,6 +137,9 @@ model User {
   // Impressões digitais dos documentos (contratos, procurações) que ele revisou
   // e registrou. Nunca o documento — ver model RegistroDocumento.
   registrosDeDocumento RegistroDocumento[]
+  // Modelos de documento escritos pelo próprio advogado (até 3, no Max). Só
+  // texto com campos entre chaves — nunca dado de cliente. Ver model ModeloProprio.
+  modelosProprios      ModeloProprio[]
   // Links de confirmar e-mail e de redefinir senha (só o hash) — ver EmailToken.
   emailTokens          EmailToken[]
   // Avisos por e-mail endereçados a esta conta — ver MailOutbox.
@@ -918,9 +921,11 @@ model RegistroDocumento {
   // "revisado" → minuta revisada e confirmada pelo advogado;
   // "assinado" → um arquivo assinado derivado dela.
   etapa  String
-  // "honorarios" | "procuracao" | "substabelecimento" | "hipossuficiencia"
+  // "honorarios" | "procuracao" | "substabelecimento" | "hipossuficiencia" |
+  // "proprio" (modelo escrito pelo advogado — ver model ModeloProprio)
   modelo       String
-  // Revisão do texto-base do modelo (data ISO). Ver src/contratos/modelos.ts.
+  // Revisão do texto-base do modelo: data ISO nos modelos da plataforma; nos
+  // próprios, "p:" + 16 hex do SHA-256 do texto do modelo usado.
   modeloVersao String
   // Registro "revisado" de que a versão assinada deriva.
   origemId     String?
@@ -943,6 +948,47 @@ model RegistroDocumento {
   @@index([userId, createdAt])
   @@index([hash])
   @@index([codigo])
+}
+
+// MODELO PRÓPRIO — o texto-base de um documento, escrito pelo advogado.
+//
+// É a exceção a "o contrato não vem para cá", e ela só se sustenta com uma regra:
+// O MODELO É SÓ TEXTO. Onde entraria um dado, o advogado escreve um campo entre
+// chaves — {Nome do cliente}, {Valor dos honorários} — e o valor é pedido a cada
+// documento, no aparelho, como nos modelos da plataforma. O que se guarda aqui é
+// o equivalente a um formulário em branco.
+//
+// O servidor RECUSA gravar o que parece dado pessoal: CPF, CNPJ, e-mail,
+// telefone, CEP, número de processo, agência e conta, chave Pix (ver
+// src/contratos/dado-pessoal.ts). Nome de pessoa não tem como ser reconhecido por
+// padrão, e a tela diz isso ao advogado em vez de fingir que confere.
+//
+// Até 3 por conta, no Max. Descer de plano não apaga: o modelo fica guardado e
+// só deixa de ser editável e usável (mesma regra de "rebaixar esconde sem
+// apagar"). Excluir vale em qualquer plano. Segue a conta (cascade) e entra na
+// exportação LGPD.
+model ModeloProprio {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Como aparece na lista: "Contrato de consultoria mensal".
+  nome       String
+  // "cliente" | "advogado" | "ambos" — define as linhas de assinatura.
+  quemAssina String @default("ambos")
+  // Título impresso no alto do documento.
+  titulo     String
+  // JSON: [{ "titulo": "", "texto": "" }]. Texto (String), e não Json, porque o
+  // banco de desenvolvimento é SQLite.
+  clausulas  String
+  // Sobe a cada gravação. O rascunho leva uma CÓPIA do modelo: editar aqui não
+  // muda documento já começado.
+  revisao    Int    @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
 }
 
 // ---------------------------------------------------------------------------

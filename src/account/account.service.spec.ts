@@ -62,6 +62,22 @@ function service(opts: { firms?: Qualquer[]; user?: Qualquer | null } = {}) {
         ]),
       ),
     },
+    // Modelos próprios: só texto com campos entre chaves.
+    modeloProprio: {
+      findMany: vi.fn(() =>
+        Promise.resolve([
+          {
+            nome: 'Consultoria mensal',
+            quemAssina: 'ambos',
+            titulo: 'Contrato de consultoria',
+            clausulas: '[{"titulo":"","texto":"{Qualificação do cliente}"}]',
+            revisao: 2,
+            createdAt: new Date('2026-09-12'),
+            updatedAt: new Date('2026-09-12'),
+          },
+        ]),
+      ),
+    },
     // Registros de documentos: impressão digital + declaração de revisão.
     registroDocumento: {
       findMany: vi.fn(() =>

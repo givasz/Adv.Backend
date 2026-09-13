@@ -117,6 +117,10 @@ export function canUseContratos(plan: string | undefined): boolean {
   return plan === 'premium'
 }
 
+// Modelos de documento escritos pelo próprio advogado — só no Max, até 3.
+// Espelha MODELOS_PROPRIOS_LIMITE de frontend/src/lib/plans.ts.
+export const MODELOS_PROPRIOS_LIMITE = 3
+
 // Agenda nativa (cliente marca dia/hora, advogado aceita/recusa) — também só nos pagos.
 export function canUseNativeAgenda(plan: string | undefined): boolean {
   return plan === 'pro' || plan === 'premium'

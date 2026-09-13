@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Headers, Ip, Post, Query, Req } from '@nestjs/common'
+import { Body, Controller, Delete, Get, Headers, Ip, Param, Post, Put, Query, Req } from '@nestjs/common'
 import { ContratosService } from './contratos.service'
+import { ModelosPropriosService } from './modelos-proprios.service'
 import { SessionService } from '../auth/session.service'
 import type { RequisicaoComAuth } from '../auth/session-context'
 import { enforceRateLimit } from '../security/rate-limit'
@@ -10,10 +11,51 @@ export class ContratosController {
   constructor(
     private readonly contratos: ContratosService,
     private readonly sessions: SessionService,
+    private readonly modelos: ModelosPropriosService,
   ) {}
 
   private requireUser(req: RequisicaoComAuth): Promise<string> {
     return this.sessions.requireUser(req, 'Entre na sua conta para cuidar dos seus documentos.')
+  }
+
+  /** Gravar modelo é raro: um advogado ajusta três textos, não sessenta por hora. */
+  private limitarModelos(userId: string) {
+    enforceRateLimit(
+      [[`contratos:modelos:${userId}`, { windowMs: 60 * 60 * 1000, max: 60 }]],
+      'Muitas alterações de modelo em pouco tempo. Aguarde alguns minutos e tente de novo.',
+    )
+  }
+
+  // ---- Modelos próprios (até 3, no Max) — só texto, nunca dado de cliente ----
+
+  // GET /api/contratos/modelos → { modelos, limite }
+  @Get('modelos')
+  async listarModelos(@Req() req: RequisicaoComAuth) {
+    return this.modelos.listar(await this.requireUser(req))
+  }
+
+  // POST /api/contratos/modelos  { nome, quemAssina, titulo, clausulas: [{ titulo, texto }] }
+  @Post('modelos')
+  async criarModelo(@Body() body: any, @Req() req: RequisicaoComAuth) {
+    const userId = await this.requireUser(req)
+    this.limitarModelos(userId)
+    return this.modelos.criar(userId, body)
+  }
+
+  // PUT /api/contratos/modelos/:id  (mesmo corpo)
+  @Put('modelos/:id')
+  async atualizarModelo(@Param('id') id: string, @Body() body: any, @Req() req: RequisicaoComAuth) {
+    const userId = await this.requireUser(req)
+    this.limitarModelos(userId)
+    return this.modelos.atualizar(userId, id, body)
+  }
+
+  // DELETE /api/contratos/modelos/:id — vale em qualquer plano
+  @Delete('modelos/:id')
+  async excluirModelo(@Param('id') id: string, @Req() req: RequisicaoComAuth) {
+    const userId = await this.requireUser(req)
+    this.limitarModelos(userId)
+    return this.modelos.excluir(userId, id)
   }
 
   // GET /api/contratos/registros → { registros } da própria conta
