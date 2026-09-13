@@ -304,9 +304,9 @@ describe('faixas de atendimento do assistente', () => {
 describe('plano', () => {
   it('o plano do corpo é ignorado — quem manda é a assinatura do banco', async () => {
     const { svc, gravado } = service('free')
-    await svc.update('u1', { ...base, plan: 'premium', theme: 'obsidian' })
+    await svc.update('u1', { ...base, plan: 'premium', theme: 'marinho' })
     // tema exclusivo do Max não sobrevive a um perfil Free
-    expect(gravado[0].theme).not.toBe('obsidian')
+    expect(gravado[0].theme).not.toBe('marinho')
     expect(gravado[0].plan).toBeUndefined()
   })
 

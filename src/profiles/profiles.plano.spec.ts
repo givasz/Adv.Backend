@@ -259,7 +259,7 @@ describe('a leitura entrega o plano VIGENTE, não o contratado', () => {
       plan: 'premium',
       planStatus: 'past_due',
       graceUntil: dias(-1),
-      theme: 'obsidian',
+      theme: 'marinho',
       schedulingMode: 'assistant',
       videoUrl: 'https://youtu.be/abc',
       faqs: [{ id: 'f1', question: 'a?', answer: 'b', order: 0 }],
@@ -279,11 +279,11 @@ describe('a leitura entrega o plano VIGENTE, não o contratado', () => {
       plan: 'premium',
       planStatus: 'past_due',
       graceUntil: dias(5),
-      theme: 'obsidian',
+      theme: 'marinho',
     })
     const p: Qualquer = await svc.getMine('u1')
     expect(p.plan).toBe('premium')
-    expect(p.theme).toBe('obsidian')
+    expect(p.theme).toBe('marinho')
     expect(p.subscription).toMatchObject({ plan: 'premium', status: 'past_due', cortesia: true })
   })
 
@@ -319,7 +319,7 @@ describe('troca de plano', () => {
   })
 
   it('rebaixar desliga agendamento e tema pagos na hora', async () => {
-    const { svc, gravado } = service({ plan: 'premium', theme: 'obsidian', schedulingMode: 'assistant' })
+    const { svc, gravado } = service({ plan: 'premium', theme: 'marinho', schedulingMode: 'assistant' })
     await svc.setPlan('u1', 'free')
     expect(gravado[0].theme).toBe('papel')
     expect(gravado[0].schedulingMode).toBe('off')
@@ -335,13 +335,13 @@ describe('troca de plano', () => {
     const { svc, gravado } = service({
       plan: 'premium',
       currentPeriodEnd: dias(15),
-      theme: 'obsidian',
+      theme: 'marinho',
     })
     await svc.setPlan('u1', 'pro')
     expect(gravado[0].planScheduled).toBe('pro')
     expect(gravado[0].plan).toBeUndefined()
     // O tema do Max continua de pé: ela pagou o mês.
-    expect(gravado[0].theme).toBe('obsidian')
+    expect(gravado[0].theme).toBe('marinho')
   })
 
   it('plano inválido é recusado', async () => {
