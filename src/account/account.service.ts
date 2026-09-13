@@ -175,6 +175,16 @@ export class AccountService {
           'arquivo não mudou. Some junto com a conta.',
         registros: documentos,
       },
+      modelosDeDocumentoProprios: {
+        porQue:
+          'Os modelos de documento que você escreveu: só texto, com campos entre chaves no lugar dos ' +
+          'dados de cliente. Somem junto com a conta, ou quando você os exclui.',
+        modelos: await this.prisma.modeloProprio.findMany({
+          where: { userId },
+          select: { nome: true, quemAssina: true, titulo: true, clausulas: true, revisao: true, createdAt: true, updatedAt: true },
+          orderBy: { createdAt: 'asc' },
+        }),
+      },
       naoGuardamos: [
         'O texto dos seus contratos e procurações e os dados dos seus clientes: ficam no seu aparelho e no PDF. Aqui fica só a impressão digital do arquivo.',
         'Dados de quem visita o seu perfil: o contato vai do aparelho do visitante direto para o seu WhatsApp.',

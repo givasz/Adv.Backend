@@ -33,8 +33,10 @@ import {
   DECLARACAO_DE_REVISAO_VERSAO,
   ETAPAS_DE_REGISTRO,
   HASH_SHA256,
+  MODELO_PROPRIO,
   MODELOS_DE_DOCUMENTO,
   MODELOS_LISTA,
+  VERSAO_DE_MODELO_PROPRIO,
   TAMANHO_MAXIMO_BYTES,
   type EtapaDeRegistro,
   type ModeloDeDocumento,
@@ -144,9 +146,20 @@ export class ContratosService {
       )
     }
 
-    const modelo = MODELOS_LISTA.find((m) => m === body?.modelo) as ModeloDeDocumento | undefined
+    const proprio = body?.modelo === MODELO_PROPRIO
+    const modelo = proprio
+      ? MODELO_PROPRIO
+      : (MODELOS_LISTA.find((m) => m === body?.modelo) as ModeloDeDocumento | undefined)
     if (!modelo) throw new BadRequestException('Modelo de documento desconhecido.')
-    if (body?.modeloVersao !== MODELOS_DE_DOCUMENTO[modelo]) {
+    const modeloVersao: string = proprio
+      ? typeof body?.modeloVersao === 'string' && VERSAO_DE_MODELO_PROPRIO.test(body.modeloVersao)
+        ? body.modeloVersao
+        : ''
+      : MODELOS_DE_DOCUMENTO[modelo as ModeloDeDocumento]
+    if (proprio && !modeloVersao) {
+      throw new BadRequestException('A versão do seu modelo chegou inválida. Monte o documento de novo.')
+    }
+    if (!proprio && body?.modeloVersao !== modeloVersao) {
       throw new BadRequestException(
         'Este modelo foi atualizado desde que a página abriu. Recarregue a página e monte o documento de novo.',
       )
@@ -208,7 +221,7 @@ export class ContratosService {
         tamanho,
         etapa: 'revisado',
         modelo,
-        modeloVersao: MODELOS_DE_DOCUMENTO[modelo],
+        modeloVersao,
         declaracaoVersao: DECLARACAO_DE_REVISAO_VERSAO,
         ip: origem.ip.slice(0, 60),
         userAgent: clampText(origem.userAgent, 300),

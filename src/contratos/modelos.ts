@@ -22,6 +22,15 @@ export type ModeloDeDocumento = keyof typeof MODELOS_DE_DOCUMENTO
 export const MODELOS_LISTA = Object.keys(MODELOS_DE_DOCUMENTO) as ModeloDeDocumento[]
 
 /**
+ * Documento montado a partir de um MODELO PRÓPRIO do advogado. Não tem revisão
+ * de data: a "versão" é "p:" + 16 hex do SHA-256 do texto do modelo usado,
+ * calculado no aparelho — o modelo pode mudar depois, e o registro continua
+ * apontando para o texto exato de que aquele documento partiu.
+ */
+export const MODELO_PROPRIO = 'proprio'
+export const VERSAO_DE_MODELO_PROPRIO = /^p:[0-9a-f]{16}$/
+
+/**
  * Revisão do texto da declaração que o advogado confirma antes de registrar
  * ("revisei o documento inteiro" e "o conteúdo é de minha responsabilidade").
  * Mudou a frase no front? Mude a data nos dois lados.

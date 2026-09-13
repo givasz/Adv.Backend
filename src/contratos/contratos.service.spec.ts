@@ -161,6 +161,36 @@ describe('registrar a minuta revisada', () => {
   })
 })
 
+describe('registrar documento de modelo próprio', () => {
+  it('aceita "proprio" com a versão no formato do texto do modelo', async () => {
+    const ctx = montar()
+    const r = await ctx.svc.registrar(
+      'u1',
+      revisado({ modelo: 'proprio', modeloVersao: 'p:0123456789abcdef' }),
+      ORIGEM,
+    )
+    expect(r.modelo).toBe('proprio')
+    expect(r.modeloVersao).toBe('p:0123456789abcdef')
+  })
+
+  it.each([['sem versão', undefined], ['data no lugar do hash', '2026-09-10'], ['hash curto', 'p:abc']])(
+    'recusa %s',
+    async (_nome, modeloVersao) => {
+      const ctx = montar()
+      await expect(
+        ctx.svc.registrar('u1', revisado({ modelo: 'proprio', modeloVersao }), ORIGEM),
+      ).rejects.toThrow(BadRequestException)
+    },
+  )
+
+  it('continua sendo do Max', async () => {
+    const pro = montar({ perfil: perfil('pro') })
+    await expect(
+      pro.svc.registrar('u1', revisado({ modelo: 'proprio', modeloVersao: 'p:0123456789abcdef' }), ORIGEM),
+    ).rejects.toThrow(ForbiddenException)
+  })
+})
+
 describe('registrar a versão assinada', () => {
   it('pendura no documento de origem, com o código e a fotografia dele', async () => {
     const ctx = montar()
