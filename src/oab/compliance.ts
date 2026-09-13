@@ -120,7 +120,11 @@ export interface PublicTextSource {
   branding?: { brandName?: string | null } | null
   assistant?: { greeting?: string | null } | null
   card?: { tagline?: string | null } | null
-  triage?: { questions?: { label?: string | null; options?: (string | null)[] | null }[] | null } | null
+  triage?: {
+    questions?:
+      | { kind?: string | null; label?: string | null; options?: ({ texto?: string | null } | null)[] | null }[]
+      | null
+  } | null
 }
 
 export interface PublicText {
@@ -156,7 +160,10 @@ export function publicTexts(p: PublicTextSource): PublicText[] {
   // irregular igual à que estaria na bio.
   for (const q of p.triage?.questions ?? []) {
     add('Pergunta da triagem', 'triagem', q?.label)
-    for (const o of q?.options ?? []) add('Opção de resposta da triagem', 'triagem', o)
+    // Só as opções ESCRITAS pelo advogado: "Sim", "Não", "Presencial" e "Online"
+    // são nossas, e conferi-las seria a plataforma auditando o próprio vocabulário.
+    if (q?.kind !== 'escolha' && q?.kind !== 'multipla') continue
+    for (const o of q?.options ?? []) add('Opção de resposta da triagem', 'triagem', o?.texto)
   }
   add('Nome no rodapé do perfil', 'marca', p.branding?.brandName)
   // Cartão de visita: não fica na página, mas é divulgação impressa saída daqui —

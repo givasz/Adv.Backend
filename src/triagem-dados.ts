@@ -225,11 +225,12 @@ export function conferirPergunta(texto: string): AchadoNaPergunta[] {
  */
 export function conferirPerguntaInteira(pergunta: {
   label?: string | null
-  options?: (string | null)[] | null
+  options?: ({ texto?: string | null } | null)[] | null
 }): AchadoNaPergunta[] {
   const out: AchadoNaPergunta[] = []
   const vistos = new Set<TipoDePedido>()
-  for (const texto of [pergunta?.label ?? '', ...(pergunta?.options ?? [])]) {
+  const textos = [pergunta?.label ?? '', ...(pergunta?.options ?? []).map((o) => o?.texto ?? '')]
+  for (const texto of textos) {
     for (const achado of conferirPergunta(String(texto ?? ''))) {
       if (vistos.has(achado.tipo)) continue
       vistos.add(achado.tipo)
@@ -245,7 +246,7 @@ export function conferirPerguntaInteira(pergunta: {
  */
 export function perguntaBloqueada(pergunta: {
   label?: string | null
-  options?: (string | null)[] | null
+  options?: ({ texto?: string | null } | null)[] | null
 }): AchadoNaPergunta | null {
   return conferirPerguntaInteira(pergunta).find((a) => a.risco === 'bloqueio') ?? null
 }
