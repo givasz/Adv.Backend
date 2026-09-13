@@ -38,6 +38,7 @@ export class AccountService {
         email: true,
         createdAt: true,
         emailVerifiedAt: true,
+        googleSub: true,
         termsAcceptedAt: true,
         termsVersion: true,
         profile: {
@@ -137,6 +138,9 @@ export class AccountService {
         email: user.email,
         criadaEm: user.createdAt,
         emailConfirmadoEm: user.emailVerifiedAt ?? null,
+        // O identificador que o Google dá à conta ligada — é o que guardamos dela,
+        // e só isto. Nulo = a conta nunca entrou com o Google.
+        contaGoogle: user.googleSub ?? null,
       },
       avisosPorEmail: {
         porQue:
@@ -211,6 +215,15 @@ export class AccountService {
       select: { id: true, password: true },
     })
     if (!user) throw new UnauthorizedException('Sessão inválida.')
+    // Conta criada pelo Google nasce sem senha. A exclusão continua pedindo uma
+    // — é ela que separa o dono de quem achou o computador aberto —, e o caminho
+    // para criá-la prova a mesma coisa: o link vai para o e-mail da conta.
+    if (!user.password) {
+      throw new BadRequestException(
+        'Sua conta entra com o Google e ainda não tem senha. Para excluí-la, crie uma senha em ' +
+          '"Esqueci minha senha" — o link chega no seu e-mail — e volte aqui.',
+      )
+    }
     if (!senha || !(await verifyPassword(senha, user.password))) {
       throw new BadRequestException('Senha incorreta. A conta não foi excluída.')
     }

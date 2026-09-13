@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { aceiteVigente, OPERADOR, TERMS_VERSION } from './termos'
 import { CORREIO_NA_POLITICA_DESDE } from '../mail/config'
+import { GOOGLE_NA_POLITICA_DESDE } from '../auth/google'
 
 // Trava de paridade — mesmo princípio do ruleset da OAB (oab/oab.rules.spec.ts).
 //
@@ -48,6 +49,19 @@ describe('o correio só liga quando a Política declara o provedor', () => {
     if (CORREIO_NA_POLITICA_DESDE === null) return
     expect(TERMS_VERSION >= CORREIO_NA_POLITICA_DESDE).toBe(true)
     expect(arquivoDoFront('legalContent.ts')).toMatch(/Resend/)
+  })
+})
+
+describe('o botão do Google só liga quando a Política declara a entrada com o Google', () => {
+  it('se a constante diz que declara, o texto de fato fala da entrada com o Google', () => {
+    // Mesma lógica do correio: GOOGLE_NA_POLITICA_DESDE é o que liga o botão em
+    // produção (ver auth/google.ts). Trocá-la sem o texto seria o Google recebendo
+    // o login de cada advogado com a Política calada sobre isso.
+    if (GOOGLE_NA_POLITICA_DESDE === null) return
+    expect(TERMS_VERSION >= GOOGLE_NA_POLITICA_DESDE).toBe(true)
+    const texto = arquivoDoFront('legalContent.ts')
+    expect(texto).toMatch(/Entrar com o Google:/)
+    expect(texto).toMatch(/cookie[^']*Google/i)
   })
 })
 

@@ -102,6 +102,10 @@ export const AUTH_RATE_RULES = {
   loginPerIp: { windowMs: 10 * 60 * 1000, max: 20 } as Rule,
   loginPerEmail: { windowMs: 15 * 60 * 1000, max: 8 } as Rule,
   signupPerIp: { windowMs: 60 * 60 * 1000, max: 8 } as Rule,
+  // Continuar com o Google — por passo (ida, volta, conclusão). Não há senha a
+  // adivinhar aqui: quem prova a identidade é o Google. O teto só impede que as
+  // rotas virem martelo contra o endpoint de token do Google em nosso nome.
+  googlePerIp: { windowMs: 10 * 60 * 1000, max: 30 } as Rule,
   // Painel de moderação: o teto é bem mais apertado que o do advogado.
   adminLoginPerIp: { windowMs: 15 * 60 * 1000, max: 6 } as Rule,
   // Por CONTA do painel — o dicionário contra UM administrador, que trocar de IP

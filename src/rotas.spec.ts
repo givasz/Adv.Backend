@@ -97,6 +97,16 @@ const PUBLICAS: Record<string, string> = {
   'POST /auth/email/confirmar':
     'o link costuma ser aberto em outro aparelho, sem sessão. A credencial é o token (uso único, só o hash no banco) e ele só confirma o endereço para o qual foi enviado; teto por IP',
 
+  // --- Entrar com o Google: a sessão nasce no fim do fluxo --------------------
+  'GET /auth/google':
+    'diz só se a entrada com o Google está ligada, para a tela não mostrar um botão que leva a erro. Não lê banco nem diz nada sobre ninguém',
+  'GET /auth/google/entrar':
+    'manda o navegador ao Google com state, nonce e PKCE sorteados e selados num cookie HttpOnly de 10 minutos. Não lê banco; teto por IP',
+  'GET /auth/google/retorno':
+    'quem chega é o navegador voltando do Google, ainda sem sessão. Só aceita o state do cookie selado deste navegador, troca o código servidor a servidor e NÃO abre sessão: sela a identidade conferida para a tela seguinte; teto por IP',
+  'POST /auth/google/concluir':
+    'abre a sessão a partir da identidade selada (HMAC, 10 minutos) na volta do Google — um cookie escrito à mão não passa. Origem conferida, teto por IP, e sanção e aceite dos Termos exigidos como no login e no cadastro',
+
   // --- Credencial conferida sem abrir sessão ---------------------------------
   'POST /appeals/contestar':
     'o canal de quem a sanção impediu de entrar: confere e-mail e senha e NÃO abre sessão. Bloqueá-lo com login seria tirar o direito de contestar justamente de quem foi suspenso',

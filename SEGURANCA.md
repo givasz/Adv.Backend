@@ -825,6 +825,37 @@ No dia em que entrar SSE, upload de arquivo ou `_.template`, ele deixa de valer.
 
 ## Checklist de produção
 
+### Esta versão exige `prisma db push` (coluna `User.googleSub`) — ⏳ pendente
+
+> "Continuar com o Google" (12/09/2026). Coluna nova, opcional e com índice único:
+> o `db push` não deve pedir `--accept-data-loss`. Sem `GOOGLE_CLIENT_ID` e
+> `GOOGLE_CLIENT_SECRET` no `.env` o botão simplesmente não aparece — o código
+> pode subir antes de o projeto no Google Cloud existir. Pôr as chaves depois
+> exige `pm2 delete` + `start` (o restart não troca valor de variável). A linha
+> `[google] ...` do boot mostra o endereço de retorno a cadastrar no console.
+>
+> **Ordem:** backend (dist + `db push`) ANTES do front. A versão dos documentos
+> passou a `2026-09-12-2` nos dois lados: todo mundo vê a faixa de reaceite.
+>
+> **O desenho:** fluxo de código com PKCE, `state` e `nonce`; quem troca o código
+> pela identidade é o servidor, e a chave secreta nunca vai ao navegador. O cookie
+> `advocme_google` (HttpOnly, só em `/api/auth/google`, 10 minutos) é SELADO com
+> HMAC — sem o selo, escrever à mão "o Google confirmou fulano@…" entregaria a
+> conta de qualquer pessoa. A sessão só abre no `POST /concluir`, chamado pela
+> própria página, para o cookie nascer com os atributos do login por senha (o
+> retorno é navegação vinda do site do Google, e nasceria `SameSite=None`).
+>
+> **Ligação por e-mail:** só com e-mail confirmado pelo Google. Conta com e-mail
+> CONFIRMADO ganha a ligação e mantém a senha. Conta com e-mail NUNCA confirmado
+> perde a senha e as sessões ao ligar: é o pré-sequestro — alguém cria a conta com
+> o e-mail da vítima, espera ela entrar pelo Google e continua lá dentro com a
+> senha que ele mesmo criou. Conta já ligada a outro `sub` é recusada.
+>
+> **Conta sem senha:** `password` vazio. O login por senha queima o tempo do
+> scrypt também para ela (senão "entra só com o Google" responderia mais rápido
+> que "senha errada"); trocar a senha e excluir a conta mandam para o "Esqueci
+> minha senha". Testes: `auth/google.spec.ts` e `auth/google-conta.spec.ts`.
+
 ### Esta versão exige `prisma db push` (tabela `ModeloProprio`) — ✅ aplicado
 
 > Modelos próprios de documento (até 3 no Max, só texto). Feito na VPS da OVH em

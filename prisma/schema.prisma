@@ -84,7 +84,14 @@ model User {
   // uma redefinição de senha, que prova a mesma coisa. Nulo = nunca provou.
   // Não tranca nada: decide só se o painel ainda pede a confirmação.
   emailVerifiedAt DateTime?
-  password        String // hash (argon2)
+  // A conta Google ligada a esta conta: o `sub` do token de identidade, que o
+  // Google garante estável e único por conta (o e-mail pode mudar lá; isto não).
+  // Nulo = nunca entrou com o Google. Ver src/auth/google.ts.
+  googleSub       String?         @unique
+  // Hash scrypt (ver src/auth/user-auth.ts). VAZIO = conta sem senha, criada pelo
+  // "Continuar com o Google": nenhum texto confere com vazio, e quem quiser uma
+  // senha cria pelo "Esqueci minha senha".
+  password        String
   createdAt       DateTime        @default(now())
   // ---- Aceite dos Termos ----
   //
