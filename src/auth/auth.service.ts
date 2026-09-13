@@ -23,6 +23,11 @@ import { conferirToken, emitirToken, gastarToken } from './tokens-de-email'
 // e é da pessoa é a confirmação por e-mail (confirmarEmail, abaixo).
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
+/** Violação de índice único do Prisma (P2002): duas escritas correndo para o mesmo valor. */
+function erroDeUnicidade(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && (e as { code?: unknown }).code === 'P2002'
+}
+
 export interface AuthSession {
   /** epoch ms do vencimento da sessão (informativo — quem manda é o cookie). */
   expiresAt: number
@@ -53,8 +58,36 @@ export interface AuthSession {
      * que não vai chegar seria uma faixa que ninguém consegue fazer sumir.
      */
     emailPending: boolean
+    /**
+     * A conta tem senha? Conta criada pelo "Continuar com o Google" nasce sem.
+     * A tela usa para trocar "digite a senha" por "crie uma senha antes" onde a
+     * senha é exigida (trocar senha, excluir a conta).
+     */
+    temSenha: boolean
+    /** A conta está ligada a uma conta Google. */
+    google: boolean
   }
 }
+
+/** Identidade que chega de src/auth/google.ts — já conferida e com e-mail confirmado. */
+export interface IdentidadeParaEntrar {
+  sub: string
+  email: string
+  nome: string
+}
+
+export type ResultadoGoogle =
+  /** Conta nova, e o aceite dos Termos ainda não veio. Nada foi criado. */
+  | { etapa: 'aceite'; email: string; nome: string }
+  | {
+      etapa: 'sessao'
+      sessao: AuthSession
+      novaConta: boolean
+      /** A conta Google acabou de ser ligada a uma conta que já existia. */
+      vinculou: boolean
+      /** A senha antiga foi desligada (conta com e-mail nunca confirmado). */
+      senhaDesligada: boolean
+    }
 
 @Injectable()
 export class AuthService {
@@ -106,6 +139,7 @@ export class AuthService {
     lembrar: boolean,
     termsVersion: string,
     emailVerifiedAt: Date | null,
+    metodos: { temSenha: boolean; google: boolean },
   ): Promise<AuthSession> {
     const { expiresAt, csrfToken, remember } = await this.sessions.abrir(req, id, lembrar)
     return {
@@ -120,6 +154,7 @@ export class AuthService {
         termsVersion,
         termsPending: !aceiteVigente(termsVersion),
         emailPending: !emailVerifiedAt && this.correioAtivo,
+        ...metodos,
       },
     }
   }
@@ -184,6 +219,7 @@ export class AuthService {
       lembrar,
       TERMS_VERSION,
       null,
+      { temSenha: true, google: false },
     )
   }
 
@@ -247,6 +283,7 @@ export class AuthService {
         closedReason: true,
         termsVersion: true,
         emailVerifiedAt: true,
+        googleSub: true,
         // Plano VIGENTE, não o contratado: o retrato da sessão é o que a tela
         // consulta antes de o perfil chegar, e um "premium" aqui destravaria por
         // um instante o que a assinatura vencida não entrega mais.
@@ -261,10 +298,11 @@ export class AuthService {
         },
       },
     })
-    // E-mail inexistente também paga o preço de uma verificação de senha: sem
-    // isso, a diferença de tempo entre "não existe" e "senha errada" entrega quais
-    // e-mails têm conta aqui. A mensagem já era única; o tempo agora também é.
-    if (!user) {
+    // E-mail inexistente — e conta SEM senha, criada pelo Google — pagam o preço
+    // de uma verificação de senha. Sem isso, a diferença de tempo entre "não
+    // existe", "entra só com o Google" e "senha errada" entrega quais e-mails têm
+    // conta aqui, e como cada uma entra. A mensagem já era única; o tempo também é.
+    if (!user || !user.password) {
       await burnPasswordTime(senha)
       throw new UnauthorizedException('E-mail ou senha incorretos.')
     }
@@ -272,15 +310,39 @@ export class AuthService {
       throw new UnauthorizedException('E-mail ou senha incorretos.')
     }
 
-    // Sanções que alcançam a CONTA (degraus 4 e 5 de docs/politica-de-sancoes.md).
-    // A checagem vem DEPOIS da senha de propósito: quem erra a senha continua
-    // recebendo a mesma resposta de sempre, e só quem prova ser o dono da conta
-    // descobre que ela foi suspensa — e por quê. Dizer antes transformaria o
-    // login numa consulta pública de quem foi sancionado.
-    //
-    // A mensagem traz o MOTIVO escrito pelo administrador. É o mesmo texto do
-    // registro: uma sanção que a pessoa não consegue ler é uma sanção que ela
-    // não tem como contestar.
+    // A checagem das sanções vem DEPOIS da senha de propósito: quem erra a senha
+    // continua recebendo a mesma resposta de sempre, e só quem prova ser o dono
+    // da conta descobre que ela foi suspensa — e por quê. Dizer antes
+    // transformaria o login numa consulta pública de quem foi sancionado.
+    this.conferirSancoes(user)
+
+    return this.sessionFor(
+      req,
+      user.id,
+      user.email,
+      user.profile?.name || undefined,
+      user.profile ? planoVigente(user.profile) : 'free',
+      lembrar,
+      user.termsVersion,
+      user.emailVerifiedAt,
+      { temSenha: true, google: !!user.googleSub },
+    )
+  }
+
+  /**
+   * Sanções que alcançam a CONTA (degraus 4 e 5 de docs/politica-de-sancoes.md).
+   * Valem para toda porta de entrada — senha ou Google —, e por isso moram aqui.
+   *
+   * A mensagem traz o MOTIVO escrito pelo administrador. É o mesmo texto do
+   * registro: uma sanção que a pessoa não consegue ler é uma sanção que ela não
+   * tem como contestar.
+   */
+  private conferirSancoes(user: {
+    closedAt: Date | null
+    closedReason: string
+    suspendedUntil: Date | null
+    suspendedReason: string
+  }): void {
     if (user.closedAt) {
       throw new UnauthorizedException(
         `Esta conta foi encerrada.${user.closedReason ? ` Motivo: ${user.closedReason}` : ''} ` +
@@ -295,17 +357,159 @@ export class AuthService {
           'Se você discorda, responda ao aviso que enviamos ou fale com o suporte.',
       )
     }
+  }
 
-    return this.sessionFor(
+  /**
+   * "Continuar com o Google" — a identidade já conferida vira sessão.
+   *
+   * Quem chama é o google.controller, com a identidade que o Google confirmou
+   * (e-mail confirmado incluído: google.ts recusa o que não foi). Três casos:
+   *
+   *   1. A conta Google já está ligada a uma conta daqui → entra. Pelo `sub`, e
+   *      não pelo e-mail: o e-mail pode mudar dos dois lados, o `sub` não.
+   *   2. Existe conta com o mesmo e-mail → liga as duas e entra. Se o e-mail
+   *      dessa conta NUNCA foi confirmado, a senha é desligada e as outras
+   *      sessões caem — ver o comentário no ponto.
+   *   3. Não existe conta → sem o aceite dos Termos, devolve `aceite` e não cria
+   *      nada (é a mesma recusa do cadastro); com ele, cria a conta sem senha.
+   */
+  async entrarComGoogle(
+    req: RequisicaoComAuth,
+    identidade: IdentidadeParaEntrar,
+    opcoes: { lembrar: boolean; aceitouTermos: boolean; ip: string },
+  ): Promise<ResultadoGoogle> {
+    const email = this.normalizeEmail(identidade.email)
+    const sub = typeof identidade.sub === 'string' ? identidade.sub : ''
+    if (!EMAIL_RE.test(email) || !sub) {
+      throw new BadRequestException('A conta Google não informou um e-mail válido.')
+    }
+    const campos = {
+      id: true,
+      email: true,
+      password: true,
+      googleSub: true,
+      suspendedUntil: true,
+      suspendedReason: true,
+      closedAt: true,
+      closedReason: true,
+      termsVersion: true,
+      emailVerifiedAt: true,
+      // Plano VIGENTE — mesma razão do login.
+      profile: {
+        select: { name: true, plan: true, planStatus: true, currentPeriodEnd: true, graceUntil: true },
+      },
+    } as const
+
+    let user = await this.prisma.user.findUnique({ where: { googleSub: sub }, select: campos })
+    let vinculou = false
+    let senhaDesligada = false
+
+    if (!user) {
+      const doEmail = await this.prisma.user.findUnique({ where: { email }, select: campos })
+      if (doEmail) {
+        if (doEmail.googleSub && doEmail.googleSub !== sub) {
+          throw new ConflictException(
+            'Esta conta do advoc.me já está ligada a outra conta Google. Entre com aquela, ou com e-mail e senha.',
+          )
+        }
+        // Sanção ANTES de ligar: conta suspensa não ganha uma porta nova.
+        this.conferirSancoes(doEmail)
+
+        // O PRÉ-SEQUESTRO. Alguém cria uma conta aqui com o e-mail da vítima e
+        // uma senha que só ele sabe, e espera. Um dia a vítima toca em "Continuar
+        // com o Google", cai nessa conta, monta o perfil — e o outro continua
+        // lá dentro, com a senha dele. O que separa o dono do invasor é o e-mail
+        // confirmado: se a conta nunca provou que a caixa é de quem a criou, e o
+        // Google acabou de provar que é de quem está entrando, a senha antiga não
+        // é de ninguém confiável. Sai a senha, caem as sessões.
+        //
+        // Quem cai aqui sendo o dono de verdade (criou com senha e nunca abriu o
+        // e-mail de confirmação) perde só a senha — entra pelo Google, e cria outra
+        // pelo "Esqueci minha senha" se quiser. A tela explica.
+        const confirmado = !!doEmail.emailVerifiedAt
+        // Lido ANTES de gravar: depois da escrita, a senha já é vazio.
+        const tinhaSenha = !!doEmail.password
+        const dados = confirmado
+          ? { googleSub: sub }
+          : { googleSub: sub, emailVerifiedAt: new Date(), password: '' }
+        await this.prisma.user
+          .update({ where: { id: doEmail.id }, data: dados })
+          .catch((e: unknown) => {
+            if (erroDeUnicidade(e)) {
+              throw new ConflictException('Esta conta Google acabou de ser ligada. Tente entrar de novo.')
+            }
+            throw e
+          })
+        if (!confirmado) {
+          senhaDesligada = tinhaSenha
+          // Sem `req`: a sessão DESTA resposta ainda vai ser aberta, e o cookie
+          // que ela grava não pode ser apagado junto.
+          await this.sessions.encerrarTodas(doEmail.id)
+        }
+        user = { ...doEmail, ...dados }
+        vinculou = true
+      }
+    }
+
+    if (user) {
+      this.conferirSancoes(user)
+      const sessao = await this.sessionFor(
+        req,
+        user.id,
+        user.email,
+        user.profile?.name || undefined,
+        user.profile ? planoVigente(user.profile) : 'free',
+        opcoes.lembrar,
+        user.termsVersion,
+        user.emailVerifiedAt,
+        { temSenha: !!user.password, google: true },
+      )
+      return { etapa: 'sessao', sessao, novaConta: false, vinculou, senhaDesligada }
+    }
+
+    const nome = clampText(identidade.nome, NAME_MAX)
+    if (!opcoes.aceitouTermos) return { etapa: 'aceite', email, nome }
+
+    const agora = new Date()
+    const criado = await this.prisma.user
+      .create({
+        data: {
+          email,
+          // Sem senha: nada confere com vazio (user-auth.ts), e o login por senha
+          // gasta com ela o mesmo tempo de uma conta que não existe.
+          password: '',
+          googleSub: sub,
+          // O Google confirmou o endereço — google.ts não deixa chegar aqui sem isso.
+          emailVerifiedAt: agora,
+          // O aceite na MESMA escrita que cria a conta, como no cadastro.
+          termsAcceptedAt: agora,
+          termsVersion: TERMS_VERSION,
+          termsIp: opcoes.ip.slice(0, 60),
+          profile: { create: this.starterProfile(nome || undefined) },
+        },
+        select: { id: true, email: true, profile: { select: { id: true, name: true } } },
+      })
+      .catch((e: unknown) => {
+        // Dois toques em "Criar minha conta": o segundo perde a corrida no índice.
+        if (erroDeUnicidade(e)) {
+          throw new ConflictException('Esta conta acabou de ser criada. Toque em "Continuar com o Google" de novo para entrar.')
+        }
+        throw e
+      })
+    if (criado.profile) await this.resolvePendingInvites(email, criado.profile.id)
+
+    const sessao = await this.sessionFor(
       req,
-      user.id,
-      user.email,
-      user.profile?.name || undefined,
-      user.profile ? planoVigente(user.profile) : 'free',
-      lembrar,
-      user.termsVersion,
-      user.emailVerifiedAt,
+      criado.id,
+      criado.email,
+      criado.profile?.name || nome || undefined,
+      'free',
+      opcoes.lembrar,
+      TERMS_VERSION,
+      agora,
+      { temSenha: false, google: true },
     )
+    return { etapa: 'sessao', sessao, novaConta: true, vinculou: false, senhaDesligada: false }
   }
 
   /**
@@ -339,6 +543,15 @@ export class AuthService {
       select: { id: true, email: true, password: true },
     })
     if (!user) throw new UnauthorizedException('Entre na sua conta.')
+    // Conta criada pelo Google: não há senha atual para conferir, e dizer "não
+    // confere" mandaria a pessoa tentar lembrar de uma senha que nunca existiu.
+    // O caminho para criar uma é o link por e-mail — que prova o que a senha
+    // atual provaria aqui: que quem pede é o dono, e não quem achou o cookie.
+    if (!user.password) {
+      throw new BadRequestException(
+        'Sua conta entra com o Google e ainda não tem senha. Para criar uma, use "Esqueci minha senha" — o link chega no seu e-mail.',
+      )
+    }
     if (!(await verifyPassword(senhaAtual, user.password))) {
       throw new UnauthorizedException('A senha atual não confere.')
     }
@@ -524,6 +737,9 @@ export class AuthService {
         email: true,
         termsVersion: true,
         emailVerifiedAt: true,
+        // Só para dizer à tela SE há senha e SE há Google — os valores não saem daqui.
+        password: true,
+        googleSub: true,
         // Vigente, não contratado — mesma razão do login: este é o retrato que a
         // tela consulta ANTES de o perfil chegar (ver frontend lib/auth.ts).
         profile: {
@@ -546,6 +762,8 @@ export class AuthService {
       termsVersion: user.termsVersion,
       termsPending: !aceiteVigente(user.termsVersion),
       emailPending: !user.emailVerifiedAt && this.correioAtivo,
+      temSenha: !!user.password,
+      google: !!user.googleSub,
     }
   }
 }

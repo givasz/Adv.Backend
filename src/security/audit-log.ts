@@ -34,6 +34,12 @@ export type SecurityEvent =
   | 'password_reset_requested'
   | 'password_reset'
   | 'email_confirmed'
+  // Continuar com o Google. A entrada que dá certo usa login_ok/signup_ok com
+  // resource 'google'; estes dois são o que só existe neste caminho.
+  | 'google_fail'
+  // A conta Google foi ligada a uma conta que já existia (resource
+  // 'senha-desligada' quando o e-mail nunca tinha sido confirmado).
+  | 'google_linked'
 
 interface Registro {
   event: SecurityEvent

@@ -6,6 +6,7 @@ import { AppModule } from './app.module'
 import { assertSecureConfig } from './security/config'
 import { avisarSobreTreinoDeIa, descreverCadeia } from './ai/provedores'
 import { configDoCorreio, descreverCorreio } from './mail/config'
+import { configDoGoogle, descreverGoogle } from './auth/google'
 import { securityHeaders } from './security/headers'
 import { sessionContext } from './auth/session-context'
 import { CSRF_HEADER, origemPermitida } from './auth/csrf'
@@ -30,6 +31,9 @@ async function bootstrap() {
   // desligado — por quê. Chave no .env não é e-mail saindo: a Política de
   // Privacidade precisa declarar o provedor (ver mail/config.ts).
   console.log(`[correio] ${descreverCorreio(configDoCorreio(process.env))}`)
+  // Mesma ideia para o "Continuar com o Google": ligado ou não, e o endereço de
+  // retorno que precisa estar cadastrado no console do Google (ver auth/google.ts).
+  console.log(`[google] ${descreverGoogle(configDoGoogle(process.env))}`)
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bodyParser: true,
