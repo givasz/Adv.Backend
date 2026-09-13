@@ -1,6 +1,8 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
+  HttpStatus,
   Injectable,
   ServiceUnavailableException,
   UnauthorizedException,
@@ -582,6 +584,40 @@ export class AuthService {
 
   // ---- E-mail: esqueci a senha e confirmação ---------------------------------
 
+  /** Links por e-mail (redefinição ou confirmação) por conta, a cada 24 horas. */
+  static readonly LINKS_POR_DIA = 5
+  /** Espera mínima entre dois links do mesmo tipo para a mesma conta. */
+  static readonly INTERVALO_ENTRE_LINKS_MS = 60_000
+
+  /**
+   * A conta já pediu links demais? Olha a FILA (MailOutbox), que é gravada.
+   *
+   * O teto do controller (security/rate-limit.ts) vive na memória do processo e
+   * zera a cada deploy — e, mesmo inteiro, deixava passar 5 por hora, que são
+   * 120 por dia: a caixa de alguém entupida de "redefina sua senha" e a cota
+   * diária do provedor (100 no plano grátis) gasta por uma pessoa só. Contar na
+   * fila é contar o que de fato saiu, com a mesma conta sobrevivendo a reinício.
+   *
+   *   'intervalo' → saiu um há menos de um minuto: o clique impaciente;
+   *   'dia'       → já saíram LINKS_POR_DIA nas últimas 24 horas.
+   */
+  private async linkPedidoDemais(
+    userId: string,
+    modelo: 'redefinir-senha' | 'confirmar-email',
+  ): Promise<'intervalo' | 'dia' | null> {
+    const agora = Date.now()
+    const recentes = await this.prisma.mailOutbox.findMany({
+      where: { userId, modelo, createdAt: { gte: new Date(agora - 24 * 60 * 60 * 1000) } },
+      select: { createdAt: true },
+      orderBy: { createdAt: 'desc' },
+      take: AuthService.LINKS_POR_DIA,
+    })
+    if (recentes[0] && agora - recentes[0].createdAt.getTime() < AuthService.INTERVALO_ENTRE_LINKS_MS) {
+      return 'intervalo'
+    }
+    return recentes.length >= AuthService.LINKS_POR_DIA ? 'dia' : null
+  }
+
   /**
    * "Esqueci minha senha" — o pedido.
    *
@@ -603,6 +639,11 @@ export class AuthService {
       select: { id: true, email: true },
     })
     if (!user) return
+    // Acima do teto não sai e-mail NEM link novo. As duas coisas andam juntas de
+    // propósito: emitir um token sem mandá-lo mataria o link que a pessoa já tem
+    // na caixa, e ela ficaria sem nenhum. Em silêncio, porque esta porta é
+    // pública — dizer "você já pediu demais" contaria que a conta existe.
+    if (await this.linkPedidoDemais(user.id, 'redefinir-senha')) return
     const { token, expiraEm } = await emitirToken(this.prisma, user.id, user.email, 'redefinir')
     await this.correio.enfileirar({
       modelo: 'redefinir-senha',
@@ -690,6 +731,22 @@ export class AuthService {
     if (user.emailVerifiedAt) return { enviado: false, jaConfirmado: true }
     if (!this.correio?.ativo) {
       throw new ServiceUnavailableException('O envio de e-mails está desligado no momento. Tente mais tarde.')
+    }
+    // Mesmo teto do "esqueci minha senha", mas dito em voz alta: aqui a pessoa
+    // está logada, e o motivo não entrega nada a ninguém. E, como lá, recusar
+    // antes de emitir o token mantém vivo o link que já está na caixa.
+    const demais = await this.linkPedidoDemais(userId, 'confirmar-email')
+    if (demais === 'intervalo') {
+      throw new HttpException(
+        'Acabamos de mandar o link. Confira a caixa de entrada e o spam — dá para pedir outro daqui a um minuto.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      )
+    }
+    if (demais === 'dia') {
+      throw new HttpException(
+        `Você já pediu ${AuthService.LINKS_POR_DIA} links nas últimas 24 horas. Use o mais recente, ou peça outro amanhã.`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      )
     }
     const enviado = await this.enviarConfirmacao(userId, user.email, user.profile?.name || undefined)
     if (!enviado) {

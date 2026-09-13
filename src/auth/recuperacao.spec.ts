@@ -2,7 +2,9 @@
 //
 //   • pedido para e-mail sem conta não deixa rastro nenhum;
 //   • o banco guarda o hash do link, nunca o link;
-//   • pedir de novo mata o link anterior;
+//   • pedir de novo mata o link anterior — mas só quando um link novo sai;
+//   • no máximo um link por minuto e cinco por dia por conta, contados na fila
+//     gravada (e não na memória do processo, que zera a cada deploy);
 //   • o link funciona uma vez, vence, e só vale para o endereço ao qual foi;
 //   • senha fraca recusada não gasta o link;
 //   • redefinir derruba todas as sessões e avisa por e-mail.
@@ -15,9 +17,13 @@ import { hashCredencial, hashPassword, verifyPassword } from './user-auth'
 const SENHA_VELHA = 'Marina#Sales2026'
 const SENHA_NOVA = 'Ceramica-Vento-38-Azul'
 const req = {} as never
+const MINUTO = 60_000
+const DIA = 24 * 60 * MINUTO
 
 async function montar(opts: { correioAtivo?: boolean } = {}) {
   const tokens: Record<string, any>[] = []
+  // O que o correio recebeu, como a fila (MailOutbox) guardaria.
+  const fila: { userId: string | null; modelo: string; createdAt: Date }[] = []
   const users = [
     {
       id: 'u1',
@@ -25,6 +31,7 @@ async function montar(opts: { correioAtivo?: boolean } = {}) {
       password: await hashPassword(SENHA_VELHA),
       emailVerifiedAt: null as Date | null,
       termsVersion: '',
+      googleSub: null as string | null,
       profile: { name: 'Marina', plan: 'free', planStatus: 'active', currentPeriodEnd: null, graceUntil: null },
     },
   ]
@@ -57,16 +64,40 @@ async function montar(opts: { correioAtivo?: boolean } = {}) {
         return { count: t ? 1 : 0 }
       }),
     },
+    mailOutbox: {
+      findMany: vi.fn(async ({ where, take }: any) =>
+        fila
+          .filter((l) => l.userId === where.userId && l.modelo === where.modelo && l.createdAt >= where.createdAt.gte)
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+          .slice(0, take)
+          .map((l) => ({ createdAt: l.createdAt })),
+      ),
+    },
   }
   const sessions: any = {
     abrir: vi.fn(async () => ({ expiresAt: 1, csrfToken: 'c', remember: true })),
     encerrarTodas: vi.fn(async () => 2),
   }
-  const correio: any = { ativo: opts.correioAtivo ?? true, enfileirar: vi.fn(async () => true) }
+  const correio: any = {
+    ativo: opts.correioAtivo ?? true,
+    enfileirar: vi.fn(async (a: any) => {
+      fila.push({ userId: a.userId ?? null, modelo: a.modelo, createdAt: new Date() })
+      return true
+    }),
+  }
   const svc = new AuthService(prisma, sessions, correio)
   const avisos = (modelo: string) =>
     correio.enfileirar.mock.calls.map((c: any[]) => c[0]).filter((a: any) => a.modelo === modelo)
-  return { svc, users, tokens, sessions, correio, prisma, avisos }
+  /** Faz o tempo andar para a fila: tudo o que já saiu fica `ms` mais velho. */
+  const envelhecer = (ms: number) => {
+    for (const l of fila) l.createdAt = new Date(l.createdAt.getTime() - ms)
+  }
+  return { svc, users, tokens, sessions, correio, prisma, avisos, envelhecer }
+}
+
+/** Status HTTP de uma exceção do Nest, para conferir o 429 sem depender do texto. */
+function status(e: unknown): number | undefined {
+  return (e as { getStatus?: () => number })?.getStatus?.()
 }
 
 describe('esqueci minha senha — o pedido', () => {
@@ -90,13 +121,50 @@ describe('esqueci minha senha — o pedido', () => {
     expect(minutos).toBeLessThanOrEqual(60)
   })
 
-  it('pedir de novo mata o link anterior', async () => {
-    const { svc, avisos } = await montar()
+  it('pedir de novo (passado um minuto) mata o link anterior', async () => {
+    const { svc, avisos, envelhecer } = await montar()
     await svc.pedirRedefinicao('marina@exemplo.com')
+    envelhecer(2 * MINUTO)
     await svc.pedirRedefinicao('marina@exemplo.com')
     const [primeiro, segundo] = avisos('redefinir-senha')
     await expect(svc.redefinirSenha(req, primeiro.dados.token, SENHA_NOVA)).rejects.toThrow(BadRequestException)
     await expect(svc.redefinirSenha(req, segundo.dados.token, SENHA_NOVA)).resolves.toEqual({ ok: true })
+  })
+
+  it('pedir de novo em menos de um minuto não manda outro — e o link que já saiu segue valendo', async () => {
+    // O clique impaciente: sem esta trava, o segundo pedido mataria o link que
+    // ainda está a caminho, e o primeiro e-mail chegaria com um botão morto.
+    const { svc, avisos, tokens } = await montar()
+    await svc.pedirRedefinicao('marina@exemplo.com')
+    await svc.pedirRedefinicao('marina@exemplo.com')
+    expect(avisos('redefinir-senha')).toHaveLength(1)
+    expect(tokens).toHaveLength(1)
+    await expect(svc.redefinirSenha(req, avisos('redefinir-senha')[0].dados.token, SENHA_NOVA)).resolves.toEqual({
+      ok: true,
+    })
+  })
+
+  it('cinco por dia: o sexto pedido não manda nada, e o último link continua valendo', async () => {
+    const { svc, avisos, envelhecer } = await montar()
+    for (let i = 0; i < 5; i++) {
+      await svc.pedirRedefinicao('marina@exemplo.com')
+      envelhecer(10 * MINUTO)
+    }
+    await svc.pedirRedefinicao('marina@exemplo.com')
+    const enviados = avisos('redefinir-senha')
+    expect(enviados).toHaveLength(5)
+    await expect(svc.redefinirSenha(req, enviados[4].dados.token, SENHA_NOVA)).resolves.toEqual({ ok: true })
+  })
+
+  it('passadas 24 horas, volta a poder pedir', async () => {
+    const { svc, avisos, envelhecer } = await montar()
+    for (let i = 0; i < 5; i++) {
+      await svc.pedirRedefinicao('marina@exemplo.com')
+      envelhecer(10 * MINUTO)
+    }
+    envelhecer(DIA)
+    await svc.pedirRedefinicao('marina@exemplo.com')
+    expect(avisos('redefinir-senha')).toHaveLength(6)
   })
 
   it('correio desligado: nada acontece', async () => {
@@ -175,6 +243,29 @@ describe('confirmação de e-mail', () => {
     users[0]!.emailVerifiedAt = new Date()
     expect(await svc.reenviarConfirmacao('u1')).toEqual({ enviado: false, jaConfirmado: true })
     expect(correio.enfileirar).not.toHaveBeenCalled()
+  })
+
+  it('pedir outro em menos de um minuto: recusa dizendo quando dá, e o link anterior segue valendo', async () => {
+    // Aqui a pessoa está logada — dizer o motivo não entrega nada a ninguém.
+    const { svc, users, avisos } = await montar()
+    await svc.reenviarConfirmacao('u1')
+    const erro = await svc.reenviarConfirmacao('u1').catch((e: unknown) => e)
+    expect(status(erro)).toBe(429)
+    expect(String((erro as Error).message)).toMatch(/um minuto/)
+    await svc.confirmarEmail(avisos('confirmar-email')[0].dados.token)
+    expect(users[0]!.emailVerifiedAt).toBeInstanceOf(Date)
+  })
+
+  it('cinco por dia: o sexto recusa e manda voltar amanhã', async () => {
+    const { svc, avisos, envelhecer } = await montar()
+    for (let i = 0; i < 5; i++) {
+      await svc.reenviarConfirmacao('u1')
+      envelhecer(10 * MINUTO)
+    }
+    const erro = await svc.reenviarConfirmacao('u1').catch((e: unknown) => e)
+    expect(status(erro)).toBe(429)
+    expect(String((erro as Error).message)).toMatch(/amanhã/)
+    expect(avisos('confirmar-email')).toHaveLength(5)
   })
 
   it('a tela só pede confirmação quando o correio pode mandar o link', async () => {
