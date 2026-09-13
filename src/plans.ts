@@ -69,13 +69,27 @@ export function canUseFaq(plan: string | undefined): boolean {
 // por um PUT forjado.
 export const THEME_TIER: Record<string, Plan> = {
   papel: 'free',
-  nevoa: 'free',
-  esmeralda: 'pro',
-  toga: 'pro',
+  linho: 'pro',
   ardosia: 'pro',
-  'meia-noite': 'premium',
-  obsidian: 'premium',
-  marmore: 'premium',
+  oliva: 'pro',
+  // O Névoa subiu do Free para o Max em 13/09/2026 (redesenho dos temas).
+  nevoa: 'premium',
+  timbre: 'premium',
+  nanquim: 'premium',
+  marinho: 'premium',
+}
+
+// Ids da coleção anterior (até 13/09/2026) → sucessor. ESPELHA LEGACY_THEME de
+// frontend/src/lib/themes.ts. Os ids antigos estão gravados nos perfis que os
+// escolheram; `resolveTheme` traduz antes de decidir o plano, e o id NOVO é o
+// que fica gravado no próximo salvamento — sem o mapa, cada um cairia para o
+// neutro em silêncio.
+export const LEGACY_THEME: Record<string, string> = {
+  esmeralda: 'oliva',
+  toga: 'linho',
+  'meia-noite': 'marinho',
+  obsidian: 'marinho',
+  marmore: 'timbre',
 }
 export const DEFAULT_THEME = 'papel'
 
@@ -86,7 +100,8 @@ const PLAN_RANK: Record<Plan, number> = { free: 0, pro: 1, premium: 2 }
  * plano cai para o neutro — é também o que reconcilia um downgrade.
  */
 export function resolveTheme(theme: unknown, plan: string | undefined): string {
-  const id = typeof theme === 'string' ? theme : DEFAULT_THEME
+  const pedido = typeof theme === 'string' ? theme : DEFAULT_THEME
+  const id = Object.prototype.hasOwnProperty.call(LEGACY_THEME, pedido) ? LEGACY_THEME[pedido] : pedido
   const tier = THEME_TIER[id]
   if (!tier) return DEFAULT_THEME
   const rank = PLAN_RANK[(plan as Plan) in PLAN_RANK ? (plan as Plan) : 'free']
