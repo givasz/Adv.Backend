@@ -507,6 +507,20 @@ model Profile {
   // só existia para o assistente). Desligado por padrão pelo mesmo motivo do
   // balão, e só Pro e Max. Ver src/profiles/botao-flutuante.ts.
   floatingButton        String?
+  // ---- Assistente de triagem (plano Max) ----
+  // As perguntas que o assistente faz ANTES de encaminhar o atendimento. Quem as
+  // escreve é o advogado; o assistente só as lê, na ordem, sem inventar nenhuma.
+  //
+  // Duas colunas, e não uma tabela: a lista é pequena (teto de 8), é sempre lida
+  // junto com o perfil e nunca é consultada isoladamente — o mesmo caso de
+  // `assistantDays`. Ver src/triagem.ts, que é a fonte da verdade do formato.
+  //
+  // ⚠️ NÃO existe coluna de RESPOSTA, e não deve existir: o que o visitante
+  // responde é montado no aparelho dele e sai direto para o WhatsApp do
+  // advogado. O advoc.me não recebe, não guarda e não tem como ler.
+  triageEnabled         Boolean          @default(false)
+  // JSON: [{ "id": "t1", "kind": "escolha", "label": "Qual assunto?", "options": ["Família"] }]
+  triageQuestions       String           @default("[]")
   // ---- Vídeo de apresentação (plano Max) ----
   // Guardamos só o LINK (YouTube/Vimeo) já normalizado — nunca o arquivo. A
   // validação do provedor é do servidor: ver src/video.ts.

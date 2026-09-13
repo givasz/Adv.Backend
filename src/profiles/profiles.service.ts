@@ -25,6 +25,7 @@ import {
   FAQ_LIMIT,
   FAQ_QUESTION_MAX,
   canUseScheduling,
+  canUseTriagem,
   countLimit,
   limitsFor,
   NAME_MAX,
@@ -34,6 +35,8 @@ import {
   type LimitedField,
   type Plan,
 } from '../plans'
+import { normalizarTriagem, type TriagemConfig } from '../triagem'
+import { perguntaBloqueada } from '../triagem-dados'
 import {
   canUseVideo,
   normalizeVideoUrl,
@@ -517,6 +520,65 @@ export class ProfilesService {
     }
   }
 
+  // ---- Assistente de triagem (plano Max) -----------------------------------
+
+  /**
+   * As perguntas da triagem → colunas planas. Só chamada DENTRO do Max: fora
+   * dele as duas colunas nem entram no update, e quem desce de plano reencontra
+   * a triagem montada ao voltar (mesma regra do vídeo, do cartão e da marca).
+   *
+   * Quem decide o formato é src/triagem.ts, espelhado no front. Aqui só se
+   * escreve o JSON — e nunca uma resposta de visitante, que não existe neste
+   * caminho e não deve passar a existir.
+   */
+  private triageCols(t: unknown) {
+    const config = normalizarTriagem(t)
+    return {
+      triageEnabled: config.enabled,
+      triageQuestions: JSON.stringify(config.questions),
+    }
+  }
+
+  /**
+   * Colunas → objeto `triage` do front. Perk do Max: fora dele some da resposta,
+   * e com ele some a triagem da conversa pública — a trava vale na LEITURA
+   * também, pela janela entre o vencimento da assinatura e a varredura que
+   * reconcilia o banco (mesmo motivo do vídeo e do balão).
+   */
+  private buildTriage(p: any, plano: Plan): TriagemConfig | undefined {
+    if (!canUseTriagem(plano)) return undefined
+    let questions: unknown = []
+    try {
+      questions = JSON.parse(typeof p.triageQuestions === 'string' ? p.triageQuestions : '[]')
+    } catch {
+      /* JSON inválido → triagem vazia (a conversa volta a ser só a de agendamento) */
+    }
+    return normalizarTriagem({ enabled: p.triageEnabled === true, questions })
+  }
+
+  /**
+   * A única pergunta de triagem que o servidor RECUSA gravar: a que pede senha,
+   * código de confirmação, cartão ou conta bancária. Não existe triagem inicial
+   * legítima que precise disso, e uma página de advogado pedindo "o código que
+   * chegou no seu SMS" é um golpe pronto — deixar passar seria a plataforma
+   * hospedando o formulário.
+   *
+   * Todo o resto (CPF, saúde, renda, endereço) é AVISO na tela e grava: cada um
+   * tem uso legítimo em algum escritório, e quem responde pelo conteúdo é o
+   * profissional. Ver src/triagem-dados.ts.
+   */
+  private enforceTriagem(data: any, plan: Plan) {
+    if (!canUseTriagem(plan)) return
+    for (const q of normalizarTriagem(data?.triage).questions) {
+      const achado = perguntaBloqueada(q)
+      if (achado) {
+        throw new BadRequestException(
+          `A pergunta “${q.label}” pede ${achado.trecho}. ${achado.motivo} Sugestão: “${achado.sugestao}”.`,
+        )
+      }
+    }
+  }
+
   // Normaliza a config da agenda vinda do front em colunas planas, com limites de
   // sanidade (evita expediente invertido, slots absurdos, horizonte gigante).
   private bookingCols(b: any) {
@@ -664,6 +726,10 @@ export class ProfilesService {
         horizonDays: p.bookingHorizonDays ?? 30,
       },
       assistant: this.buildAssistant(p, plano),
+      // Assistente de triagem — as perguntas que a conversa faz antes de
+      // encaminhar. `undefined` fora do Max, e aí o roteiro público volta a ser
+      // exatamente o de agendamento.
+      triage: this.buildTriage(p, plano),
       // O botão no canto do perfil: 'whatsapp', 'assistant' ou 'off'. Já sai 'off'
       // fora do Pro e do Max — ver botao-flutuante.ts.
       floating: botaoFlutuantePublico(p, plano),
@@ -1117,6 +1183,10 @@ export class ProfilesService {
         description: clampText(a?.description, 4000),
       })),
       faqs: clampList<any>(d.faqs, 20),
+      // Triagem já sai NORMALIZADA daqui: é a mesma forma que a checagem de
+      // conformidade lê, que o portão de dado sensível confere e que vai ao
+      // banco. Três leituras do mesmo corpo cru seriam três chances de divergir.
+      triage: normalizarTriagem(d.triage),
       socials: clampList<any>(d.socials, SOCIAL_MAX)
         .map((s: any) => ({
           kind: oneOf(s?.kind, SOCIAL_KINDS, 'website'),
@@ -1218,9 +1288,15 @@ export class ProfilesService {
     // O que já está gravado — os tetos e as travas de forma valem para o texto que
     // ENTRA, nunca para o que a pessoa herdou de um plano maior.
     const atual = textoAtual(current)
+    // Fora do Max a triagem some do corpo AQUI, antes de qualquer outra coisa
+    // olhar para ela: sem esta linha, um corpo forjado por uma conta Pro faria a
+    // checagem de conformidade reprovar a publicação por um texto que aquele
+    // perfil nunca chegaria a publicar.
+    if (!canUseTriagem(plan)) data.triage = undefined
     // Fonte da verdade dos limites por plano.
     this.enforceCharLimits(data, plan, atual)
     this.enforceCampoUnico(data, atual)
+    this.enforceTriagem(data, plan)
     // O endereço candidato no Free é o GRAVADO, nunca o do corpo (perk pago).
     const slug = await this.resolveSlug(
       data.name,
@@ -1290,6 +1366,11 @@ export class ProfilesService {
         schedulingMode: this.sanitizeMode(data.schedulingMode, plan),
         ...this.bookingCols(data.booking),
         ...this.assistantCols(data.assistant),
+        // Triagem é perk do Max, e fora dele as colunas NEM ENTRAM no update:
+        // quem desce de plano reencontra as perguntas montadas ao voltar. É a
+        // mesma regra (e a mesma armadilha evitada) do vídeo, do cartão impresso
+        // e da marca — ver os três blocos logo abaixo.
+        ...(canUseTriagem(plan) ? this.triageCols(data.triage) : {}),
         // Botão flutuante (WhatsApp, assistente ou nenhum). Vem DEPOIS de
         // assistantCols de propósito: grava também o balão antigo, coerente com a
         // escolha, e é ele que tem de valer. Ver botao-flutuante.ts.
