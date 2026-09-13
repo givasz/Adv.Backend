@@ -825,6 +825,29 @@ No dia em que entrar SSE, upload de arquivo ou `_.template`, ele deixa de valer.
 
 ## Checklist de produção
 
+### Esta versão exige `prisma db push` (tabela `ModeloProprio`) — ✅ aplicado
+
+> Modelos próprios de documento (até 3 no Max, só texto). Feito na VPS da OVH em
+> 13/09/2026, 01h22 UTC, com dump em
+> `/root/advocme-antes-modelos-proprios-2026-09-13-0122.sql` (268 KB), o código
+> anterior em `/root/advocme-backend/dist.old` e o schema anterior em
+> `prisma/schema.prisma.antes-modelos-proprios`. Dependências idênticas (sem
+> `npm ci`). O `db push` sincronizou sem pedir `--accept-data-loss`; tabela criada
+> vazia, 4 contas intactas, pm2 com `NODE_ENV=production` e `TRUST_PROXY=1`.
+> Conferido em produção, direto e pelo proxy do Netlify: `GET` e `POST
+> /api/contratos/modelos` sem sessão respondem 401; as quatro rotas mapeadas no log.
+> O backend subiu ANTES do push do front: a tela nova chama rotas que não
+> existiam, e publicar o front primeiro deixaria "Seus modelos" em erro no ar.
+>
+> **O que a tabela guarda:** o texto do modelo, com campos entre chaves. O que tem
+> forma de dado pessoal (CPF, CNPJ, e-mail, telefone, CEP, processo, conta, Pix) é
+> recusado em `lerModeloProprio()`. Nome de pessoa não tem forma e NÃO é detectado
+> — a tela do editor diz isso ao advogado. É a primeira tabela com texto livre de
+> documento; qualquer afrouxamento da trava precisa passar por aqui.
+>
+> Para voltar atrás: `cd /root/advocme-backend && rm -rf dist && mv dist.old dist
+> && pm2 restart advocme-backend`. A tabela nova pode ficar: nada a lê sem o módulo.
+
 ### Esta versão exige `prisma db push` (tabela `RegistroDocumento`) — ✅ aplicado
 
 > Feito na VPS da OVH em 11/09/2026, 03h38 UTC, com dump em
