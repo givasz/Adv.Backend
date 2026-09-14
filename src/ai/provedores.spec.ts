@@ -11,9 +11,11 @@ import {
   provedoresQueTreinam,
   avisarSobreTreinoDeIa,
   Descanso,
+  DESCANSO_FORA_DA_REGIAO_MS,
   DESCANSO_LENTO_MS,
   DESCANSO_MS,
   descreverCadeia,
+  foraDaRegiao,
   PAUSA_ANTES_DE_REPETIR_MS,
   tempoEsgotou,
   valeRepetir,
@@ -176,6 +178,31 @@ describe('chaveQueimada', () => {
     // queimaria as reservas sem uma única chance de dar certo.
     expect(chaveQueimada(400, 'respondeu 400 {"error":"model not found: llama-9"}')).toBe(false)
     expect(chaveQueimada(400)).toBe(false)
+  })
+})
+
+describe('foraDaRegiao — o provedor não atende o país do servidor', () => {
+  it('reconhece a recusa do Gemini à VPS na França (medida em 14/09/2026)', () => {
+    const corpo =
+      'respondeu 400 {"error":{"code":400,"message":"User location is not supported for the API use.","status":"FAILED_PRECONDITION"}}'
+    expect(foraDaRegiao(400, corpo)).toBe(true)
+    // Não é chave: girar para a reserva do mesmo provedor daria a mesma recusa.
+    expect(chaveQueimada(400, corpo)).toBe(false)
+    expect(valeRepetir(400, corpo)).toBe(false)
+  })
+
+  it('a mesma recusa na forma da OpenAI também conta', () => {
+    expect(foraDaRegiao(403, 'respondeu 403 {"error":{"code":"unsupported_country_region_territory"}}')).toBe(true)
+  })
+
+  it('400 comum e falha de servidor não são região', () => {
+    expect(foraDaRegiao(400, 'respondeu 400 {"error":"model not found: llama-9"}')).toBe(false)
+    expect(foraDaRegiao(500, 'location is not supported')).toBe(false)
+    expect(foraDaRegiao(400)).toBe(false)
+  })
+
+  it('descansa bem mais que uma falha comum', () => {
+    expect(DESCANSO_FORA_DA_REGIAO_MS).toBeGreaterThan(DESCANSO_LENTO_MS)
   })
 })
 

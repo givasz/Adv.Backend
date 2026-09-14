@@ -117,6 +117,7 @@ describe('o corte pós-geração nunca devolve mais do que cabe', () => {
 
 import { afterEach, beforeEach, vi } from 'vitest'
 import {
+  DESCANSO_FORA_DA_REGIAO_MS,
   DESCANSO_LENTO_MS,
   DESCANSO_MS,
   ErroDeProvedor,
@@ -255,6 +256,22 @@ describe('a cadeia é um plano B, não uma corrida', () => {
     })
     await expect(c.gerar()).rejects.toBeInstanceOf(ErroDeProvedor)
     await expect(c.gerar()).resolves.toBe('gemini voltou')
+  })
+
+  it('provedor que não atende a região: nem repete, e fica de fora por muito mais tempo', async () => {
+    // 14/09/2026, VPS na França: o Gemini recusava todo pedido com 400 FAILED_PRECONDITION.
+    const regiao = () => erro('gemini', 400, 'respondeu 400 {"message":"User location is not supported for the API use."}')
+    const c = cadeiaDeMentira({
+      gemini: [regiao(), regiao()],
+      groq: ['groq 1', 'groq 2'],
+    })
+    await expect(c.gerar()).resolves.toBe('groq 1')
+    expect(c.chamadas).toEqual(['gemini:g1', 'groq:q1'])
+    // Passado o descanso de uma falha LENTA, ainda não é sondado.
+    vi.setSystemTime(Date.now() + DESCANSO_LENTO_MS)
+    await expect(c.gerar()).resolves.toBe('groq 2')
+    expect(c.chamadas).toEqual(['gemini:g1', 'groq:q1', 'groq:q1'])
+    expect(DESCANSO_FORA_DA_REGIAO_MS).toBeGreaterThan(DESCANSO_LENTO_MS)
   })
 })
 

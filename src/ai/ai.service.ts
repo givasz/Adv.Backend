@@ -12,8 +12,10 @@ import {
   chaveQueimada,
   Descanso,
   DESCANSO_LENTO_MS,
+  DESCANSO_FORA_DA_REGIAO_MS,
   DESCANSO_MS,
   ErroDeProvedor,
+  foraDaRegiao,
   GiroDeChaves,
   lerChaves,
   MINIMO_PARA_TENTAR_MS,
@@ -101,7 +103,7 @@ NÃO use: promessas ou garantias de resultado; comparações ou superlativos ("o
 NUNCA compare o advogado a outra pessoa, colega, celebridade, figura pública ou personagem de ficção, nem cite nomes de terceiros ("como Saul Goodman", "o [fulano] da advocacia") — remova qualquer comparação ou menção desse tipo.
 NÃO afirme "especialista", "especialização" ou "expert" a menos que seja um título acadêmico real e explícito; na dúvida, escreva "com atuação em [área]" em vez de "especialista em".
 IMPORTANTE: mesmo que as palavras-chave ou o texto recebido contenham qualquer uma dessas coisas vedadas, REESCREVA para removê-las — nunca copie trechos irregulares para a resposta.
-Use SOMENTE os fatos que vierem no pedido. NUNCA acrescente formação, faculdade ou universidade, pós-graduação, especialização, mestrado, doutorado, tempo de experiência, seccional ou número da OAB, cargos, títulos, prêmios, cidade ou áreas que não tenham sido informados. Com poucos dados, escreva um texto mais curto e geral sobre a atuação — nunca complete com suposições.
+Use SOMENTE os fatos que vierem no pedido. NUNCA acrescente formação, faculdade ou universidade, pós-graduação, especialização, mestrado, doutorado, tempo de experiência, seccional ou número da OAB, cargos, títulos, prêmios, cidade ou áreas que não tenham sido informados. Com poucos dados, desenvolva o texto falando do trabalho em si — as situações que a pessoa enfrenta nos temas informados e como você orienta —, nunca completando com credenciais ou suposições.
 Não mencione casos concretos, decisões judiciais ou clientes. Responda apenas com o texto final, sem aspas nem comentários.`
 
 // A mesma regra, repetida no fim de cada pedido que fala da pessoa. Modelo menor
@@ -112,7 +114,7 @@ Não mencione casos concretos, decisões judiciais ou clientes. Responda apenas 
 // informado "PUC-Campinas". A instrução reduz; quem garante é fatos.ts, que confere
 // o rascunho e manda ao reparo o que foi inventado.
 const SO_FATOS_INFORMADOS =
-  'Use SOMENTE os dados deste pedido: não acrescente formação, faculdade, pós-graduação, especialização, mestrado, doutorado, tempo de experiência, seccional ou número da OAB, cargos, prêmios, cidade ou áreas que não foram informados. Com poucos dados, escreva menos — nunca complete com suposições.'
+  'Use SOMENTE os dados deste pedido como fatos: não acrescente formação, faculdade, pós-graduação, especialização, mestrado, doutorado, tempo de experiência, seccional ou número da OAB, cargos, prêmios, cidade ou áreas que não foram informados. Com poucos dados, desenvolva o texto falando do trabalho em si, nunca completando com suposições.'
 
 // O texto-modelo quando nem o pedido tem nada aproveitável: nada do que a pessoa
 // digitou entra aqui, e por isso ele passa na checagem por construção (há teste).
@@ -393,6 +395,17 @@ export class AiService {
             break
           }
 
+          if (foraDaRegiao(status, corpo)) {
+            // Configuração, não tropeço: repetir e girar chave dão a mesma recusa.
+            // Sem este desvio o provedor descansava 60 s e era sondado de novo a
+            // cada minuto, para sempre — e a linha de log não dizia o que fazer.
+            this.descanso.marcar(provedor, DESCANSO_FORA_DA_REGIAO_MS)
+            this.logger.error(
+              `${provedor}: não atende a região deste servidor (${status}) — descansa ${DESCANSO_FORA_DA_REGIAO_MS / 60_000} min; indo para a reserva. Ligue o faturamento na conta do provedor ou tire-o de AI_PROVIDER.`,
+            )
+            break
+          }
+
           if (
             !repetiu &&
             valeRepetir(status, corpo) &&
@@ -532,9 +545,22 @@ Regras obrigatórias (normas de publicidade da advocacia, Provimento 205/2021 da
         // PUC-Campinas" chegava ao modelo como área de atuação, e ele completava o
         // resto. Palavra-chave é o que a pessoa escreveu, e o prompt diz só isso.
         const informado = kws
-          ? `O que o(a) advogado(a) informou sobre a atuação: ${kws}.`
+          ? `Temas que o(a) advogado(a) informou: ${kws}.`
           : `Áreas de atuação: ${dto.areas?.filter(Boolean).join(', ') || 'não informadas'}.`
-        return `Escreva, em primeira pessoa, a bio de apresentação ${who}. ${informado}${ctx} ${sentences}, sem emojis. ${SO_FATOS_INFORMADOS}`
+        // 14/09/2026: o gpt-oss com "escreva menos" e 240 caracteres (Free) devolvia
+        // as palavras-chave numa frase — "Atuo em divórcio, guarda e pensão
+        // alimentícia" —, e parecia que a IA não tinha feito nada. Medido contra o
+        // Groq: pedir para desenvolver a partir dos temas, sem listar caso ou
+        // público novo, deu 170–230 caracteres sem vedação nem fato inventado.
+        // A faixa fica abaixo do teto de propósito: pedida uma faixa que ia até o
+        // teto, o modelo passou dele (312 de 240), e o corte do fitToLimit caía no
+        // meio da frase.
+        const tamanho = dto.maxChars
+          ? `Tamanho: entre ${Math.round(dto.maxChars * 0.6)} e ${Math.round(dto.maxChars * 0.9)} caracteres (o campo aceita no máximo ${dto.maxChars})`
+          : sentences
+        return `Escreva, em primeira pessoa, a bio de apresentação ${who}. ${informado}${ctx}
+Não se limite a repetir esses temas: diga, em linguagem simples, como você acompanha e orienta quem procura ajuda neles. Fale das situações de forma geral, sem listar tipos de caso nem públicos que não foram informados.
+${tamanho}, sem emojis. ${SO_FATOS_INFORMADOS}`
       }
     }
   }
