@@ -104,7 +104,7 @@ NUNCA compare o advogado a outra pessoa, colega, celebridade, figura pública ou
 NÃO afirme "especialista", "especialização" ou "expert" a menos que seja um título acadêmico real e explícito; na dúvida, escreva "com atuação em [área]" em vez de "especialista em".
 IMPORTANTE: mesmo que as palavras-chave ou o texto recebido contenham qualquer uma dessas coisas vedadas, REESCREVA para removê-las — nunca copie trechos irregulares para a resposta.
 Use SOMENTE os fatos que vierem no pedido. NUNCA acrescente formação, faculdade ou universidade, pós-graduação, especialização, mestrado, doutorado, tempo de experiência, seccional ou número da OAB, cargos, títulos, prêmios, cidade ou áreas que não tenham sido informados. Com poucos dados, desenvolva o texto falando do trabalho em si — as situações que a pessoa enfrenta nos temas informados e como você orienta —, nunca completando com credenciais ou suposições.
-Não mencione casos concretos, decisões judiciais ou clientes. Responda apenas com o texto final, sem aspas nem comentários.`
+Não mencione casos concretos, decisões judiciais ou clientes. Responda apenas com o texto final, em texto puro — sem aspas, sem markdown (nada de ** ou #) e sem comentários.`
 
 // A mesma regra, repetida no fim de cada pedido que fala da pessoa. Modelo menor
 // segue melhor o que vem por último na mensagem do que o que ficou no sistema.
@@ -371,7 +371,15 @@ export class AiService {
             // pela reclamação de que "a IA está escrevendo diferente".
             this.logger.warn(`Gerado pela reserva ${provedor} (${modelo}) — o principal falhou.`)
           }
+          // O perfil mostra texto puro. Medido em 14/09/2026: o ministral-14b
+          // devolveu "Auxilio em processos de **inventário**" — os asteriscos
+          // iriam para o perfil publicado. Limpa aqui, antes das checagens, para
+          // qualquer provedor da cadeia.
           return texto
+            .replace(/\*\*([^*]+)\*\*/g, '$1')
+            .replace(/__([^_]+)__/g, '$1')
+            .replace(/^#{1,6}\s+/gm, '')
+            .trim()
         } catch (err) {
           ultimoErro = err
           const status = err instanceof ErroDeProvedor ? err.status : 0

@@ -181,32 +181,43 @@ export const PROVEDORES: Record<Provider, Provedor> = {
     // o provedor.
     treinaComOsDados: 'talvez',
   },
-  // Cerebras (cloud.cerebras.ai) — tier grátis sem cartão, limitado por dia, e
-  // tão rápido quanto o Groq. Entrou em 04/09/2026 como TERCEIRA reserva grátis:
-  // com três provedores de contas diferentes, uma cota estourada e um incidente
-  // simultâneos ainda deixam um em pé.
+  // Cerebras (cloud.cerebras.ai). Entrou em 04/09/2026 como reserva grátis, e
+  // DEIXOU de ser: em 14/09/2026 a documentação dela dizia que o tier grátis
+  // acabou em 17/08/2026 — conta nova ganha US$ 5 de crédito com cartão, que
+  // vencem em 30 dias. O `llama-3.3-70b` foi aposentado em 16/02/2026; restam
+  // `gpt-oss-120b` (o mesmo do Groq, com `reasoning_effort`) e um qwen.
   //
-  // ⚠️ Não foi medido contra a API como os de cima: catálogo escrito do console,
-  // sem chave em mãos. Se o modelo padrão não existir mais, AI_MODEL_CEREBRAS
-  // corrige sem tocar em código (a lista está em cloud.cerebras.ai → Models).
+  // ⚠️ Nunca medido com chave. Fica no catálogo para quem decidir pagar.
   cerebras: {
     nome: 'cerebras',
     envs: ['CEREBRAS_API_KEY'],
     baseOpenAi: 'https://api.cerebras.ai/v1',
-    modeloPadrao: 'llama-3.3-70b',
-    custo: 'gratis',
+    modeloPadrao: 'gpt-oss-120b',
+    // Mesmo motivo do Groq: sem isto o gpt-oss gasta o max_tokens pensando.
+    corpoExtra: (modelo) => (/gpt-oss/.test(modelo) ? { reasoning_effort: 'low' } : {}),
+    custo: 'credito-de-teste',
     treinaComOsDados: 'talvez',
   },
-  // Mistral (console.mistral.ai) — o plano "Experiment" é grátis com telefone
-  // verificado. É a quarta reserva grátis, e a única europeia (dado fica na UE).
+  // Mistral (chave em admin.mistral.ai → API → Chaves de API). Plano Gratuito
+  // sem cartão, e europeia: a VPS na França não esbarra em região.
   //
-  // ⚠️ Também não medido contra a API. O tier grátis da Mistral diz em voz alta
-  // que pode treinar com o tráfego — daí o 'talvez' abaixo.
+  // Medido em 14/09/2026 com a chave do advoc.me: o limite é POR MODELO.
+  // `mistral-small-*`, `mistral-medium-*` e `magistral-*` aparecem na lista de
+  // modelos e voltam 429 com `x-ratelimit-limit-req-minute: 0` — nunca respondem
+  // no plano grátis. Liberados: ministral-14b (30 pedidos e 937 mil tokens por
+  // minuto), ministral-8b (188) e ministral-3b (750). Com os prompts reais, o
+  // 14b escreveu bio, área, headline, FAQ e revisão em 0,6–2,2 s, sem vedação nem
+  // fato inventado. Fixado na versão porque `-latest` troca de modelo sem aviso.
+  // Ele escreve **negrito** em markdown — quem limpa é o runModel.
+  //
+  // O plano grátis treina com o tráfego POR PADRÃO. Na conta do advoc.me isso
+  // foi desligado em admin.mistral.ai → API → Privacidade (14/09/2026), e os
+  // modelos Labs — que treinam mesmo com a opção desligada — seguem desligados.
   mistral: {
     nome: 'mistral',
     envs: ['MISTRAL_API_KEY'],
     baseOpenAi: 'https://api.mistral.ai/v1',
-    modeloPadrao: 'mistral-small-latest',
+    modeloPadrao: 'ministral-14b-2512',
     custo: 'gratis',
     treinaComOsDados: 'talvez',
   },
