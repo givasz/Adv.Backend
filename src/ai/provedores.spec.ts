@@ -450,4 +450,16 @@ describe('as reservas grátis novas (cerebras, mistral) entram pelo catálogo', 
       'cerebras',
     ])
   })
+
+  it('o modelo padrão do Mistral é um que o plano grátis deixa responder', () => {
+    // 14/09/2026: small, medium e magistral voltam 429 com limite de 0 pedidos
+    // por minuto no plano Gratuito. Um padrão desses é reserva que nunca responde.
+    expect(PROVEDORES.mistral.modeloPadrao).not.toMatch(/^(mistral-(small|medium)|magistral)/)
+    expect(PROVEDORES.mistral.modeloPadrao).not.toMatch(/latest$/)
+  })
+
+  it('a Cerebras não é mais descrita como grátis, nem com modelo aposentado', () => {
+    expect(PROVEDORES.cerebras.custo).not.toBe('gratis')
+    expect(PROVEDORES.cerebras.modeloPadrao).not.toBe('llama-3.3-70b')
+  })
 })

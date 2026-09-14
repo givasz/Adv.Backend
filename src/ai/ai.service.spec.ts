@@ -273,6 +273,14 @@ describe('a cadeia é um plano B, não uma corrida', () => {
     expect(c.chamadas).toEqual(['gemini:g1', 'groq:q1', 'groq:q1'])
     expect(DESCANSO_FORA_DA_REGIAO_MS).toBeGreaterThan(DESCANSO_LENTO_MS)
   })
+
+  it('markdown do modelo não chega ao perfil, que mostra texto puro', async () => {
+    // Medido em 14/09/2026 com o ministral-14b (reserva Mistral).
+    const c = cadeiaDeMentira({
+      gemini: ['## Família\nAuxilio em processos de **inventário** e __partilha__, com orientação.'],
+    })
+    await expect(c.gerar()).resolves.toBe('Família\nAuxilio em processos de inventário e partilha, com orientação.')
+  })
 })
 
 // O proxy do Netlify corta em 26 s. O que não couber no orçamento do pedido não
