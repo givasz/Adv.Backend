@@ -521,6 +521,10 @@ model Profile {
   triageEnabled         Boolean          @default(false)
   // JSON: [{ "id": "t1", "kind": "escolha", "label": "Qual assunto?", "options": ["Família"] }]
   triageQuestions       String           @default("[]")
+  // Perguntas EMBUTIDAS que o advogado tirou da conversa quando a triagem está
+  // ligada: "horario", "formato" e/ou "nome". A abertura com o aviso de segurança
+  // e o envio nunca saem. JSON: ["nome"]
+  triageSkipSteps       String           @default("[]")
   // ---- Vídeo de apresentação (plano Max) ----
   // Guardamos só o LINK (YouTube/Vimeo) já normalizado — nunca o arquivo. A
   // validação do provedor é do servidor: ver src/video.ts.

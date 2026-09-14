@@ -536,6 +536,7 @@ export class ProfilesService {
     return {
       triageEnabled: config.enabled,
       triageQuestions: JSON.stringify(config.questions),
+      triageSkipSteps: JSON.stringify(config.semEtapas ?? []),
     }
   }
 
@@ -553,7 +554,13 @@ export class ProfilesService {
     } catch {
       /* JSON inválido → triagem vazia (a conversa volta a ser só a de agendamento) */
     }
-    return normalizarTriagem({ enabled: p.triageEnabled === true, questions })
+    let semEtapas: unknown = []
+    try {
+      semEtapas = JSON.parse(typeof p.triageSkipSteps === 'string' ? p.triageSkipSteps : '[]')
+    } catch {
+      /* JSON inválido → nenhuma etapa tirada (a conversa faz todas) */
+    }
+    return normalizarTriagem({ enabled: p.triageEnabled === true, questions, semEtapas })
   }
 
   /**

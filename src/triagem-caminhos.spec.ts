@@ -107,6 +107,21 @@ describe('uma pergunta só depende de pergunta ANTERIOR', () => {
   })
 })
 
+describe('as perguntas que o assistente faz sozinho, tiradas pelo advogado', () => {
+  const semEtapas = (raw: unknown) =>
+    normalizarTriagem({ enabled: true, questions: [], semEtapas: raw }).semEtapas
+
+  it('só dia e horário, formato e nome saem — sem repetição, na ordem da conversa', () => {
+    expect(semEtapas(['nome', 'abertura', 'envio', 'horario', 'nome', 3])).toEqual(['horario', 'nome'])
+  })
+
+  it('nada tirado, e o campo nem aparece', () => {
+    for (const raw of [undefined, [], 'nome', { nome: true }]) {
+      expect(normalizarTriagem({ enabled: true, questions: [], semEtapas: raw })).not.toHaveProperty('semEtapas')
+    }
+  })
+})
+
 describe('encerrar a triagem numa resposta', () => {
   it('só vale o verdadeiro de verdade', () => {
     const [a] = normalizar([
