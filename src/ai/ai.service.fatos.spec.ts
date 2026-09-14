@@ -49,6 +49,18 @@ describe('a IA não publica fato que ninguém informou', () => {
     expect(prompt).not.toContain('Atua em:')
   })
 
+  it('bio não é eco das palavras-chave: pede para desenvolver, com tamanho abaixo do teto', () => {
+    // 14/09/2026: com "escreva menos" no prompt e 240 caracteres no Free, o
+    // gpt-oss devolvia "Atuo em divórcio, guarda e pensão alimentícia" — as
+    // palavras que a pessoa digitou, numa frase. Pedir uma faixa abaixo do teto
+    // também evita passar dele e o corte cair no meio da frase.
+    const s = interno()
+    const prompt = s.buildPrompt(s.sanitizeDto({ kind: 'bio', name: 'Ana Souza', keywords: ['divórcio', 'guarda'], plan: 'free', maxChars: 240 }))
+    expect(prompt).toContain('Não se limite a repetir')
+    expect(prompt).toContain('entre 144 e 216 caracteres')
+    expect(prompt).not.toMatch(/escreva menos/i)
+  })
+
   it('universidade inventada vai ao reparo com o trecho, e volta o texto consertado', async () => {
     const { s, prompts } = comRascunhos([
       'Sou Ana Souza, formada pela Universidade Estadual de Campinas, com atuação em direito do trabalho.',

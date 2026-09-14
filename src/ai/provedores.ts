@@ -429,6 +429,29 @@ export function valeRepetir(status: number, motivo = ''): boolean {
   return status === 0 && !tempoEsgotou(status, motivo)
 }
 
+/**
+ * O provedor recusa atender a REGIÃO do servidor — erro de configuração, não tropeço.
+ *
+ * Medido em 14/09/2026: desde a mudança para a VPS da OVH (França), todo pedido
+ * ao Gemini voltava `400 FAILED_PRECONDITION "User location is not supported
+ * for the API use."` — o tier grátis do Google não atende a União Europeia. O
+ * Groq assumia calado e ninguém percebeu por quatro dias; com o descanso de
+ * 60 s, a cada minuto um pedido ainda pagava a chamada condenada.
+ *
+ * Não é chave (girar não adianta) nem falha passageira (repetir dá igual): só
+ * volta a funcionar com faturamento ligado na conta ou com o servidor em outra
+ * região. Por isso o descanso é longo e o log diz o que fazer.
+ */
+export function foraDaRegiao(status: number, detalhe = ''): boolean {
+  return (
+    (status === 400 || status === 403) &&
+    /location is not supported|not available in your (country|region)|unsupported_country_region_territory/i.test(detalhe)
+  )
+}
+
+/** Quem recusa a região descansa meia hora: a situação não muda sozinha em um minuto. */
+export const DESCANSO_FORA_DA_REGIAO_MS = 30 * 60_000
+
 /** O erro foi tempo esgotado? (nosso texto em `postar`, o nome do DOM e o do SDK da Anthropic). */
 export function tempoEsgotou(status: number, motivo = ''): boolean {
   return status === 0 && /tempo esgotado|abort|timed out/i.test(motivo)
