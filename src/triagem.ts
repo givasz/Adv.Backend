@@ -106,9 +106,28 @@ export interface PerguntaDeTriagem {
   condicao?: CondicaoDaPergunta
 }
 
+/**
+ * As perguntas que o assistente faz SOZINHO depois da triagem — e que o advogado
+ * pode tirar da conversa: o dia e o horário, a preferência presencial/online e o
+ * "como posso te chamar?". A abertura (com o aviso para não mandar documentos) e
+ * o envio não saem: sem a primeira a pessoa escreve sem saber o que não mandar,
+ * e sem o segundo nada chega a ninguém.
+ */
+export type EtapaFixa = 'horario' | 'formato' | 'nome'
+
+export const ETAPAS_FIXAS: EtapaFixa[] = ['horario', 'formato', 'nome']
+
 export interface TriagemConfig {
   enabled: boolean
   questions: PerguntaDeTriagem[]
+  /** etapas embutidas que o advogado tirou da conversa — ausente = nenhuma */
+  semEtapas?: EtapaFixa[]
+}
+
+/** As etapas tiradas, limpas e na ordem da conversa. */
+function etapasTiradas(raw: unknown): EtapaFixa[] {
+  const lista: unknown[] = Array.isArray(raw) ? raw : []
+  return ETAPAS_FIXAS.filter((e) => lista.includes(e))
 }
 
 // ---- Tetos ------------------------------------------------------------------
@@ -254,7 +273,10 @@ export function normalizarTriagem(raw: unknown): TriagemConfig {
   // editor mostra na hora o desenho novo.
   limparLigacoes(questions, false)
 
-  return { enabled: bruto.enabled === true, questions }
+  // Só aparece quando há alguma: a triagem que nunca tirou nada continua com
+  // exatamente a forma de antes.
+  const semEtapas = etapasTiradas(bruto.semEtapas)
+  return { enabled: bruto.enabled === true, questions, ...(semEtapas.length ? { semEtapas } : {}) }
 }
 
 /**

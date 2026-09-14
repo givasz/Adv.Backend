@@ -100,6 +100,26 @@ describe('a triagem é do Max, e a trava está no servidor', () => {
     expect(JSON.parse(gravado[0].triageQuestions).map((q: Qualquer) => q.id)).toEqual(['q1', 'q2'])
   })
 
+  // As perguntas que o assistente faz sozinho (dia e horário, formato, nome) são
+  // do advogado tirar. Só as três: a abertura e o envio não existem nesta lista,
+  // e um valor inventado não entra.
+  it('Max grava as etapas tiradas da conversa, e elas voltam na resposta', async () => {
+    const { svc, gravado } = service({ plan: 'premium' })
+    const salvo: Qualquer = await svc.update('u1', {
+      ...base,
+      triage: { ...TRIAGEM, semEtapas: ['nome', 'abertura', 'horario', 'nome'] },
+    })
+    expect(JSON.parse(gravado[0].triageSkipSteps)).toEqual(['horario', 'nome'])
+    expect(salvo.triage.semEtapas).toEqual(['horario', 'nome'])
+  })
+
+  it('sem nada tirado, a coluna grava lista vazia e a resposta não traz o campo', async () => {
+    const { svc, gravado } = service({ plan: 'premium' })
+    const salvo: Qualquer = await svc.update('u1', { ...base, triage: TRIAGEM })
+    expect(gravado[0].triageSkipSteps).toBe('[]')
+    expect(salvo.triage).not.toHaveProperty('semEtapas')
+  })
+
   // Corpo forjado por uma conta Pro: a tela nem mostra a seção, mas um PUT
   // montado à mão mostraria. As colunas não entram no update — nada é gravado.
   it('Pro e Free não gravam triagem nenhuma, mesmo com o corpo forjado', async () => {

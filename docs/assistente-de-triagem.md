@@ -126,6 +126,29 @@ Testes em `triagemMapa.spec.ts`.
 Ao lado, **Testar meu assistente** (`/assistente/testar`) abre a conversa de
 verdade, com o perfil gravado e sem abrir o WhatsApp no fim.
 
+## Perguntas que o assistente faz sozinho: o advogado pode tirar
+
+Depois das perguntas do advogado, o assistente fazia sempre três perguntas
+próprias: **dia e horário**, **presencial ou online** (quando o perfil atende dos
+dois jeitos e a triagem não pergunta) e **como posso te chamar** (quando a
+triagem não pergunta). Desde 13/09/2026 o advogado tira qualquer uma delas no
+fluxograma (o × do passo), e devolve pelo "Devolver" que fica logo abaixo, com o
+efeito escrito:
+
+- **sem dia e horário** — o pedido chega como pedido de CONTATO, mesmo com a grade
+  aberta (o mesmo caminho da triagem num perfil sem grade);
+- **sem formato** — a mensagem chega sem "Formato:" (nunca um formato adivinhado);
+- **sem nome** — a mensagem chega sem "Nome:"; o horário escolhido é reconferido
+  no fecho, que é onde o nome o reconferia.
+
+**Não saem:** a abertura com o aviso para não enviar documentos, senhas ou dados
+bancários (sem ela a pessoa escreve sem saber o que não mandar) e o envio pelo
+WhatsApp (sem ele nada chega). Não há botão para elas, e o normalizador só aceita
+`horario`, `formato` e `nome` (`semEtapas`, ausente quando nada foi tirado).
+
+Só vale com a triagem ATIVA (`etapaNaConversa`): sem triagem o assistente é um
+agendador, e agendador sem dia e horário não teria o que agendar.
+
 ## Onde cada coisa mora
 
 | Assunto | Arquivo |
@@ -143,8 +166,9 @@ verdade, com o perfil gravado e sem abrir o WhatsApp no fim.
 | Portão de plano (fonte única) | `canUseTriagem` em `*/plans.ts` |
 | Leitura/escrita e portão no servidor | `backend/src/profiles/profiles.service.ts` |
 
-Colunas em `Profile`: `triageEnabled` (bool) e `triageQuestions` (JSON). Nenhuma
-tabela nova — a ligação e o "encerra" moram dentro do JSON.
+Colunas em `Profile`: `triageEnabled` (bool), `triageQuestions` (JSON) e
+`triageSkipSteps` (JSON, as etapas embutidas tiradas — desde 13/09/2026). Nenhuma
+tabela nova — a ligação e o "encerra" moram dentro do JSON das perguntas.
 
 Cada opção de resposta tem **id próprio** (`{ id, texto, encerra? }`), e não é o
 texto que serve de chave: o advogado renomeia uma opção o tempo todo, e com
@@ -206,8 +230,9 @@ fluxograma aparece sob o cadeado com uma triagem de exemplo.
 
 ## Deploy
 
-As duas colunas são aditivas e têm padrão: `prisma db push` na VPS resolve, **sem**
-`--accept-data-loss`. Nada a migrar, nada a preencher. A troca de salto para
+As colunas são aditivas e têm padrão: `prisma db push` na VPS resolve, **sem**
+`--accept-data-loss`. Nada a migrar, nada a preencher. `triageSkipSteps` entrou em
+13/09/2026 do mesmo jeito (padrão `"[]"` = nenhuma etapa tirada). A troca de salto para
 ligação (13/09/2026) não mexeu em schema — só no normalizador, que precisa subir
 no backend ANTES do frontend (o front novo grava `condicao`, e o backend antigo a
 jogaria fora).
