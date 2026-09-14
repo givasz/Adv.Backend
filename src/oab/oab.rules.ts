@@ -115,9 +115,13 @@ export const RULES: Rule[] = [
     // de "êxito" ele NÃO enxerga fronteira, então `\bêxito` nunca casava e a
     // promessa mais canônica da profissão — "êxito garantido" — passava batido em
     // qualquer posição. "Vitória garantida" disparava só porque o "V" é ASCII.
-    // Corrigido em 2026-08-21 com (?<![\p{L}]) / (?![\p{L}]) e flag `u`, o mesmo
+    // Corrigido em 2026-08-21 com fronteiras \p{L} e flag `u`, o mesmo
     // recurso que superlative-comparison e urgency-appeal já usavam.
-    test: /100\s?%|(?<![\p{L}])certez[ao] de (êxito|exito|vitória|vitoria|ganho|sucesso|resultad\w+)(?![\p{L}])|(?<![\p{L}])(êxito|exito|vitória|vitoria|ganho|sucesso|resultad\w+|desfecho|absolvi\w+)(?![\p{L}])[\s\S]{0,15}(?<![\p{L}])garantid\w+|(?<![\p{L}])(garant|assegur)\w+\s+(o|a|os|as|um|uma|seu|sua|total|pleno|plena|integral)?\s*(êxito|exito|vitória|vitoria|ganho|sucesso|resultad\w+|desfecho|absolvi\w+)(?![\p{L}])/iu,
+    // A fronteira à esquerda é `(?:^|[^\p{L}])`, e NÃO lookbehind: o Safari/iOS
+    // só entende lookbehind a partir do 16.4, e nos iPhones anteriores a regex
+    // derrubava a página inteira (13/09/2026). O prefixo consome o separador —
+    // quem mostra o trecho passa por `trechoCasado` (oab.ts / compliance.ts).
+    test: /100\s?%|(?:^|[^\p{L}])certez[ao] de (êxito|exito|vitória|vitoria|ganho|sucesso|resultad\w+)(?![\p{L}])|(?:^|[^\p{L}])(êxito|exito|vitória|vitoria|ganho|sucesso|resultad\w+|desfecho|absolvi\w+)(?![\p{L}])[\s\S]{0,14}(?:^|[^\p{L}])garantid\w+|(?:^|[^\p{L}])(garant|assegur)\w+\s+(o|a|os|as|um|uma|seu|sua|total|pleno|plena|integral)?\s*(êxito|exito|vitória|vitoria|ganho|sucesso|resultad\w+|desfecho|absolvi\w+)(?![\p{L}])/iu,
     reason: 'Promessa/garantia de resultado é vedada (Prov. 205/2021 Art. 6º).',
     explanation:
       'O Provimento 205/2021 (Art. 6º) proíbe prometer ou garantir resultados. A advocacia é atividade-meio: nenhum profissional pode assegurar o desfecho de um caso, e fazê-lo configura captação e publicidade enganosa.',
@@ -147,7 +151,7 @@ export const RULES: Rule[] = [
     // Fronteiras unicode (\p{L}) — necessárias para "único" (ú acentuado no início).
     // "o/a melhor" NÃO dispara em termos jurídicos consagrados ("o melhor interesse
     // da criança/família") nem em frases genéricas ("a melhor forma de…").
-    test: /(?<![\p{L}])((o|a) melhor(?!\s+(interesse|forma|maneira|caminho|opç\w+|opc\w+|alternativa|solu\w+|momento|proveito|sentido))|n[ºo°]\.? ?1|número um|numero um|imbatív\w+|imbativ\w+|líder de mercado|lider de mercado|referência (nacional|no mercado)|o mais (premiado|renomado|reconhecido)|único (advogad\w*|escritóri\w*))(?![\p{L}])/iu,
+    test: /(?:^|[^\p{L}])((o|a) melhor(?!\s+(interesse|forma|maneira|caminho|opç\w+|opc\w+|alternativa|solu\w+|momento|proveito|sentido))|n[ºo°]\.? ?1|número um|numero um|imbatív\w+|imbativ\w+|líder de mercado|lider de mercado|referência (nacional|no mercado)|o mais (premiado|renomado|reconhecido)|único (advogad\w*|escritóri\w*))(?![\p{L}])/iu,
     reason: 'Autoengrandecimento / comparação é vedado (Prov. 205/2021 Art. 3º, IV).',
     explanation:
       'O Art. 3º, IV veda expressões de autoengrandecimento e comparação ("o melhor", "nº 1", "líder de mercado"). A comunicação deve ser sóbria e informativa, sem se colocar acima de outros profissionais.',
@@ -267,7 +271,7 @@ export const RULES: Rule[] = [
     // promise-result, para que um ramo acentuado acrescentado depois não morra em
     // silêncio. O ganho real da revisão foi aceitar as formas SEM acento, que é
     // como muita gente digita.
-    test: /(?<![\p{L}])(consulta (grátis|gratis|gratuita)|primeira consulta gratuita|de graça|sem custo|análise gratuita|analise gratuita|avaliação gratuita|avaliacao gratuita)(?![\p{L}])/iu,
+    test: /(?:^|[^\p{L}])(consulta (grátis|gratis|gratuita)|primeira consulta gratuita|de graça|sem custo|análise gratuita|analise gratuita|avaliação gratuita|avaliacao gratuita)(?![\p{L}])/iu,
     reason: 'Oferta de serviço gratuito como isca (captação de clientela) é vedada.',
     explanation:
       'Oferecer gratuidade como chamariz ("consulta grátis", "análise gratuita") é captação disfarçada. O trabalho pro bono é legítimo, mas voltado a quem necessita — não como isca para clientes pagantes (CED Art. 30).',
@@ -390,7 +394,7 @@ export const RULES: Rule[] = [
     version: POLICY_VERSION,
     // Fronteiras unicode (\p{L}) em vez de \b: casam corretamente palavras iniciadas
     // por letra acentuada ("Últimas vagas"), que o \b ASCII do JS não reconhece.
-    test: /(?<![\p{L}])(fale comigo agora|não perca tempo|nao perca tempo|corra|últimas vagas|ultimas vagas|aproveite (já|agora)|atendimento 24 ?h|agende (já|agora mesmo)|ligue agora)(?![\p{L}])/iu,
+    test: /(?:^|[^\p{L}])(fale comigo agora|não perca tempo|nao perca tempo|corra|últimas vagas|ultimas vagas|aproveite (já|agora)|atendimento 24 ?h|agende (já|agora mesmo)|ligue agora)(?![\p{L}])/iu,
     reason: 'Apelo de urgência / captação de clientela — reveja o tom.',
     explanation:
       'Frases de urgência ("não perca tempo", "ligue agora", "últimas vagas") incitam a contratação imediata, contrariando a discrição e sobriedade exigidas (CED Art. 46; Prov. 205/2021 Art. 3º).',

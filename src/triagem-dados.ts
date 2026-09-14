@@ -66,13 +66,17 @@ interface Regra {
   sugestao: string
 }
 
-// `(?<![\p{L}])` / `(?![\p{L}])` com a flag `u`, e nunca `\b`: a fronteira de
+// `(?:^|[^\p{L}])` / `(?![\p{L}])` com a flag `u`, e nunca `\b`: a fronteira de
 // palavra do JavaScript é ASCII, e com ela "rg" casaria dentro de "órgão" — o
 // mesmo defeito que já desligou uma vedação em silêncio no motor da OAB
-// (ver oab.rules.ts e oabAcentos.spec.ts).
-const L = '(?<![\\p{L}])'
+// (ver oab.rules.ts e oabAcentos.spec.ts). Lookbehind NÃO serve: o Safari/iOS só
+// o entende a partir do 16.4, e nos iPhones anteriores a regex derrubava a
+// página. O prefixo consome o separador, e `semSeparador` o tira do trecho.
+const L = '(?:^|[^\\p{L}])'
 const R = '(?![\\p{L}])'
 const re = (fonte: string) => new RegExp(`${L}(?:${fonte})${R}`, 'iu')
+/** O trecho sem o espaço ou a pontuação que o prefixo `L` casou antes da palavra. */
+const semSeparador = (casado: string) => casado.replace(/^[^\p{L}\p{N}](?=\p{L})/u, '')
 
 const REGRAS: Regra[] = [
   // ---- Bloqueio -------------------------------------------------------------
@@ -120,7 +124,7 @@ const REGRAS: Regra[] = [
     tipo: 'documento',
     risco: 'aviso',
     test: new RegExp(
-      `${L}(?:envie|enviar|mande|mandar|anexe|anexar|encaminhe|encaminhar|fa[çc]a upload|foto|c[óo]pia|print|digitalizad\\w+)${R}[\\s\\S]{0,30}${L}(?:documentos?|comprovantes?|contratos?|certid[ãa]o|carteira|laudos?|holerite|extratos?|processo)${R}`,
+      `${L}(?:envie|enviar|mande|mandar|anexe|anexar|encaminhe|encaminhar|fa[çc]a upload|foto|c[óo]pia|print|digitalizad\\w+)${R}[\\s\\S]{0,29}${L}(?:documentos?|comprovantes?|contratos?|certid[ãa]o|carteira|laudos?|holerite|extratos?|processo)${R}`,
       'iu',
     ),
     motivo:
@@ -207,7 +211,7 @@ export function conferirPergunta(texto: string): AchadoNaPergunta[] {
     out.push({
       risco: regra.risco,
       tipo: regra.tipo,
-      trecho: m[0].trim(),
+      trecho: semSeparador(m[0]).trim(),
       motivo: regra.motivo,
       sugestao: regra.sugestao,
     })
