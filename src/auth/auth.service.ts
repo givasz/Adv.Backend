@@ -600,10 +600,14 @@ export class AuthService {
    *
    *   'intervalo' → saiu um há menos de um minuto: o clique impaciente;
    *   'dia'       → já saíram LINKS_POR_DIA nas últimas 24 horas.
+   *
+   * `intervalo: false` olha só o teto do dia — é o caso da correção de e-mail,
+   * ver corrigirEmail.
    */
   private async linkPedidoDemais(
     userId: string,
     modelo: 'redefinir-senha' | 'confirmar-email',
+    opcoes: { intervalo?: boolean } = {},
   ): Promise<'intervalo' | 'dia' | null> {
     const agora = Date.now()
     const recentes = await this.prisma.mailOutbox.findMany({
@@ -612,7 +616,11 @@ export class AuthService {
       orderBy: { createdAt: 'desc' },
       take: AuthService.LINKS_POR_DIA,
     })
-    if (recentes[0] && agora - recentes[0].createdAt.getTime() < AuthService.INTERVALO_ENTRE_LINKS_MS) {
+    if (
+      opcoes.intervalo !== false &&
+      recentes[0] &&
+      agora - recentes[0].createdAt.getTime() < AuthService.INTERVALO_ENTRE_LINKS_MS
+    ) {
       return 'intervalo'
     }
     return recentes.length >= AuthService.LINKS_POR_DIA ? 'dia' : null
@@ -753,6 +761,81 @@ export class AuthService {
       throw new ServiceUnavailableException('Não foi possível enviar agora. Tente de novo em alguns minutos.')
     }
     return { enviado: true, jaConfirmado: false }
+  }
+
+  /**
+   * Corrige o e-mail de uma conta que AINDA NÃO confirmou o endereço.
+   *
+   * É o conserto do erro de digitação no cadastro: `marina@gmial.com` nunca
+   * recebe o link, e sem esta porta a pessoa ficava presa a uma caixa que não
+   * existe — justamente a caixa por onde chegam os avisos com prazo.
+   *
+   * Só antes de confirmar. Um endereço confirmado já provou ser da pessoa, e
+   * trocá-lo é outra operação: pede aviso ao endereço antigo e um caminho de
+   * volta para quem perdeu a conta. O não confirmado não provou nada — e avisá-lo
+   * seria mandar notícia da conta a um estranho, o dono do endereço digitado por
+   * engano.
+   *
+   * Pede a senha pelo mesmo motivo de trocarSenha: sem ela, um cookie roubado
+   * trocaria o e-mail e, pelo "esqueci minha senha", tomaria a conta.
+   *
+   * Os links que já saíram param de valer sozinhos: confirmarEmail e
+   * redefinirSenha conferem o endereço do link contra o da conta.
+   */
+  async corrigirEmail(userId: string, email?: unknown, senha?: unknown): Promise<AuthSession['user']> {
+    const mail = this.normalizeEmail(email)
+    if (!EMAIL_RE.test(mail)) throw new BadRequestException('Informe um e-mail válido.')
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        password: true,
+        emailVerifiedAt: true,
+        profile: { select: { id: true, name: true } },
+      },
+    })
+    if (!user) throw new UnauthorizedException('Entre na sua conta.')
+    if (user.emailVerifiedAt) {
+      throw new BadRequestException('Seu e-mail já está confirmado. Para trocar de endereço, fale com o suporte.')
+    }
+    // Conta sem senha nasce do Google, que já entrega o endereço confirmado — não
+    // chega aqui. A linha fica para o dia em que chegar.
+    if (!user.password) {
+      throw new BadRequestException('Sua conta entra com o Google. Para corrigir o e-mail, fale com o suporte.')
+    }
+    // 400, e não 401: a sessão é boa, quem errou foi a senha — e um 401 diria à
+    // tela que a sessão caiu.
+    if (!(await verifyPassword(typeof senha === 'string' ? senha : '', user.password))) {
+      throw new BadRequestException('A senha não confere.')
+    }
+    if (mail === user.email) {
+      throw new BadRequestException('Este já é o e-mail da conta. Para receber o link de novo, use "Mandar o link".')
+    }
+    // O teto de links do dia vale aqui também: cada correção manda um link, e sem
+    // ele a rota seria um jeito de mandar e-mail nosso a qualquer endereço. O
+    // intervalo de um minuto NÃO vale — o caso típico é corrigir segundos depois
+    // do cadastro, com o link do endereço errado acabando de sair.
+    if (this.correio?.ativo && (await this.linkPedidoDemais(userId, 'confirmar-email', { intervalo: false }))) {
+      throw new HttpException(
+        `Você já pediu ${AuthService.LINKS_POR_DIA} links nas últimas 24 horas. Tente corrigir de novo amanhã.`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      )
+    }
+    // Mesma frase do cadastro. Aqui ela custa a senha da conta e passa por teto
+    // por conta e por IP: não abre consulta de quem tem conta que o cadastro já
+    // não abria.
+    const ocupado = await this.prisma.user.findUnique({ where: { email: mail }, select: { id: true } })
+    if (ocupado) throw new ConflictException('Já existe uma conta com este e-mail.')
+    await this.prisma.user.update({ where: { id: user.id }, data: { email: mail } }).catch((e: unknown) => {
+      if (erroDeUnicidade(e)) throw new ConflictException('Já existe uma conta com este e-mail.')
+      throw e
+    })
+
+    // Convite de escritório feito para o endereço certo, que o cadastro não achou.
+    if (user.profile) await this.resolvePendingInvites(mail, user.profile.id)
+    await this.enviarConfirmacao(user.id, mail, user.profile?.name || undefined)
+    return this.me(user.id)
   }
 
   /** Emite o link e põe na fila. Nunca lança: é consequência, não requisito. */

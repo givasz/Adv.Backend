@@ -2,11 +2,14 @@ import { Module } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { SessionModule } from '../auth/session.module'
 import { AdminModule } from '../admin/admin.module'
+import { CorreioModule } from '../mail/correio.module'
 import { ProfilesController } from './profiles.controller'
 import { ProfilesService } from './profiles.service'
 
 @Module({
-  imports: [SessionModule, AdminModule],
+  // CorreioModule: assinar um plano pago pede o e-mail confirmado, e a exigência
+  // só vale com o correio ligado — ver ProfilesService.setPlan.
+  imports: [SessionModule, AdminModule, CorreioModule],
   controllers: [ProfilesController],
   providers: [ProfilesService, PrismaService],
   // A cobrança (webhook e varredura) e o escritório mudam plano de assinatura, e

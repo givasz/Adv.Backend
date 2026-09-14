@@ -15,6 +15,7 @@ import { blockingFields, POLICY_VERSION, publicStatus, RULESET_REV } from '../oa
 import { aceiteVigente, TERMS_VERSION } from '../legal/termos'
 import { devoRegistrarEdicao, registrarAcesso } from '../security/access-log'
 import { avisarIndexNow } from '../seo/indexnow'
+import { CorreioService } from '../mail/correio.service'
 import {
   AREA_LIMIT,
   canUseFaq,
@@ -191,7 +192,12 @@ const SOCIAL_MAX = 8
 
 @Injectable()
 export class ProfilesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // Opcional só para os testes que não tratam de assinatura. No app o módulo
+    // importa o CorreioModule — ver setPlan, que pede e-mail confirmado para subir.
+    private readonly correio?: CorreioService,
+  ) {}
 
   /**
    * A regra de "este perfil aparece para o público" — FONTE ÚNICA, agora em
@@ -1534,9 +1540,30 @@ export class ProfilesService {
         currentPeriodEnd: true,
         graceUntil: true,
         planScheduled: true,
+        user: { select: { emailVerifiedAt: true } },
       },
     })
     if (!current) throw new NotFoundException('Perfil não encontrado')
+
+    // ---- Assinar pede o e-mail confirmado; publicar, não ----
+    //
+    // Publicar um perfil Free não gera cobrança nem prazo, e travar a publicação
+    // na confirmação poria o botão de publicar na dependência da cota do provedor
+    // de e-mail e da pasta de spam. Assinar gera: é por e-mail que chegam a falha
+    // do cartão, o fim da carência e o aviso de que o endereço limpo vai ser
+    // renumerado. Assinatura presa a um endereço digitado errado é a pessoa
+    // descobrindo que o plano caiu quando o perfil já mudou.
+    //
+    // Só para SUBIR. Descer e cancelar nunca travam — prender alguém a um plano
+    // pago até confirmar um e-mail seria o contrário da regra. E só com o correio
+    // ligado: exigir um link que não sai trancaria a compra de todo mundo.
+    const subindo = ehRebaixamento(next, planoVigente(current as any))
+    if (subindo && this.correio?.ativo && !current.user?.emailVerifiedAt) {
+      throw new ForbiddenException(
+        'Confirme seu e-mail antes de assinar: é por ele que chegam a cobrança e os avisos do plano. ' +
+          'Abra o link que mandamos, ou peça outro nesta página.',
+      )
+    }
 
     const patch = aoTrocarPlano(current as any, next)
     if (Object.keys(patch).length === 0) {
