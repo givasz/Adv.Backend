@@ -284,7 +284,10 @@ export class AiService {
   private fitToLimit(text: string, limit: number): string {
     const clean = text.trim()
     if (!limit || clean.length <= limit) return clean
-    const cut = clean.slice(0, limit)
+    let cut = clean.slice(0, limit)
+    // Sem partir emoji ao meio — espelho de cortarSemPartir (frontend/src/lib/textLimit.ts).
+    const ultima = cut.charCodeAt(cut.length - 1)
+    if (ultima >= 0xd800 && ultima <= 0xdbff) cut = cut.slice(0, -1)
     if (/[.!?]$/.test(cut)) return cut.trim()
     const lastSentence = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '))
     if (lastSentence > limit * 0.5) return cut.slice(0, lastSentence + 1).trim()
