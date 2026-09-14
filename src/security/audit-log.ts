@@ -34,6 +34,8 @@ export type SecurityEvent =
   | 'password_reset_requested'
   | 'password_reset'
   | 'email_confirmed'
+  // E-mail ainda não confirmado corrigido pelo dono — o erro de digitação do cadastro.
+  | 'email_corrected'
   // Continuar com o Google. A entrada que dá certo usa login_ok/signup_ok com
   // resource 'google'; estes dois são o que só existe neste caminho.
   | 'google_fail'

@@ -212,4 +212,9 @@ export const CORREIO_RATE_RULES = {
   redefinirPorIp: { windowMs: 15 * 60 * 1000, max: 20 } as Rule,
   confirmarPorIp: { windowMs: 15 * 60 * 1000, max: 30 } as Rule,
   reenviarPorConta: { windowMs: 60 * 60 * 1000, max: 3 } as Rule,
+  // Corrigir o e-mail da conta: confere a senha (sem teto, seria um oráculo para
+  // adivinhá-la a partir de uma sessão sequestrada) e manda um link ao endereço
+  // novo. Por conta e por IP.
+  corrigirPorConta: { windowMs: 60 * 60 * 1000, max: 5 } as Rule,
+  corrigirPorIp: { windowMs: 60 * 60 * 1000, max: 10 } as Rule,
 }

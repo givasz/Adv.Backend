@@ -73,6 +73,8 @@ async function montar(opts: { correioAtivo?: boolean } = {}) {
           .map((l) => ({ createdAt: l.createdAt })),
       ),
     },
+    // Convite de escritório para o endereço corrigido — nenhum, nestes testes.
+    firmInvite: { findFirst: vi.fn(async () => null) },
   }
   const sessions: any = {
     abrir: vi.fn(async () => ({ expiresAt: 1, csrfToken: 'c', remember: true })),
@@ -279,5 +281,74 @@ describe('trocar a senha logado', () => {
     const { svc, avisos } = await montar()
     await svc.trocarSenha(req, 'u1', SENHA_VELHA, SENHA_NOVA)
     expect(avisos('senha-alterada')[0].dados.porLink).toBe(false)
+  })
+})
+
+// O erro de digitação do cadastro. Só enquanto o endereço não foi confirmado, e
+// sempre com a senha — ver AuthService.corrigirEmail.
+describe('corrigir o e-mail antes de confirmar', () => {
+  it('troca o endereço, manda o link para o novo e devolve o retrato atualizado', async () => {
+    const { svc, users, avisos } = await montar()
+    const user = await svc.corrigirEmail('u1', ' Marina@Gmail.com ', SENHA_VELHA)
+    expect(users[0]!.email).toBe('marina@gmail.com')
+    expect(user.email).toBe('marina@gmail.com')
+    expect(user.emailPending).toBe(true)
+    expect(avisos('confirmar-email').map((a: any) => a.para)).toEqual(['marina@gmail.com'])
+  })
+
+  it('corrigir logo depois de um link sair não esbarra no intervalo de um minuto — e o link do endereço errado morre', async () => {
+    const { svc, avisos } = await montar()
+    await svc.reenviarConfirmacao('u1')
+    const doErrado = avisos('confirmar-email')[0].dados.token
+    await svc.corrigirEmail('u1', 'marina@gmail.com', SENHA_VELHA)
+    const doCerto = avisos('confirmar-email')[1].dados.token
+    await expect(svc.confirmarEmail(doErrado)).rejects.toThrow(BadRequestException)
+    await expect(svc.confirmarEmail(doCerto)).resolves.toEqual({ ok: true })
+  })
+
+  it('exige a senha — um cookie roubado não troca o endereço', async () => {
+    const { svc, users, correio } = await montar()
+    await expect(svc.corrigirEmail('u1', 'outro@exemplo.com', 'errada')).rejects.toThrow(/senha não confere/)
+    expect(users[0]!.email).toBe('marina@exemplo.com')
+    expect(correio.enfileirar).not.toHaveBeenCalled()
+  })
+
+  it('e-mail já confirmado não passa por aqui', async () => {
+    const { svc, users } = await montar()
+    users[0]!.emailVerifiedAt = new Date()
+    await expect(svc.corrigirEmail('u1', 'outro@exemplo.com', SENHA_VELHA)).rejects.toThrow(/já está confirmado/)
+    expect(users[0]!.email).toBe('marina@exemplo.com')
+  })
+
+  it('endereço de outra conta é recusado', async () => {
+    const { svc, users } = await montar()
+    users.push({ ...users[0]!, id: 'u2', email: 'ocupado@exemplo.com' })
+    await expect(svc.corrigirEmail('u1', 'ocupado@exemplo.com', SENHA_VELHA)).rejects.toThrow(/Já existe uma conta/)
+    expect(users[0]!.email).toBe('marina@exemplo.com')
+  })
+
+  it('o mesmo endereço de agora não gasta link', async () => {
+    const { svc, correio } = await montar()
+    await expect(svc.corrigirEmail('u1', 'MARINA@exemplo.com', SENHA_VELHA)).rejects.toThrow(/já é o e-mail/)
+    expect(correio.enfileirar).not.toHaveBeenCalled()
+  })
+
+  it('o teto de cinco links por dia vale também para a correção, e nada muda', async () => {
+    const { svc, users, envelhecer } = await montar()
+    for (let i = 0; i < 5; i++) {
+      await svc.reenviarConfirmacao('u1')
+      envelhecer(10 * MINUTO)
+    }
+    const erro = await svc.corrigirEmail('u1', 'marina@gmail.com', SENHA_VELHA).catch((e: unknown) => e)
+    expect(status(erro)).toBe(429)
+    expect(users[0]!.email).toBe('marina@exemplo.com')
+  })
+
+  it('correio desligado: corrige do mesmo jeito, sem mandar nada', async () => {
+    const { svc, users, correio } = await montar({ correioAtivo: false })
+    const user = await svc.corrigirEmail('u1', 'marina@gmail.com', SENHA_VELHA)
+    expect(users[0]!.email).toBe('marina@gmail.com')
+    expect(user.emailPending).toBe(false)
+    expect(correio.enfileirar).not.toHaveBeenCalled()
   })
 })

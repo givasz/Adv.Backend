@@ -351,6 +351,36 @@ export class AuthController {
   }
 
   /**
+   * POST /api/auth/email  { email, senha } — corrige o e-mail de uma conta que
+   * ainda não confirmou o endereço (o erro de digitação do cadastro).
+   *
+   * Exige sessão E a senha: um cookie roubado não pode trocar o endereço para o
+   * qual vai o "esqueci minha senha". Teto por conta e por IP, contado antes da
+   * senha — ela é conferida aqui, e cada correção manda um link. Ver
+   * AuthService.corrigirEmail.
+   */
+  @Post('email')
+  async corrigirEmail(
+    @Req() req: RequisicaoComAuth,
+    @Body() body: { email?: string; senha?: string },
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') xff?: string,
+  ) {
+    const userId = await this.sessions.requireUser(req)
+    const endereco = clientIp(ip, xff)
+    enforceRateLimit(
+      [
+        [`corrigir-email:user:${userId}`, CORREIO_RATE_RULES.corrigirPorConta],
+        [`corrigir-email:ip:${endereco}`, CORREIO_RATE_RULES.corrigirPorIp],
+      ],
+      'Muitas tentativas agora. Aguarde alguns minutos e tente de novo.',
+    )
+    const user = await this.auth.corrigirEmail(userId, body?.email, body?.senha)
+    logSecurityEvent({ event: 'email_corrected', ip: endereco, userId, result: 'ok' })
+    return { user }
+  }
+
+  /**
    * POST /api/auth/logout-all — encerra TODAS as sessões da conta.
    *
    * É o botão para quando o aparelho some ou a senha vazou: derruba o celular, o
