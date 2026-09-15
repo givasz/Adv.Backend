@@ -27,9 +27,12 @@ export const OAB_MAX = 20
 //
 // Free = UMA área; Pro 6 → 4 e Max 20 → 12 em 04/09/2026. Um perfil que lista
 // vinte assuntos não diz o que o advogado faz, diz que ele faz tudo.
-export const AREA_LIMIT: Record<Plan, number> = { free: 1, pro: 4, premium: 12 }
-// Perguntas frequentes respondidas no perfil: 1 no Free, 2 no Pro, 5 no Max.
-export const FAQ_LIMIT: Record<Plan, number> = { free: 1, pro: 2, premium: 5 }
+// Pro 4 → 5 em 15/09/2026: quatro deixava de fora a quinta área de quem atua em
+// família, sucessões, cível, consumidor e trabalho — o arranjo mais comum.
+export const AREA_LIMIT: Record<Plan, number> = { free: 1, pro: 5, premium: 12 }
+// Perguntas frequentes respondidas no perfil: 1 no Free, 4 no Pro, 8 no Max
+// (eram 2 e 5 até 15/09/2026 — cada degrau passou a dobrar o anterior).
+export const FAQ_LIMIT: Record<Plan, number> = { free: 1, pro: 4, premium: 8 }
 
 // Tetos de TEXTO — POR PLANO desde 04/09/2026 (eram fixos; o Free é o mais
 // curto). Use `countLimit` para ler com um plano em mãos.
