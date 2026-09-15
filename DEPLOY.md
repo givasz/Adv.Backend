@@ -95,7 +95,7 @@ Redirect SPA:        /*  →  /index.html  200   (React Router)
 |----------|-------|--------|
 | `VITE_API_URL` | URL do backend no Render, **sem barra final** | front fala com o backend |
 | `VITE_USE_REAL_API` | `true` *(opcional)* | usa o backend para **tudo** (ver Modos) |
-| `VITE_ADMIN_PATH` | *(opcional)* caminho do painel escondido | default `painel-mod-7fq3k9x2a` |
+| `VITE_ADMIN_PATH` | *(opcional)* caminho do console escondido | default em `src/lib/adminPath.ts` (segmento aleatório; o valor em uso fica anotado fora do git, em `~/.advocme-secrets/painel-admin.txt`) |
 
 > Variáveis `VITE_*` são "assadas" **no build** — mudou uma env, precisa **rebuildar**
 > (Deploys → Trigger deploy), não basta reiniciar.
@@ -139,8 +139,8 @@ Redirect SPA:        /*  →  /index.html  200   (React Router)
 
 ## 5. Painel de moderação (admin)
 
-- URL: `https://<seu-site>.netlify.app/<VITE_ADMIN_PATH>` (default
-  `.../painel-mod-7fq3k9x2a`) — rota `noindex`, escondida.
+- URL: `https://<seu-site>.netlify.app/<VITE_ADMIN_PATH>` (default em
+  `frontend/src/lib/adminPath.ts`; anotado em `~/.advocme-secrets/painel-admin.txt`) — rota `noindex`, escondida.
 - Login com `ADMIN_USERNAME` + `ADMIN_PASSWORD` (do Render). A sessão é um token HMAC
   assinado com `ADMIN_SESSION_SECRET`.
 - Abas: **Denúncias** (moderação), **Suporte** e **Advogados** (busca por nome/OAB,
