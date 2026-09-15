@@ -964,7 +964,7 @@ export class ProfilesService {
   }
 
   // Perguntas frequentes → linhas prontas para o Prisma, cortadas na COTA do plano
-  // (nenhuma no Free, 2 no Pro, 5 no Max).
+  // (FAQ_LIMIT em plans.ts).
   //
   // O corte aqui é só do que ENTRA. O que já existe além da cota não passa por
   // esta função e não é tocado pelo save — ver o bloco `faqs` em update(). Até

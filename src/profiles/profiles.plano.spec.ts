@@ -298,12 +298,15 @@ describe('a leitura entrega o plano VIGENTE, não o contratado', () => {
   it('a cota corta por POSIÇÃO, para nada congelado subir para a vaga vazia', async () => {
     // Se o corte fosse "as N primeiras", apagar uma pergunta visível faria uma
     // pergunta antiga (congelada) aparecer do nada na tela.
+    // Posições lidas da cota: com números fixos, o teste deixou de testar o corte
+    // no dia em que o Pro passou de 2 para 4 perguntas.
+    const cota = FAQ_LIMIT.pro
     const { svc } = service({
       plan: 'pro',
       faqs: [
         { id: 'f0', question: 'q0', answer: 'a', order: 0 },
-        { id: 'f2', question: 'q2', answer: 'a', order: 2 },
-        { id: 'f3', question: 'q3', answer: 'a', order: 3 },
+        { id: 'f2', question: 'q2', answer: 'a', order: cota },
+        { id: 'f3', question: 'q3', answer: 'a', order: cota + 1 },
       ],
     })
     const p: Qualquer = await svc.getMine('u1')
