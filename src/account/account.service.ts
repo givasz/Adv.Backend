@@ -65,7 +65,12 @@ export class AccountService {
             message: true,
             status: true,
             adminNote: true,
+            answeredAt: true,
             createdAt: true,
+            // As imagens em si ficam na aba Respostas do Suporte, onde abrem uma a
+            // uma; aqui vai o registro de cada uma. Base64 de capturas de tela
+            // dentro do arquivo transformaria a exportação num download de megas.
+            anexos: { select: { contentType: true, size: true, createdAt: true } },
           },
           orderBy: { createdAt: 'desc' },
         },

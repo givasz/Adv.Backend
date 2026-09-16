@@ -1,6 +1,8 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { faixa, pagina } from '../admin/paginacao'
+import { CorreioService } from '../mail/correio.service'
+import { ANEXOS_POR_DIA, TIPOS_DE_ANEXO, lerAnexos, type TipoDeAnexo } from './anexos'
 
 // Suporte ao cliente — canal EXCLUSIVO de quem tem conta.
 //
@@ -10,6 +12,18 @@ import { faixa, pagina } from '../admin/paginacao'
 //
 // O corte do texto é generoso mas existe: um relato de bug bom é longo, e um
 // campo sem limite é convite a abuso de armazenamento.
+//
+// RESPOSTA NOVA (16/09/2026)
+//
+// A resposta do admin ficava escondida no fim da página de suporte, e nada
+// avisava que ela existia — o advogado só a via se voltasse lá por acaso. Agora
+// o chamado guarda QUANDO a resposta foi escrita (`answeredAt`) e quando o autor
+// a viu (`seenAt`). Resposta mais nova que a última visita é "nova": acende a
+// aba Respostas, o menu da conta e o painel, e sai um e-mail.
+//
+// O e-mail é um por RODADA NÃO LIDA: se o admin corrige um erro de digitação na
+// resposta antes de o advogado abrir, não sai um segundo aviso. A chave do aviso
+// leva o `seenAt` — depois que a pessoa lê, a próxima resposta avisa de novo.
 
 // Os tipos vêm daqui, e NÃO de `@prisma/client`.
 //
@@ -29,15 +43,48 @@ const MESSAGE_MAX = 4000
 const URL_MAX = 300
 const UA_MAX = 300
 const NOTE_MAX = 2000
+const HISTORICO_MAX = 50
+const DIA_MS = 24 * 60 * 60 * 1000
+
+/** Só o que decide se a resposta é nova. */
+interface EstadoDaResposta {
+  adminNote: string
+  answeredAt: Date | null
+  seenAt: Date | null
+}
+
+/**
+ * A resposta deste chamado ainda não foi vista pelo autor?
+ *
+ * Chamado respondido antes de `answeredAt` existir fica com a data vazia e NÃO
+ * conta como novo: acender "resposta nova" em tudo o que já foi lido, no dia do
+ * deploy, seria alarme falso na conta de todo mundo.
+ */
+export function respostaNova(t: EstadoDaResposta): boolean {
+  if (!t.adminNote.trim() || !t.answeredAt) return false
+  return !t.seenAt || t.seenAt.getTime() < t.answeredAt.getTime()
+}
 
 @Injectable()
 export class SupportService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // Opcional só para os testes que não tratam de e-mail. No app o módulo
+    // importa o CorreioModule.
+    private readonly correio?: CorreioService,
+  ) {}
 
-  /** Advogado abre um chamado. */
+  /** Advogado abre um chamado, com até 3 imagens. */
   async create(
     userId: string,
-    input: { kind?: string; subject?: string; message?: string; pageUrl?: string; userAgent?: string },
+    input: {
+      kind?: string
+      subject?: string
+      message?: string
+      pageUrl?: string
+      userAgent?: string
+      anexos?: unknown
+    },
   ) {
     const subject = (input.subject ?? '').trim()
     const message = (input.message ?? '').trim()
@@ -48,6 +95,20 @@ export class SupportService {
     const kind = (KINDS as readonly string[]).includes(input.kind ?? '')
       ? (input.kind as SupportKind)
       : 'outro'
+    // Conferidas ANTES de gravar qualquer coisa: imagem recusada não deixa um
+    // chamado pela metade para trás.
+    const anexos = lerAnexos(input.anexos)
+
+    if (anexos.length) {
+      const hoje = await this.prisma.supportAttachment.count({
+        where: { ticket: { userId }, createdAt: { gte: new Date(Date.now() - DIA_MS) } },
+      })
+      if (hoje + anexos.length > ANEXOS_POR_DIA) {
+        throw new ForbiddenException(
+          'Você já enviou muitas imagens hoje. Descreva o problema por texto ou tente de novo amanhã.',
+        )
+      }
+    }
 
     const ticket = await this.prisma.supportTicket.create({
       data: {
@@ -57,18 +118,36 @@ export class SupportService {
         message: message.slice(0, MESSAGE_MAX),
         pageUrl: (input.pageUrl ?? '').slice(0, URL_MAX),
         userAgent: (input.userAgent ?? '').slice(0, UA_MAX),
+        ...(anexos.length
+          ? {
+              anexos: {
+                create: anexos.map((a) => ({
+                  contentType: a.contentType,
+                  data: a.bytes,
+                  size: a.bytes.length,
+                })),
+              },
+            }
+          : {}),
       },
-      select: { id: true, kind: true, subject: true, status: true, createdAt: true },
+      select: {
+        id: true,
+        kind: true,
+        subject: true,
+        status: true,
+        createdAt: true,
+        anexos: { select: { id: true, contentType: true, size: true } },
+      },
     })
     return ticket
   }
 
-  /** Histórico do próprio advogado — inclui a resposta do admin. */
-  listMine(userId: string) {
-    return this.prisma.supportTicket.findMany({
+  /** Histórico do próprio advogado — inclui a resposta do admin e as imagens (sem os bytes). */
+  async listMine(userId: string) {
+    const tickets = await this.prisma.supportTicket.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
-      take: 50,
+      take: HISTORICO_MAX,
       select: {
         id: true,
         kind: true,
@@ -76,10 +155,74 @@ export class SupportService {
         message: true,
         status: true,
         adminNote: true,
+        answeredAt: true,
+        seenAt: true,
         createdAt: true,
         handledAt: true,
+        anexos: {
+          select: { id: true, contentType: true, size: true },
+          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        },
       },
     })
+    return tickets.map((t) => ({ ...t, novaResposta: respostaNova(t) }))
+  }
+
+  /** Quantas respostas o advogado ainda não viu — o ponto no menu e o aviso do painel. */
+  async novas(userId: string): Promise<{ novas: number }> {
+    const respondidos = await this.prisma.supportTicket.findMany({
+      where: { userId, answeredAt: { not: null } },
+      orderBy: { createdAt: 'desc' },
+      take: HISTORICO_MAX,
+      select: { adminNote: true, answeredAt: true, seenAt: true },
+    })
+    return { novas: respondidos.filter(respostaNova).length }
+  }
+
+  /**
+   * Marca como vistas as respostas que a tela MOSTROU.
+   *
+   * Pelos ids, e não "tudo desta conta": se o admin responde no segundo entre a
+   * lista carregar e este pedido sair, a resposta que ninguém viu continuaria
+   * acesa — e não apagada em silêncio.
+   */
+  async marcarVistas(userId: string, ids: unknown): Promise<{ vistas: number }> {
+    const lista = Array.isArray(ids)
+      ? ids.filter((i): i is string => typeof i === 'string' && i.length > 0 && i.length <= 40).slice(0, HISTORICO_MAX)
+      : []
+    if (!lista.length) return { vistas: 0 }
+    const r = await this.prisma.supportTicket.updateMany({
+      where: { id: { in: lista }, userId, answeredAt: { not: null } },
+      data: { seenAt: new Date() },
+    })
+    return { vistas: r.count }
+  }
+
+  /** Uma imagem de um chamado DO PRÓPRIO autor. De outra conta é "não encontrada", nunca "proibida". */
+  async anexoDoAutor(userId: string, ticketId: string, anexoId: string) {
+    return this.servirAnexo({ id: anexoId, ticketId, ticket: { userId } })
+  }
+
+  /** Uma imagem de qualquer chamado — só o painel chama, depois de `suporte:ler`. */
+  async anexoParaPainel(ticketId: string, anexoId: string) {
+    return this.servirAnexo({ id: anexoId, ticketId })
+  }
+
+  private async servirAnexo(where: {
+    id: string
+    ticketId: string
+    ticket?: { userId: string }
+  }): Promise<{ contentType: TipoDeAnexo; bytes: Buffer }> {
+    const a = await this.prisma.supportAttachment.findFirst({
+      where,
+      select: { contentType: true, data: true },
+    })
+    // O tipo é conferido de novo na saída: é ele que vai no Content-Type, e uma
+    // linha gravada fora deste serviço não pode escolher como o navegador a lê.
+    if (!a || !(TIPOS_DE_ANEXO as readonly string[]).includes(a.contentType)) {
+      throw new NotFoundException('Imagem não encontrada.')
+    }
+    return { contentType: a.contentType as TipoDeAnexo, bytes: Buffer.from(a.data) }
   }
 
   /**
@@ -107,6 +250,11 @@ export class SupportService {
               profile: { select: { name: true, slug: true, plan: true, oabNumber: true } },
             },
           },
+          // Só o que desenha a miniatura. Os bytes saem pela rota da imagem.
+          anexos: {
+            select: { id: true, contentType: true, size: true },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+          },
         },
       }),
       this.prisma.supportTicket.count({ where: filtro }),
@@ -114,7 +262,6 @@ export class SupportService {
     return pagina(itens, total, take, skip)
   }
 
-  /** Admin muda o estado e/ou deixa uma resposta ao autor. */
   /** Situação atual do chamado, para o "antes" do histórico do painel. */
   async situacao(id: string) {
     return this.prisma.supportTicket.findUnique({
@@ -123,24 +270,54 @@ export class SupportService {
     })
   }
 
+  /** Admin muda o estado e/ou deixa uma resposta ao autor. */
   async setStatus(id: string, status?: string, note?: string) {
     if (!(STATUSES as readonly string[]).includes(status ?? '')) {
       throw new BadRequestException('Situação inválida.')
     }
-    const exists = await this.prisma.supportTicket.findUnique({ where: { id }, select: { id: true } })
-    if (!exists) throw new NotFoundException('Chamado não encontrado.')
+    const atual = await this.prisma.supportTicket.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        adminNote: true,
+        seenAt: true,
+        createdAt: true,
+        userId: true,
+        user: { select: { email: true } },
+      },
+    })
+    if (!atual) throw new NotFoundException('Chamado não encontrado.')
 
     const novo = status as SupportStatus
-    return this.prisma.supportTicket.update({
+    const nota = note === undefined ? undefined : note.slice(0, NOTE_MAX)
+    // Resposta é TEXTO NOVO. Pôr em análise ou resolver repetindo a mesma nota
+    // não é resposta — não acende nada nem manda e-mail.
+    const respondeu = nota !== undefined && nota.trim() !== '' && nota.trim() !== atual.adminNote.trim()
+    const agora = new Date()
+
+    const resultado = await this.prisma.supportTicket.update({
       where: { id },
       data: {
         status: novo,
-        ...(note === undefined ? {} : { adminNote: note.slice(0, NOTE_MAX) }),
+        ...(nota === undefined ? {} : { adminNote: nota }),
+        ...(respondeu ? { answeredAt: agora } : {}),
         // handledAt marca a conclusão; reabrir limpa, senão a data mente.
-        handledAt: novo === 'resolved' ? new Date() : null,
+        handledAt: novo === 'resolved' ? agora : null,
       },
-      select: { id: true, status: true, adminNote: true, handledAt: true },
+      select: { id: true, status: true, adminNote: true, answeredAt: true, seenAt: true, handledAt: true },
     })
+
+    if (respondeu && nota) {
+      await this.correio?.enfileirar({
+        modelo: 'suporte-respondido',
+        para: atual.user.email,
+        userId: atual.userId,
+        dados: { resposta: nota, abertoEm: atual.createdAt, situacao: novo },
+        // Um aviso por rodada não lida — ver o topo do arquivo.
+        chave: `suporte-respondido:${id}:${atual.seenAt?.getTime() ?? 0}`,
+      })
+    }
+    return resultado
   }
 
   /** Contadores para o badge da aba do painel. */
