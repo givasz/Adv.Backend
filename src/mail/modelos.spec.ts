@@ -32,6 +32,11 @@ const DADOS: Record<Modelo, Record<string, unknown>> = {
   'contestacao-recebida': { respondeAte: '2026-09-22T12:00:00Z' },
   'contestacao-respondida': { aceita: false, resposta: 'A frase continua prometendo resultado.' },
   'convite-escritorio': { escritorio: 'Andrade & Vieira Advogados', papel: 'member' },
+  'suporte-respondido': {
+    resposta: 'Corrigimos o botão de agendar no celular.',
+    abertoEm: '2026-09-15T13:00:00Z',
+    situacao: 'resolved',
+  },
   'termos-atualizados': { versao: '2026-09-12' },
 }
 
@@ -141,5 +146,21 @@ describe('os modelos de e-mail', () => {
     const admin = renderizar('convite-escritorio', { escritorio: 'Andrade & Vieira', papel: 'admin' }, { site: SITE })
     expect(admin.texto).toMatch(/administrar a página do escritório/)
     expect(() => renderizar('convite-escritorio', { papel: 'member' }, { site: SITE })).toThrow()
+  })
+
+  it('suporte respondido: a resposta vai emoldurada e o assunto do chamado não vai a lugar nenhum', () => {
+    // O assunto do chamado foi digitado pelo advogado; o e-mail sai com o nosso
+    // remetente. Nem os dados carregam o assunto, mas se carregassem, ficaria fora.
+    const r = renderizar(
+      'suporte-respondido',
+      { resposta: 'Use <b>outro</b> navegador.', abertoEm: '2026-09-15T13:00:00Z', assunto: 'Seu cartão foi bloqueado' },
+      { site: SITE },
+    )
+    expect(r.assunto).toBe('O suporte do advoc.me respondeu')
+    expect(r.texto).not.toContain('cartão')
+    expect(r.texto).toContain('Resposta:')
+    expect(r.texto).toContain('15/09/2026')
+    expect(r.html).not.toContain('<b>outro')
+    expect(r.texto).toContain(`${SITE}/suporte?aba=respostas`)
   })
 })

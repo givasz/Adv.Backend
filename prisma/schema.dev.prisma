@@ -302,11 +302,41 @@ model SupportTicket {
   status    String @default("open")
   // Resposta/observação do admin, visível para o autor do chamado.
   adminNote String        @default("")
+  // Quando a resposta foi escrita ou mudou pela última vez. Mudar só a situação
+  // não mexe aqui — é o texto novo que o advogado precisa ler.
+  answeredAt DateTime?
+  // Quando o autor viu as respostas pela última vez. Resposta mais nova que isto
+  // é "resposta nova" (aba Respostas, menu da conta, painel).
+  seenAt    DateTime?
   createdAt DateTime      @default(now())
   handledAt DateTime?
+  anexos    SupportAttachment[]
 
   @@index([status, createdAt])
   @@index([userId, createdAt])
+}
+
+// Imagem anexada a um chamado (captura de tela, foto do erro).
+//
+// Tabela própria, e não coluna no chamado: a fila do painel e o histórico do
+// advogado listam chamados o tempo todo, e nenhuma dessas listas pode arrastar
+// os bytes junto. A imagem só sai por rota própria, uma de cada vez, para o autor
+// ou para o painel (ver support/anexos.ts).
+//
+// Os bytes chegam re-codificados pelo navegador (o que já descarta EXIF e
+// localização da foto) e são conferidos pela assinatura do formato antes de
+// entrar. Apagada 90 dias depois de o chamado ser resolvido (retencao.service).
+model SupportAttachment {
+  id          String        @id @default(cuid())
+  ticketId    String
+  ticket      SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  // O tipo decidido pelos BYTES (png, jpeg ou webp), nunca pelo que o cliente disse.
+  contentType String
+  data        Bytes
+  size        Int
+  createdAt   DateTime      @default(now())
+
+  @@index([ticketId])
 }
 
 // Escritório (sociedade de advogados) — página institucional. Cada advogado listado

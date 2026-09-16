@@ -69,6 +69,16 @@ export const RETENCAO_CORREIO_DIAS = 30
 /** Links de confirmar e-mail e redefinir senha, depois de vencidos. Só o hash, mas sem uso. */
 export const RETENCAO_LINKS_DIAS = 7
 
+/**
+ * Imagens anexadas ao suporte (SupportAttachment), contadas a partir do dia em
+ * que o chamado foi RESOLVIDO. Captura de tela pega o que estiver na tela — às
+ * vezes dado de cliente, por mais que o formulário peça o contrário. Resolvido o
+ * problema, a imagem não tem mais finalidade; 90 dias cobrem o "voltou a
+ * acontecer". O chamado e a resposta ficam (enquanto a conta existir); só os
+ * bytes vão. Chamado reaberto perde a data de resolução e sai da conta.
+ */
+export const RETENCAO_ANEXOS_SUPORTE_DIAS = 90
+
 const INTERVALO_MS = 24 * 60 * 60 * 1000
 // Espera antes da primeira passagem: subir a aplicação e imediatamente disparar
 // um DELETE grande disputaria o banco justamente no instante em que o pm2 está
@@ -82,6 +92,7 @@ export interface ResultadoDoExpurgo {
   acesso: number
   correio: number
   links: number
+  anexos: number
 }
 
 @Injectable()
@@ -115,7 +126,7 @@ export class RetencaoService implements OnModuleInit, OnModuleDestroy {
    */
   async expurgar(): Promise<ResultadoDoExpurgo> {
     try {
-      const [eventos, auditoria, cobranca, acesso, correio, links] = await Promise.all([
+      const [eventos, auditoria, cobranca, acesso, correio, links, anexos] = await Promise.all([
         this.prisma.linkEvent.deleteMany({ where: { createdAt: { lt: limite(RETENCAO_EVENTOS_DIAS) } } }),
         this.prisma.auditLog.deleteMany({ where: { createdAt: { lt: limite(RETENCAO_AUDITORIA_DIAS) } } }),
         this.prisma.billingEvent.deleteMany({
@@ -132,6 +143,11 @@ export class RetencaoService implements OnModuleInit, OnModuleDestroy {
         this.prisma.emailToken.deleteMany({
           where: { expiraEm: { lt: limite(RETENCAO_LINKS_DIAS) } },
         }),
+        this.prisma.supportAttachment.deleteMany({
+          where: {
+            ticket: { status: 'resolved', handledAt: { lt: limite(RETENCAO_ANEXOS_SUPORTE_DIAS) } },
+          },
+        }),
       ])
       const r: ResultadoDoExpurgo = {
         eventos: eventos.count,
@@ -140,6 +156,7 @@ export class RetencaoService implements OnModuleInit, OnModuleDestroy {
         acesso: acesso.count,
         correio: correio.count,
         links: links.count,
+        anexos: anexos.count,
       }
       // Só registra quando houve o que apagar: uma linha de log por dia dizendo
       // "apaguei zero" é ruído que faz o log parar de ser lido.
@@ -150,7 +167,8 @@ export class RetencaoService implements OnModuleInit, OnModuleDestroy {
             `${r.cobranca} eventos de cobrança (>${RETENCAO_COBRANCA_DIAS}d), ` +
             `${r.acesso} registros de acesso (>${RETENCAO_ACESSO_DIAS}d), ` +
             `${r.correio} avisos por e-mail (>${RETENCAO_CORREIO_DIAS}d), ` +
-            `${r.links} links de e-mail vencidos (>${RETENCAO_LINKS_DIAS}d)`,
+            `${r.links} links de e-mail vencidos (>${RETENCAO_LINKS_DIAS}d), ` +
+            `${r.anexos} imagens de chamados resolvidos (>${RETENCAO_ANEXOS_SUPORTE_DIAS}d)`,
         )
       }
       return r
@@ -158,7 +176,7 @@ export class RetencaoService implements OnModuleInit, OnModuleDestroy {
       // Uma falha de limpeza não pode derrubar a API: o pior efeito de não
       // apagar hoje é apagar amanhã.
       this.log.warn(`expurgo falhou: ${e instanceof Error ? e.message : e}`)
-      return { eventos: 0, auditoria: 0, cobranca: 0, acesso: 0, correio: 0, links: 0 }
+      return { eventos: 0, auditoria: 0, cobranca: 0, acesso: 0, correio: 0, links: 0, anexos: 0 }
     }
   }
 }

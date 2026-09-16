@@ -9,6 +9,7 @@ import {
   Post,
   Query,
   Req,
+  Res,
 } from '@nestjs/common'
 import { SupportService } from './support.service'
 import { AdminService } from '../admin/admin.service'
@@ -16,6 +17,31 @@ import { SessionService } from '../auth/session.service'
 import type { RequisicaoComAuth } from '../auth/session-context'
 import { checkRateLimit } from '../security/rate-limit'
 import { clientIp } from '../security/net'
+import { extensaoDe, type TipoDeAnexo } from './anexos'
+
+/**
+ * O mínimo de uma resposta HTTP para servir os bytes de uma imagem. Interface
+ * local pela mesma razão de profiles.controller.ts: o projeto não instala os
+ * tipos do express.
+ */
+interface RespostaHttp {
+  setHeader(nome: string, valor: string): void
+  end(corpo?: Buffer): void
+  statusCode: number
+}
+
+/**
+ * Entrega uma imagem de chamado. Os cabeçalhos de segurança de toda resposta
+ * (CSP `default-src 'none'`, `nosniff`, `no-store`) já vêm do middleware — o
+ * `no-store` fica de propósito: é captura de tela de conta alheia, e não deve
+ * sobrar no cache do computador do painel.
+ */
+function entregarImagem(res: RespostaHttp, img: { contentType: TipoDeAnexo; bytes: Buffer }) {
+  res.setHeader('Content-Type', img.contentType)
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('Content-Disposition', `inline; filename="imagem-do-chamado.${extensaoDe(img.contentType)}"`)
+  res.end(img.bytes)
+}
 
 @Controller()
 export class SupportController {
@@ -31,11 +57,18 @@ export class SupportController {
     return this.sessions.requireUser(req, 'Entre na sua conta para falar com o suporte.')
   }
 
-  // POST /api/support  { kind, subject, message, pageUrl?, userAgent? }
+  // POST /api/support  { kind, subject, message, anexos?: string[], pageUrl?, userAgent? }
   @Post('support')
   async create(
     @Body()
-    body: { kind?: string; subject?: string; message?: string; pageUrl?: string; userAgent?: string },
+    body: {
+      kind?: string
+      subject?: string
+      message?: string
+      pageUrl?: string
+      userAgent?: string
+      anexos?: unknown
+    },
     @Req() req: RequisicaoComAuth,
     @Ip() ip?: string,
     @Headers('x-forwarded-for') forwardedFor?: string,
@@ -59,6 +92,37 @@ export class SupportController {
   @Get('support/mine')
   async mine(@Req() req: RequisicaoComAuth) {
     return this.support.listMine(await this.requireUser(req))
+  }
+
+  // GET /api/support/mine/novas → { novas } — o ponto no menu da conta e o aviso do painel
+  @Get('support/mine/novas')
+  async novas(@Req() req: RequisicaoComAuth) {
+    return this.support.novas(await this.requireUser(req))
+  }
+
+  // POST /api/support/mine/vistas  { ids } → as respostas que a aba mostrou
+  @Post('support/mine/vistas')
+  async vistas(@Body() body: { ids?: unknown }, @Req() req: RequisicaoComAuth) {
+    return this.support.marcarVistas(await this.requireUser(req), body?.ids)
+  }
+
+  // GET /api/support/:id/anexos/:anexoId → a imagem, só para o autor do chamado
+  @Get('support/:id/anexos/:anexoId')
+  async anexo(
+    @Param('id') id: string,
+    @Param('anexoId') anexoId: string,
+    @Req() req: RequisicaoComAuth,
+    @Res() res: RespostaHttp,
+  ) {
+    const userId = await this.requireUser(req)
+    // Folgado para a aba de respostas cheia de miniaturas; apertado para quem
+    // tenta adivinhar identificadores.
+    if (!checkRateLimit(`support-anexo:${userId}`, { windowMs: 60_000, max: 120 })) {
+      res.statusCode = 429
+      res.setHeader('Retry-After', '60')
+      return res.end()
+    }
+    entregarImagem(res, await this.support.anexoDoAutor(userId, id, anexoId))
   }
 
   // ---- Admin ----
@@ -85,6 +149,19 @@ export class SupportController {
   async counts(@Req() req: RequisicaoComAuth, @Headers('x-admin-token') token?: string) {
     await this.admin.exigir(req, 'suporte:ler', token)
     return this.support.counts()
+  }
+
+  // GET /api/admin/support/:id/anexos/:anexoId → a imagem, para quem lê a fila
+  @Get('admin/support/:id/anexos/:anexoId')
+  async anexoNoPainel(
+    @Param('id') id: string,
+    @Param('anexoId') anexoId: string,
+    @Req() req: RequisicaoComAuth,
+    @Res() res: RespostaHttp,
+    @Headers('x-admin-token') token?: string,
+  ) {
+    await this.admin.exigir(req, 'suporte:ler', token)
+    entregarImagem(res, await this.support.anexoParaPainel(id, anexoId))
   }
 
   /**

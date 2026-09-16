@@ -42,6 +42,7 @@ export const MODELOS = [
   'contestacao-recebida',
   'contestacao-respondida',
   'convite-escritorio',
+  'suporte-respondido',
   'termos-atualizados',
 ] as const
 
@@ -70,6 +71,7 @@ export const PRIORIDADE: Record<Modelo, 0 | 1 | 2> = {
   'contestacao-recebida': 1,
   'contestacao-respondida': 1,
   'convite-escritorio': 1,
+  'suporte-respondido': 1,
   'termos-atualizados': 2,
 }
 
@@ -384,6 +386,29 @@ const CORPOS: Record<Modelo, (d: Dados) => Corpo> = {
       ],
       botao: { rotulo: 'Ver o convite', caminho: '/painel' },
       links: [{ rotulo: 'Ainda não tenho conta', caminho: '/criar-conta?next=%2Fpainel' }],
+    }
+  },
+
+  'suporte-respondido': (d) => {
+    // O ASSUNTO do chamado não entra em lugar nenhum: foi digitado pelo
+    // advogado, e esta mensagem sai com o nosso remetente. A data e a resposta
+    // (escrita pela equipe) bastam para ele saber de qual se trata.
+    const resposta = texto(d.resposta, 2000)
+    const quando = dia(d.abertoEm)
+    const situacao = texto(d.situacao)
+    return {
+      assunto: 'O suporte do advoc.me respondeu',
+      titulo: 'Seu chamado foi respondido',
+      paragrafos: [
+        `A equipe do advoc.me respondeu ao chamado que você abriu${quando ? ` em ${quando}` : ''}.`,
+        situacao === 'resolved'
+          ? 'O chamado foi marcado como resolvido. Se o problema continuar, abra outro pelo Suporte.'
+          : situacao === 'in_progress'
+            ? 'Seguimos analisando, e a próxima novidade também aparece na aba Respostas.'
+            : '',
+      ].filter(Boolean),
+      destaque: resposta ? { rotulo: 'Resposta', texto: resposta } : undefined,
+      botao: { rotulo: 'Ver no advoc.me', caminho: '/suporte?aba=respostas' },
     }
   },
 
