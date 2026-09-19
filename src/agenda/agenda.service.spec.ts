@@ -95,13 +95,24 @@ describe('agenda digital', () => {
     expect(transaction).not.toHaveBeenCalled()
   })
 
-  it('pagina os pedidos em blocos de dez com total e pendentes globais', async () => {
-    const count = vi.fn(async ({ where }: any) => where.status ? 7 : 23)
+  it('pagina cada estado separadamente e devolve contadores globais', async () => {
+    const groupBy = vi.fn(async () => [
+      { status: 'pending', _count: { _all: 23 } },
+      { status: 'confirmed', _count: { _all: 14 } },
+      { status: 'declined', _count: { _all: 2 } },
+    ])
     const findMany = vi.fn(async () => [{ id: 'r21', triage: '[]' }])
-    const service = new AgendaService({ profile: { findUnique: vi.fn(async () => profile) }, meetingRequest: { count, findMany } } as any)
-    const page = await service.solicitacoes('u1', 3)
-    expect(page).toMatchObject({ page: 3, pageSize: 10, total: 23, totalPages: 3, pendingCount: 7, items: [{ id: 'r21', triage: [] }] })
-    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 10, skip: 20 }))
+    const service = new AgendaService({ profile: { findUnique: vi.fn(async () => profile) }, meetingRequest: { groupBy, findMany } } as any)
+    const pending = await service.solicitacoes('u1', 3, 'pending')
+    expect(pending).toMatchObject({ page: 3, pageSize: 10, total: 23, totalPages: 3, pendingCount: 23, counts: { pending: 23, confirmed: 14, declined: 2, all: 39 }, items: [{ id: 'r21', triage: [] }] })
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { profileId: 'p1', status: 'pending' }, take: 10, skip: 20 }))
+    const confirmed = await service.solicitacoes('u1', 9, 'confirmed')
+    expect(confirmed).toMatchObject({ page: 2, total: 14, totalPages: 2 })
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { profileId: 'p1', status: 'confirmed' }, skip: 10 }))
+    const history = await service.solicitacoes('u1', 1)
+    expect(history).toMatchObject({ total: 39, totalPages: 4 })
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { profileId: 'p1' }, skip: 0 }))
+    await expect(service.solicitacoes('u1', 1, 'unknown')).rejects.toThrow('inválido')
   })
 
   it('não deixa dois compromissos se sobreporem', async () => {
