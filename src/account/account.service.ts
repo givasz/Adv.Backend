@@ -46,6 +46,8 @@ export class AccountService {
             areas: { orderBy: { order: 'asc' } },
             faqs: { orderBy: { order: 'asc' } },
             socials: true,
+            calendarEntries: { orderBy: { startsAt: 'asc' } },
+            meetingRequests: { orderBy: { createdAt: 'desc' } },
             auditLogs: { orderBy: { createdAt: 'desc' } },
             firmMembership: { include: { firm: { select: { name: true, slug: true } } } },
             // Denúncias: só o que diz respeito a ELE. Quem denunciou não entra.
@@ -196,7 +198,7 @@ export class AccountService {
       },
       naoGuardamos: [
         'O texto dos seus contratos e procurações e os dados dos seus clientes: ficam no seu aparelho e no PDF. Aqui fica só a impressão digital do arquivo.',
-        'Dados de quem visita o seu perfil: o contato vai do aparelho do visitante direto para o seu WhatsApp.',
+        'Mensagens enviadas diretamente ao seu WhatsApp: elas saem do aparelho do visitante sem serem guardadas aqui.',
         'Sua senha em texto: guardamos apenas um hash scrypt, do qual ela não pode ser recuperada.',
         'Endereço IP de navegação: fora do registro de acesso acima (entrar na conta e publicar o perfil), o IP é usado só na hora, para limitar tentativas, e não é gravado.',
         'Dados do seu cartão: quem os guarda é o provedor de pagamento. Aqui ficam só os identificadores da assinatura.',

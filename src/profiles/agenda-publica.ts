@@ -54,6 +54,12 @@ export function gradeDoAssistente(p: any) {
   } catch {
     /* JSON inválido → nenhum horário ocupado (a grade volta inteira) */
   }
+  try {
+    const agenda = JSON.parse(typeof p.calendarBusy === 'string' ? p.calendarBusy : '[]')
+    busy = horariosOcupados([...busy, ...(Array.isArray(agenda) ? agenda : [])])
+  } catch {
+    /* Agenda inválida não altera os bloqueios manuais. */
+  }
   return {
     days,
     busy,

@@ -61,6 +61,7 @@ function service(o: Opcoes = {}) {
 
   const gravado: Qualquer[] = []
   const prisma: Qualquer = {
+    calendarEntry: { findMany: vi.fn().mockResolvedValue([]) },
     profile: {
       findUnique: vi.fn((a: Qualquer) => {
         if (a?.where?.slug !== undefined) {
@@ -217,7 +218,7 @@ describe('o que o servidor recusa gravar', () => {
         questions: [{ id: 'q1', kind: 'texto', label: 'Sucesso garantido no seu processo?' }],
       },
     })
-    expect(gravado).toHaveLength(1)
+    expect(gravado[0]).not.toHaveProperty('triageQuestions')
   })
 })
 

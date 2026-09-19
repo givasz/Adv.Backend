@@ -550,6 +550,10 @@ model Profile {
   // e o assunto do VISITANTE no nosso banco, sem tela que a usasse e sem aviso de
   // privacidade. Perfis antigos com "native" caem para "whatsapp" na leitura.
   schedulingMode        String           @default("external")
+  // MAX: pedidos feitos no mini-site chegam ao painel; desligado = contato direto.
+  meetingInboxEnabled   Boolean          @default(false)
+  // Horários da agenda digital que também devem sumir da grade pública.
+  calendarBusy          String           @default("[]")
   // Config da agenda-calendário removida. Colunas mantidas INERTES: são preferências
   // do próprio advogado (não há dado de terceiro aqui) e derrubá-las custaria outra
   // migração destrutiva sem ganho. Nada as lê hoje.
@@ -569,8 +573,7 @@ model Profile {
   assistantGreeting     String           @default("") // frase de abertura (passa pela checagem OAB)
   // Horários que o advogado marcou como OCUPADOS — a agenda de fora entrando no
   // assistente (o cliente que ligou, a audiência, o horário combinado no WhatsApp).
-  // Só data e hora, nunca de quem é o compromisso: não guardamos dado de visitante
-  // aqui nem em lugar nenhum. A lista se poda sozinha na leitura e na gravação
+  // Só data e hora, nunca de quem é o compromisso. A lista se poda na leitura e na gravação
   // (o passado sai), então não vira arquivo morto nem precisa de faxina agendada.
   assistantBusy         String           @default("[]") // JSON: ["2026-11-25T14:00"]
   // Balão no canto da página pública, que segue a rolagem e abre a conversa.
@@ -592,9 +595,8 @@ model Profile {
   // junto com o perfil e nunca é consultada isoladamente — o mesmo caso de
   // `assistantDays`. Ver src/triagem.ts, que é a fonte da verdade do formato.
   //
-  // ⚠️ NÃO existe coluna de RESPOSTA, e não deve existir: o que o visitante
-  // responde é montado no aparelho dele e sai direto para o WhatsApp do
-  // advogado. O advoc.me não recebe, não guarda e não tem como ler.
+  // Aqui ficam apenas as perguntas públicas. Respostas só entram em MeetingRequest
+  // quando o visitante escolhe enviar uma solicitação ao painel e consente.
   triageEnabled         Boolean          @default(false)
   // JSON: [{ "id": "t1", "kind": "escolha", "label": "Qual assunto?", "options": ["Família"] }]
   triageQuestions       String           @default("[]")
@@ -727,6 +729,8 @@ model Profile {
   events         LinkEvent[]
   auditLogs      AuditLog[]
   reports        Report[]
+  calendarEntries CalendarEntry[]
+  meetingRequests MeetingRequest[]
   // Vínculo com um escritório (opcional). Presente quando o advogado integra uma sociedade.
   firmMembership FirmMembership?
   // Histórico para análise (ver src/bi e prisma/bi/bi.sql). Cascade de propósito:
@@ -739,6 +743,39 @@ model Profile {
   // exatamente por isto: quem tem plano pago e alguma data para vencer. Sem o
   // índice, a varredura vira uma leitura da tabela inteira, todo dia.
   @@index([plan, planStatus])
+}
+
+// Compromissos privados do advogado. Nunca fazem parte do JSON do perfil público.
+model CalendarEntry {
+  id          String   @id @default(cuid())
+  profileId   String
+  profile     Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  title       String
+  startsAt    String   // YYYY-MM-DDTHH:mm, no horário local usado pela grade do assistente
+  durationMin Int      @default(45)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([profileId, startsAt])
+  @@unique([profileId, startsAt])
+}
+
+// O visitante fornece contato com ciência de que será guardado para resposta.
+model MeetingRequest {
+  id          String   @id @default(cuid())
+  profileId   String
+  profile     Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  name        String
+  whatsapp    String?
+  email       String?
+  subject     String
+  preferredAt String?
+  triage      String   @default("[]") // JSON de pares pergunta/resposta, só para o dono
+  status      String   @default("pending") // pending | confirmed | declined
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([profileId, status, createdAt])
 }
 
 // Denúncia feita por qualquer visitante sobre um perfil (conteúdo que viola as
@@ -950,8 +987,7 @@ model Appeal {
 // ----------------------------
 // Um contrato de honorários tem CPF, endereço, valores e o assunto do caso do
 // cliente — dado coberto por sigilo profissional, de uma pessoa que nunca teve
-// conta aqui. O produto inteiro foi desenhado para não guardar dado de terceiro
-// (ver "Não guardamos dado de visitante"); um cofre de contratos seria o maior
+// conta aqui. Solicitações guardam apenas o necessário ao contato; um cofre de contratos seria o maior
 // alvo do banco, para um ganho que o próprio PDF já entrega a quem o tem. O hash
 // basta para o que importa: provar, depois, que o arquivo é o mesmo.
 //

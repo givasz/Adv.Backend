@@ -78,6 +78,8 @@ export const RETENCAO_LINKS_DIAS = 7
  * bytes vão. Chamado reaberto perde a data de resolução e sai da conta.
  */
 export const RETENCAO_ANEXOS_SUPORTE_DIAS = 90
+/** Pedidos de visitantes têm finalidade curta; o advogado também pode apagá-los antes. */
+export const RETENCAO_SOLICITACOES_DIAS = 180
 
 const INTERVALO_MS = 24 * 60 * 60 * 1000
 // Espera antes da primeira passagem: subir a aplicação e imediatamente disparar
@@ -93,6 +95,7 @@ export interface ResultadoDoExpurgo {
   correio: number
   links: number
   anexos: number
+  solicitacoes: number
 }
 
 @Injectable()
@@ -126,7 +129,7 @@ export class RetencaoService implements OnModuleInit, OnModuleDestroy {
    */
   async expurgar(): Promise<ResultadoDoExpurgo> {
     try {
-      const [eventos, auditoria, cobranca, acesso, correio, links, anexos] = await Promise.all([
+      const [eventos, auditoria, cobranca, acesso, correio, links, anexos, solicitacoes] = await Promise.all([
         this.prisma.linkEvent.deleteMany({ where: { createdAt: { lt: limite(RETENCAO_EVENTOS_DIAS) } } }),
         this.prisma.auditLog.deleteMany({ where: { createdAt: { lt: limite(RETENCAO_AUDITORIA_DIAS) } } }),
         this.prisma.billingEvent.deleteMany({
@@ -148,6 +151,7 @@ export class RetencaoService implements OnModuleInit, OnModuleDestroy {
             ticket: { status: 'resolved', handledAt: { lt: limite(RETENCAO_ANEXOS_SUPORTE_DIAS) } },
           },
         }),
+        this.prisma.meetingRequest.deleteMany({ where: { createdAt: { lt: limite(RETENCAO_SOLICITACOES_DIAS) } } }),
       ])
       const r: ResultadoDoExpurgo = {
         eventos: eventos.count,
@@ -157,6 +161,7 @@ export class RetencaoService implements OnModuleInit, OnModuleDestroy {
         correio: correio.count,
         links: links.count,
         anexos: anexos.count,
+        solicitacoes: solicitacoes.count,
       }
       // Só registra quando houve o que apagar: uma linha de log por dia dizendo
       // "apaguei zero" é ruído que faz o log parar de ser lido.
@@ -168,7 +173,8 @@ export class RetencaoService implements OnModuleInit, OnModuleDestroy {
             `${r.acesso} registros de acesso (>${RETENCAO_ACESSO_DIAS}d), ` +
             `${r.correio} avisos por e-mail (>${RETENCAO_CORREIO_DIAS}d), ` +
             `${r.links} links de e-mail vencidos (>${RETENCAO_LINKS_DIAS}d), ` +
-            `${r.anexos} imagens de chamados resolvidos (>${RETENCAO_ANEXOS_SUPORTE_DIAS}d)`,
+            `${r.anexos} imagens de chamados resolvidos (>${RETENCAO_ANEXOS_SUPORTE_DIAS}d), ` +
+            `${r.solicitacoes} solicitações (>${RETENCAO_SOLICITACOES_DIAS}d)`,
         )
       }
       return r
@@ -176,7 +182,7 @@ export class RetencaoService implements OnModuleInit, OnModuleDestroy {
       // Uma falha de limpeza não pode derrubar a API: o pior efeito de não
       // apagar hoje é apagar amanhã.
       this.log.warn(`expurgo falhou: ${e instanceof Error ? e.message : e}`)
-      return { eventos: 0, auditoria: 0, cobranca: 0, acesso: 0, correio: 0, links: 0, anexos: 0 }
+      return { eventos: 0, auditoria: 0, cobranca: 0, acesso: 0, correio: 0, links: 0, anexos: 0, solicitacoes: 0 }
     }
   }
 }

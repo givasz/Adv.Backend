@@ -134,6 +134,8 @@ const PUBLICAS: Record<string, string> = {
     'quem toca no botão do perfil é o visitante, que não tem conta nem deve ter. Responde 204 sempre — inclusive quando recusa — para não virar oráculo de quais slugs existem. O IP é só chave de limite e não é gravado',
   'POST /profiles/:slug/report':
     'denunciar não pode exigir conta: quem vê publicidade irregular costuma ser cliente, não advogado. Teto por IP e por IP+perfil',
+  'POST /profiles/:slug/meeting-requests':
+    'visitante solicita uma reunião com contato e consentimento; o serviço exige perfil Max visível com caixa de pedidos habilitada, e o controller limita pedidos por IP e perfil',
 
   // --- Serviço de apoio -------------------------------------------------------
   'GET /geo/cep/:cep':

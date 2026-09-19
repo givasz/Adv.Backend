@@ -82,6 +82,7 @@ function service(o: Opcoes = {}) {
   const gravado: Qualquer[] = []
   const ocupados = new Set(o.ocupados ?? [])
   const prisma: Qualquer = {
+    calendarEntry: { findMany: vi.fn().mockResolvedValue([]) },
     profile: {
       findUnique: vi.fn((a: Qualquer) => {
         // resolveSlug pergunta por SLUG; todo o resto pergunta por userId/id.
