@@ -37,6 +37,7 @@ import {
   type Plan,
 } from '../plans'
 import { normalizarTriagem, type TriagemConfig } from '../triagem'
+import { bloqueiosDaAgenda } from '../agenda/blocks'
 import { perguntaBloqueada } from '../triagem-dados'
 import {
   canUseVideo,
@@ -152,6 +153,8 @@ const perfilBase = {
   // cresce (ver enforceCharLimits).
   headline: true,
   bio: true,
+  assistantDays: true,
+  assistantDurationMin: true,
   areas: { select: { label: true, description: true } },
   faqs: { select: { question: true, answer: true } },
 } as const
@@ -534,8 +537,8 @@ export class ProfilesService {
    * a triagem montada ao voltar (mesma regra do vídeo, do cartão e da marca).
    *
    * Quem decide o formato é src/triagem.ts, espelhado no front. Aqui só se
-   * escreve o JSON — e nunca uma resposta de visitante, que não existe neste
-   * caminho e não deve passar a existir.
+   * escreve o JSON das perguntas. Respostas de visitantes só entram na rota de
+   * solicitações, após consentimento, e nunca neste caminho de edição do perfil.
    */
   private triageCols(t: unknown) {
     const config = normalizarTriagem(t)
@@ -730,6 +733,7 @@ export class ProfilesService {
       // porta, o perfil público seguiria com botão de agendar e tema do Max dentro
       // dela. É o mesmo motivo pelo qual a moderação também vence na leitura.
       schedulingMode: this.sanitizeMode(p.schedulingMode, plano),
+      meetingInboxEnabled: plano === 'premium' && p.meetingInboxEnabled === true,
       booking: {
         weekdays: this.parseWeekdays(p.bookingWeekdays),
         startMin: p.bookingStartMin ?? 540,
@@ -1377,6 +1381,7 @@ export class ProfilesService {
         scheduling: data.contact?.scheduling,
         // Agendamento — modo + config da agenda nativa (colunas planas).
         schedulingMode: this.sanitizeMode(data.schedulingMode, plan),
+        ...(plan === 'premium' ? { meetingInboxEnabled: data.meetingInboxEnabled === true } : {}),
         ...this.bookingCols(data.booking),
         ...this.assistantCols(data.assistant),
         // Triagem é perk do Max, e fora dele as colunas NEM ENTRAM no update:
@@ -1510,6 +1515,11 @@ export class ProfilesService {
       ])
     }
 
+    if (current.assistantDays !== updated.assistantDays || current.assistantDurationMin !== updated.assistantDurationMin) {
+      const entries = await this.prisma.calendarEntry.findMany({ where: { profileId: updated.id, startsAt: { gte: new Date(Date.now() - 86_400_000).toISOString().slice(0, 10) } }, orderBy: { startsAt: 'asc' }, take: 500 })
+      updated.calendarBusy = JSON.stringify(bloqueiosDaAgenda(entries, updated.assistantDays, updated.assistantDurationMin))
+      await this.prisma.profile.update({ where: { id: updated.id }, data: { calendarBusy: updated.calendarBusy } })
+    }
     return this.toApi(updated)
   }
 

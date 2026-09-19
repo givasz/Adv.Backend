@@ -14,6 +14,7 @@ type Qualquer = Record<string, any>
 function service(plan: 'free' | 'pro' | 'premium' = 'premium') {
   const gravado: Qualquer[] = []
   const prisma: Qualquer = {
+    calendarEntry: { findMany: vi.fn().mockResolvedValue([]) },
     profile: {
       findUnique: vi.fn().mockResolvedValue({
         id: 'p1',

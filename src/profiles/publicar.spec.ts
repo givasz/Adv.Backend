@@ -18,6 +18,7 @@ function service(atual: Qualquer = {}) {
   const gravado: Qualquer[] = []
   const acessos: Qualquer[] = []
   const prisma: Qualquer = {
+    calendarEntry: { findMany: vi.fn().mockResolvedValue([]) },
     profile: {
       findUnique: vi.fn().mockResolvedValue({
         id: 'p1',

@@ -8,11 +8,9 @@
 // O QUE ESTE ARQUIVO GUARDA, E O QUE ELE NÃO GUARDA
 //
 // Guarda as PERGUNTAS que o advogado escreveu, e as LIGAÇÕES entre elas (qual
-// resposta abre qual pergunta). Não guarda, e não deve passar a guardar, nenhuma
-// RESPOSTA de visitante: o que a pessoa responde é montado no aparelho dela e
-// sai direto para o WhatsApp do advogado. Não existe coluna, não existe rota e
-// não existe caminho pelo qual uma resposta chegue até aqui — é a mesma decisão
-// que tirou a agenda-calendário do produto em 21/08/2026.
+// resposta abre qual pergunta). Este arquivo guarda só as perguntas. Respostas
+// seguem ao WhatsApp no contato direto ou à solicitação privada do painel,
+// quando o visitante escolhe esse envio e confirma o armazenamento.
 //
 // Conformidade (Prov. 205/2021 + Cartilha do CFOAB): o chatbot é admitido para
 // facilitar a comunicação, encaminhar primeiras informações e coletar dados — e
