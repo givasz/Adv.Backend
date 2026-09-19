@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common'
+import type { Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import { planoVigente } from '../assinatura'
 import { perfilVisivelAoPublico } from '../profiles/visibilidade'
@@ -62,9 +63,9 @@ export class AgendaService {
     return this.prisma.calendarEntry.findMany({ where: { profileId: p.id, startsAt: { gte: inicio, lte: `${fim}T23:59` } }, orderBy: { startsAt: 'asc' }, take: 200 })
   }
 
-  private async sincronizar(p: Awaited<ReturnType<AgendaService['dono']>>) {
-    const entries = await this.prisma.calendarEntry.findMany({ where: { profileId: p.id, startsAt: { gte: new Date(Date.now() - 86_400_000).toISOString().slice(0, 10) } }, orderBy: { startsAt: 'asc' }, take: 500 })
-    await this.prisma.profile.update({ where: { id: p.id }, data: { calendarBusy: JSON.stringify(bloqueiosDaAgenda(entries, p.assistantDays, p.assistantDurationMin)) } })
+  private async sincronizar(p: Awaited<ReturnType<AgendaService['dono']>>, db: Prisma.TransactionClient = this.prisma) {
+    const entries = await db.calendarEntry.findMany({ where: { profileId: p.id, startsAt: { gte: new Date(Date.now() - 86_400_000).toISOString().slice(0, 10) } }, orderBy: { startsAt: 'asc' }, take: 500 })
+    await db.profile.update({ where: { id: p.id }, data: { calendarBusy: JSON.stringify(bloqueiosDaAgenda(entries, p.assistantDays, p.assistantDurationMin)) } })
   }
 
   async criarEntrada(userId: string, body: any) {
@@ -146,19 +147,56 @@ export class AgendaService {
     return { ok: true }
   }
 
-  async solicitacoes(userId: string, offset = 0) {
+  async solicitacoes(userId: string, page = 1) {
     const p = await this.dono(userId)
-    const skip = Number.isInteger(offset) ? Math.max(0, Math.min(offset, 10000)) : 0
-    const rows = await this.prisma.meetingRequest.findMany({ where: { profileId: p.id }, orderBy: { createdAt: 'desc' }, take: 51, skip })
-    return { items: rows.slice(0, 50).map((r) => ({ ...r, triage: JSON.parse(r.triage || '[]') })), nextOffset: rows.length > 50 ? skip + 50 : null }
+    const pageSize = 10
+    const requestedPage = Number.isSafeInteger(page) ? Math.max(1, page) : 1
+    const where = { profileId: p.id }
+    const [total, pendingCount] = await Promise.all([
+      this.prisma.meetingRequest.count({ where }),
+      this.prisma.meetingRequest.count({ where: { ...where, status: 'pending' } }),
+    ])
+    const totalPages = Math.max(1, Math.ceil(total / pageSize))
+    const currentPage = Math.min(requestedPage, totalPages)
+    const rows = await this.prisma.meetingRequest.findMany({ where, include: { calendarEntry: { select: { id: true, startsAt: true } } }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: pageSize, skip: (currentPage - 1) * pageSize })
+    return { items: rows.map((r) => ({ ...r, triage: JSON.parse(r.triage || '[]') })), page: currentPage, pageSize, total, totalPages, pendingCount }
   }
 
-  async decidir(userId: string, id: string, status: string) {
+  async decidir(userId: string, id: string, body: { status: string; startsAt?: string; durationMin?: number }) {
+    const status = body?.status
     if (!['confirmed', 'declined'].includes(status)) throw new BadRequestException('Escolha confirmar ou negar.')
     const p = await this.dono(userId)
     const request = await this.prisma.meetingRequest.findFirst({ where: { id, profileId: p.id } })
     if (!request) throw new NotFoundException('Solicitação não encontrada.')
-    return this.prisma.meetingRequest.update({ where: { id }, data: { status } })
+    if (status === 'declined') {
+      if (request.status !== 'pending') throw new ConflictException('Esta solicitação já foi respondida.')
+      const result = await this.prisma.meetingRequest.updateMany({ where: { id, profileId: p.id, status: 'pending' }, data: { status } })
+      if (!result.count) throw new ConflictException('Esta solicitação já foi respondida.')
+      return { status: 'declined', entry: null }
+    }
+
+    this.exigirMax(p)
+    if (request.status === 'confirmed' && request.calendarEntryId) {
+      const entry = await this.prisma.calendarEntry.findFirst({ where: { id: request.calendarEntryId, profileId: p.id } })
+      if (entry) return { status: 'confirmed', entry }
+    }
+    if (request.status !== 'pending' && request.status !== 'confirmed') throw new ConflictException('Esta solicitação já foi respondida.')
+    const input = normalizarEntrada({ title: `Reunião com ${request.name}`, startsAt: body.startsAt, durationMin: body.durationMin ?? p.assistantDurationMin })
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const claimed = await tx.meetingRequest.updateMany({ where: { id, profileId: p.id, status: request.status, calendarEntryId: null }, data: { status: 'confirmed' } })
+        if (!claimed.count) throw new ConflictException('Esta solicitação já foi respondida.')
+        const others = await tx.calendarEntry.findMany({ where: { profileId: p.id, startsAt: { startsWith: input.startsAt.slice(0, 10) } } })
+        if (others.some((entry) => bate(entry, input))) throw new ConflictException('Já existe um compromisso nesse horário.')
+        const entry = await tx.calendarEntry.create({ data: { ...input, profileId: p.id } })
+        await tx.meetingRequest.update({ where: { id }, data: { calendarEntryId: entry.id } })
+        await this.sincronizar(p, tx)
+        return { status: 'confirmed', entry }
+      }, { isolationLevel: 'Serializable' })
+    } catch (e) {
+      if (['P2002', 'P2034'].includes((e as { code?: string })?.code ?? '')) throw new ConflictException('Já existe um compromisso nesse horário. Escolha outra hora.')
+      throw e
+    }
   }
 
   async apagarSolicitacao(userId: string, id: string) {

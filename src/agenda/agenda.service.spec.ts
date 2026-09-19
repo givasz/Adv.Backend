@@ -58,7 +58,50 @@ describe('agenda digital', () => {
       profile: { findUnique: vi.fn(async () => profile) },
       meetingRequest: { findFirst: vi.fn(async () => null), update: vi.fn() },
     } as any)
-    await expect(service.decidir('u1', 'pedido-alheio', 'confirmed')).rejects.toThrow('não encontrada')
+    await expect(service.decidir('u1', 'pedido-alheio', { status: 'confirmed', startsAt: `${nextMonday()}T09:00` })).rejects.toThrow('não encontrada')
+  })
+
+  it('confirma o pedido e cria o compromisso na mesma transação', async () => {
+    const startsAt = `${nextMonday()}T09:00`
+    const entry = { id: 'e1', profileId: 'p1', title: 'Reunião com Maria', startsAt, durationMin: 45 }
+    const tx = {
+      meetingRequest: { updateMany: vi.fn(async () => ({ count: 1 })), update: vi.fn(async () => ({})) },
+      calendarEntry: { findMany: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([entry]), create: vi.fn(async () => entry) },
+      profile: { update: vi.fn(async () => ({})) },
+    }
+    const prisma = {
+      profile: { findUnique: vi.fn(async () => profile) },
+      meetingRequest: { findFirst: vi.fn(async () => ({ id: 'r1', name: 'Maria', status: 'pending', calendarEntryId: null })) },
+      $transaction: vi.fn(async (run: (client: typeof tx) => Promise<unknown>) => run(tx)),
+    }
+    const result = await new AgendaService(prisma as any).decidir('u1', 'r1', { status: 'confirmed', startsAt, durationMin: 45 })
+    expect(result).toEqual({ status: 'confirmed', entry })
+    expect(tx.meetingRequest.updateMany).toHaveBeenCalledWith({ where: { id: 'r1', profileId: 'p1', status: 'pending', calendarEntryId: null }, data: { status: 'confirmed' } })
+    expect(tx.calendarEntry.create).toHaveBeenCalledWith({ data: { profileId: 'p1', title: 'Reunião com Maria', startsAt, durationMin: 45 } })
+    expect(tx.meetingRequest.update).toHaveBeenCalledWith({ where: { id: 'r1' }, data: { calendarEntryId: 'e1' } })
+    expect(tx.profile.update).toHaveBeenCalledWith(expect.objectContaining({ data: { calendarBusy: JSON.stringify([startsAt]) } }))
+  })
+
+  it('repetir a confirmação devolve o compromisso já vinculado', async () => {
+    const entry = { id: 'e1', startsAt: `${nextMonday()}T09:00`, durationMin: 45 }
+    const transaction = vi.fn()
+    const service = new AgendaService({
+      profile: { findUnique: vi.fn(async () => profile) },
+      meetingRequest: { findFirst: vi.fn(async () => ({ id: 'r1', name: 'Maria', status: 'confirmed', calendarEntryId: 'e1' })) },
+      calendarEntry: { findFirst: vi.fn(async () => entry) },
+      $transaction: transaction,
+    } as any)
+    await expect(service.decidir('u1', 'r1', { status: 'confirmed', startsAt: entry.startsAt })).resolves.toEqual({ status: 'confirmed', entry })
+    expect(transaction).not.toHaveBeenCalled()
+  })
+
+  it('pagina os pedidos em blocos de dez com total e pendentes globais', async () => {
+    const count = vi.fn(async ({ where }: any) => where.status ? 7 : 23)
+    const findMany = vi.fn(async () => [{ id: 'r21', triage: '[]' }])
+    const service = new AgendaService({ profile: { findUnique: vi.fn(async () => profile) }, meetingRequest: { count, findMany } } as any)
+    const page = await service.solicitacoes('u1', 3)
+    expect(page).toMatchObject({ page: 3, pageSize: 10, total: 23, totalPages: 3, pendingCount: 7, items: [{ id: 'r21', triage: [] }] })
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 10, skip: 20 }))
   })
 
   it('não deixa dois compromissos se sobreporem', async () => {

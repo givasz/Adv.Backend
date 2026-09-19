@@ -755,6 +755,7 @@ model CalendarEntry {
   durationMin Int      @default(45)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  meetingRequest MeetingRequest?
 
   @@index([profileId, startsAt])
   @@unique([profileId, startsAt])
@@ -770,6 +771,8 @@ model MeetingRequest {
   email       String?
   subject     String
   preferredAt String?
+  calendarEntryId String? @unique
+  calendarEntry CalendarEntry? @relation(fields: [calendarEntryId], references: [id], onDelete: SetNull)
   triage      String   @default("[]") // JSON de pares pergunta/resposta, só para o dono
   status      String   @default("pending") // pending | confirmed | declined
   createdAt   DateTime @default(now())

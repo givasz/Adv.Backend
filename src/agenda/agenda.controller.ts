@@ -18,9 +18,9 @@ export class AgendaController {
   @Delete('entries/:id')
   async delete(@Req() req: RequisicaoComAuth, @Param('id') id: string) { return this.agenda.apagarEntrada(await this.sessions.requireUser(req, 'Entre na sua conta para acessar a agenda.'), id) }
   @Get('requests')
-  async requests(@Req() req: RequisicaoComAuth, @Query('offset') offset?: string) { return this.agenda.solicitacoes(await this.sessions.requireUser(req, 'Entre na sua conta para acessar a agenda.'), Number(offset ?? 0)) }
+  async requests(@Req() req: RequisicaoComAuth, @Query('page') page?: string) { return this.agenda.solicitacoes(await this.sessions.requireUser(req, 'Entre na sua conta para acessar a agenda.'), Number(page ?? 1)) }
   @Patch('requests/:id')
-  async decide(@Req() req: RequisicaoComAuth, @Param('id') id: string, @Body() body: { status: string }) { return this.agenda.decidir(await this.sessions.requireUser(req, 'Entre na sua conta para acessar a agenda.'), id, body?.status) }
+  async decide(@Req() req: RequisicaoComAuth, @Param('id') id: string, @Body() body: { status: string; startsAt?: string; durationMin?: number }) { return this.agenda.decidir(await this.sessions.requireUser(req, 'Entre na sua conta para acessar a agenda.'), id, body) }
   @Delete('requests/:id')
   async removeRequest(@Req() req: RequisicaoComAuth, @Param('id') id: string) { return this.agenda.apagarSolicitacao(await this.sessions.requireUser(req, 'Entre na sua conta para acessar a agenda.'), id) }
 }
