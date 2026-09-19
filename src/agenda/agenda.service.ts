@@ -147,19 +147,23 @@ export class AgendaService {
     return { ok: true }
   }
 
-  async solicitacoes(userId: string, page = 1) {
+  async solicitacoes(userId: string, page = 1, status = 'all') {
+    if (!['all', 'pending', 'confirmed', 'declined'].includes(status)) throw new BadRequestException('Estado de solicitação inválido.')
     const p = await this.dono(userId)
     const pageSize = 10
     const requestedPage = Number.isSafeInteger(page) ? Math.max(1, page) : 1
-    const where = { profileId: p.id }
-    const [total, pendingCount] = await Promise.all([
-      this.prisma.meetingRequest.count({ where }),
-      this.prisma.meetingRequest.count({ where: { ...where, status: 'pending' } }),
-    ])
+    const grouped = await this.prisma.meetingRequest.groupBy({ by: ['status'], where: { profileId: p.id }, _count: { _all: true } })
+    const counts = { pending: 0, confirmed: 0, declined: 0, all: 0 }
+    for (const group of grouped) {
+      if (group.status === 'pending' || group.status === 'confirmed' || group.status === 'declined') counts[group.status] += group._count._all
+      counts.all += group._count._all
+    }
+    const total = status === 'all' ? counts.all : counts[status as 'pending' | 'confirmed' | 'declined']
     const totalPages = Math.max(1, Math.ceil(total / pageSize))
     const currentPage = Math.min(requestedPage, totalPages)
+    const where = { profileId: p.id, ...(status === 'all' ? {} : { status }) }
     const rows = await this.prisma.meetingRequest.findMany({ where, include: { calendarEntry: { select: { id: true, startsAt: true } } }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: pageSize, skip: (currentPage - 1) * pageSize })
-    return { items: rows.map((r) => ({ ...r, triage: JSON.parse(r.triage || '[]') })), page: currentPage, pageSize, total, totalPages, pendingCount }
+    return { items: rows.map((r) => ({ ...r, triage: JSON.parse(r.triage || '[]') })), page: currentPage, pageSize, total, totalPages, pendingCount: counts.pending, counts }
   }
 
   async decidir(userId: string, id: string, body: { status: string; startsAt?: string; durationMin?: number }) {
