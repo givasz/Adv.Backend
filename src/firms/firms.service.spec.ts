@@ -20,6 +20,9 @@ function service(opts: { membership?: Qualquer; convidado?: Qualquer } = {}) {
     // reconcilia tema, agendamento e endereço (ProfilesService). O que se testa
     // aqui é que o escritório chama essa porta com o plano certo.
     assinatura: [],
+    pedidoUpdate: [],
+    pedidoDelete: [],
+    evento: [],
   }
   const prisma: Qualquer = {
     firm: {
@@ -61,6 +64,20 @@ function service(opts: { membership?: Qualquer; convidado?: Qualquer } = {}) {
     profile: {
       update: vi.fn((a: Qualquer) => (calls.profileUpdate.push(a), Promise.resolve({}))),
       delete: vi.fn(),
+    },
+    // Caixa de solicitações do escritório.
+    meetingRequest: {
+      groupBy: vi.fn().mockResolvedValue([]),
+      findMany: vi.fn().mockResolvedValue([]),
+      findFirst: vi.fn().mockResolvedValue(null),
+      count: vi.fn().mockResolvedValue(0),
+      update: vi.fn((a: Qualquer) => (calls.pedidoUpdate.push(a), Promise.resolve({}))),
+      updateMany: vi.fn((a: Qualquer) => (calls.pedidoUpdate.push(a), Promise.resolve({ count: 1 }))),
+      delete: vi.fn((a: Qualquer) => (calls.pedidoDelete.push(a), Promise.resolve({}))),
+    },
+    linkEvent: {
+      // `.catch()` é o que faz a consulta acontecer (PrismaPromise é preguiçoso).
+      create: vi.fn((a: Qualquer) => (calls.evento.push(a), Promise.resolve({}))),
     },
     user: { findUnique: vi.fn().mockResolvedValue(opts.convidado ?? null) },
     // O aceite roda numa transação: aqui basta executar as promessas recebidas.
@@ -409,7 +426,7 @@ describe('a mesma pessoa nunca aparece duas vezes', () => {
         },
       ],
     })
-    const view: Qualquer = await svc.getMine('u1')
+    const view = (await svc.getMine('u1')) as Qualquer
     const nomes = view.members.map((m: Qualquer) => `${m.kind}:${m.name}`)
     expect(nomes).toEqual(['roster:Marina Sales'])
   })
@@ -424,7 +441,7 @@ describe('a mesma pessoa nunca aparece duas vezes', () => {
       invites: [{ id: 'i1', email: 'outro@exemplo.com', role: 'member' }],
       roster: [],
     })
-    const view: Qualquer = await svc.getMine('u1')
+    const view = (await svc.getMine('u1')) as Qualquer
     expect(view.members.map((m: Qualquer) => m.kind)).toEqual(['invite'])
   })
 })
@@ -447,6 +464,9 @@ describe('página pública do escritório', () => {
           .fn()
           .mockResolvedValue({ id: 'firm1', slug: 'andrade-vieira', members: [], roster: [] }),
       },
+      // Servir a página conta a visita (LinkEvent) — ver "visitas à página do
+      // escritório", mais abaixo.
+      linkEvent: { create: vi.fn().mockResolvedValue({}) },
     }
     return { svc: new FirmsService(prisma as any, {} as any), prisma }
   }
@@ -525,5 +545,168 @@ describe('página pública do escritório', () => {
     await svc.getMine('u1')
     const filtro = prisma.firm.findUnique.mock.calls[0][0].include.members.where
     expect(filtro).toBeUndefined()
+  })
+})
+
+// O DONO também usa o tier do escritório.
+//
+// Só o aceite de convite aplicava plano: quem CRIAVA a sociedade continuava no
+// plano que já tinha — normalmente o Free — enquanto todo convidado que aceitava
+// virava Max. O dono ficava sem assistente, sem triagem e sem agenda digital
+// dentro do escritório que ele mesmo montou, e pagando por ele.
+describe('plano de quem cria o escritório', () => {
+  function servicoDeCriacao(planoDoDono: string | null) {
+    const { svc, prisma, calls } = service()
+    prisma.firm.findFirst.mockResolvedValue(null) // ainda não administra nenhum
+    prisma.firm.create.mockResolvedValue({ id: 'firm1', slug: 'andrade', plan: 'premium' })
+    // O mesmo `findUnique` serve a duas perguntas diferentes, e confundi-las
+    // trava o teste: a busca por SLUG (com `select`) procura endereço já usado —
+    // devolver um escritório ali põe `resolveFirmSlug` num laço infinito; a
+    // busca por ID é a visão do editor, que `createOrUpdate` devolve no fim.
+    prisma.firm.findUnique.mockImplementation((args: Qualquer) =>
+      Promise.resolve(
+        args?.select
+          ? null
+          : { id: 'firm1', slug: 'andrade', seatsPurchased: 5, members: [], invites: [], roster: [] },
+      ),
+    )
+    prisma.user.findUnique.mockResolvedValue(
+      planoDoDono ? { id: 'u1', profile: { id: 'p-dono', plan: planoDoDono } } : { id: 'u1', profile: null },
+    )
+    return { svc, prisma, calls }
+  }
+
+  it('sobe o perfil do dono para o tier da sociedade', async () => {
+    const { svc, calls } = servicoDeCriacao('free')
+    await svc.createOrUpdate('u1', { name: 'Andrade & Vieira' })
+    expect(calls.assinatura).toHaveLength(1)
+    expect(calls.assinatura[0].profileId).toBe('p-dono')
+    expect(calls.assinatura[0].patch.plan).toBe('premium')
+  })
+
+  it('guarda o plano individual dele para a volta', async () => {
+    const { svc, calls } = servicoDeCriacao('pro')
+    await svc.createOrUpdate('u1', { name: 'Andrade & Vieira' })
+    // Sem isto, sair do escritório (ou excluir a conta, que percorre os mesmos
+    // vínculos) devolveria 'free' a quem pagava Pro.
+    expect(calls.membershipCreate[0].data.previousPlan).toBe('pro')
+    expect(calls.membershipCreate[0].data.role).toBe('owner')
+  })
+
+  it('dono sem perfil não vira membro nem muda plano nenhum', async () => {
+    const { svc, calls } = servicoDeCriacao(null)
+    await svc.createOrUpdate('u1', { name: 'Andrade & Vieira' })
+    expect(calls.membershipCreate).toHaveLength(0)
+    expect(calls.assinatura).toHaveLength(0)
+  })
+
+  it('o plano NÃO é reaplicado a cada salvamento do institucional', async () => {
+    // Editar a página é o gesto mais repetido do editor (autosave). Se ele
+    // mexesse na assinatura, um escritório em edição reescreveria o plano do
+    // dono a cada tecla.
+    const { svc, prisma, calls } = service()
+    prisma.firm.findFirst.mockResolvedValue({ id: 'firm1' })
+    prisma.user.findUnique.mockResolvedValue({ id: 'u1', profile: { id: 'p-dono', plan: 'free' } })
+    await svc.createOrUpdate('u1', { name: 'Andrade & Vieira' })
+    expect(calls.assinatura).toHaveLength(0)
+    expect(calls.membershipCreate).toHaveLength(0)
+  })
+})
+
+// A caixa de solicitações da sociedade. O que ela NÃO faz é o mais importante:
+// confirmar. O compromisso entra na agenda de uma pessoa, e marcar horário no
+// calendário de outra seria mexer na agenda dela.
+describe('solicitações do escritório', () => {
+  function comCaixa() {
+    const { svc, prisma, calls } = service()
+    prisma.firm.findFirst.mockResolvedValue({ id: 'firm1' })
+    return { svc, prisma, calls }
+  }
+
+  it('só lista o que entrou pela página DESTE escritório', async () => {
+    const { svc, prisma } = comCaixa()
+    await svc.solicitacoes('u1', 1, 'all')
+    const where = prisma.meetingRequest.findMany.mock.calls[0]![0].where
+    expect(where.firmId).toBe('firm1')
+  })
+
+  it('recusa estado inventado antes de tocar no banco', async () => {
+    const { svc, prisma } = comCaixa()
+    await expect(svc.solicitacoes('u1', 1, 'qualquer')).rejects.toThrow()
+    expect(prisma.meetingRequest.findMany).not.toHaveBeenCalled()
+  })
+
+  it('encaminha só para membro ATIVO do próprio escritório', async () => {
+    const { svc, prisma, calls } = comCaixa()
+    prisma.meetingRequest.findFirst.mockResolvedValue({ id: 'r1', status: 'pending', profileId: null })
+    prisma.firmMembership.findFirst.mockResolvedValue({ profileId: 'p-ana' })
+    await svc.encaminharSolicitacao('u1', 'r1', 'p-ana')
+    const where = prisma.firmMembership.findFirst.mock.calls.at(-1)![0].where
+    expect(where).toMatchObject({ firmId: 'firm1', status: 'active', profileId: 'p-ana' })
+    expect(calls.pedidoUpdate[0].data.profileId).toBe('p-ana')
+  })
+
+  it('perfil de fora do escritório não recebe o pedido', async () => {
+    // O id vem do corpo da requisição. Sem esta conferência, nome, contato e
+    // assunto de um visitante iriam para o painel de um perfil qualquer.
+    const { svc, prisma, calls } = comCaixa()
+    prisma.meetingRequest.findFirst.mockResolvedValue({ id: 'r1', status: 'pending', profileId: null })
+    prisma.firmMembership.findFirst.mockResolvedValue(null)
+    await expect(svc.encaminharSolicitacao('u1', 'r1', 'p-estranho')).rejects.toThrow()
+    expect(calls.pedidoUpdate).toHaveLength(0)
+  })
+
+  it('pedido já respondido não se encaminha', async () => {
+    const { svc, prisma, calls } = comCaixa()
+    prisma.meetingRequest.findFirst.mockResolvedValue({ id: 'r1', status: 'declined', profileId: null })
+    await expect(svc.encaminharSolicitacao('u1', 'r1', 'p-ana')).rejects.toThrow()
+    expect(calls.pedidoUpdate).toHaveLength(0)
+  })
+
+  it('negar só alcança o que está pendente, e no escopo do escritório', async () => {
+    const { svc, prisma, calls } = comCaixa()
+    await svc.negarSolicitacao('u1', 'r1')
+    expect(calls.pedidoUpdate[0].where).toMatchObject({ id: 'r1', firmId: 'firm1', status: 'pending' })
+    expect(prisma.meetingRequest.updateMany).toHaveBeenCalled()
+  })
+
+  it('quem não administra escritório nenhum não vê caixa nenhuma', async () => {
+    const { svc, prisma } = service()
+    prisma.firm.findFirst.mockResolvedValue(null)
+    prisma.firmMembership.findFirst.mockResolvedValue(null)
+    await expect(svc.solicitacoes('u1')).rejects.toThrow()
+  })
+
+  it('não existe confirmar na caixa do escritório', () => {
+    // A ausência é a regra: quem confirma é o advogado, na agenda dele.
+    const metodos = Object.getOwnPropertyNames(FirmsService.prototype)
+    expect(metodos.filter((m) => /confirm/i.test(m))).toEqual([])
+  })
+})
+
+// A página institucional não contava nada, e quem administra ficava sem saber se
+// ela tinha movimento.
+describe('visitas à página do escritório', () => {
+  it('a visita é gravada ao servir a página pública', async () => {
+    const { svc, prisma, calls } = service()
+    prisma.firm.findUnique.mockResolvedValue({
+      id: 'firm1',
+      slug: 'andrade',
+      members: [],
+      invites: [],
+      roster: [],
+      seatsPurchased: 5,
+    })
+    await svc.getBySlug('andrade')
+    expect(calls.evento).toHaveLength(1)
+    expect(calls.evento[0].data).toEqual({ firmId: 'firm1', kind: 'view' })
+  })
+
+  it('o resumo confere o papel de quem pede pela mesma porta do editor', async () => {
+    const { svc, prisma } = service()
+    prisma.firm.findFirst.mockResolvedValue(null)
+    prisma.firmMembership.findFirst.mockResolvedValue({ firmId: 'firm2' })
+    // Membro com papel admin administra — é a regra do editor, e vale aqui.
+    expect(await svc.escritorioAdministrado('u1')).toEqual({ id: 'firm2' })
   })
 })

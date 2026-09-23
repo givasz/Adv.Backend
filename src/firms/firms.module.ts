@@ -13,5 +13,8 @@ import { FirmsService } from './firms.service'
   imports: [SessionModule, ProfilesModule, CorreioModule],
   controllers: [FirmsController],
   providers: [FirmsService, PrismaService],
+  // O resumo de visitas da página institucional (AnalyticsModule) confere o papel
+  // de quem pede pelo mesmo caminho que o editor.
+  exports: [FirmsService],
 })
 export class FirmsModule {}

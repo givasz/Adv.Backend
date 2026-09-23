@@ -124,3 +124,198 @@ describe('agenda digital', () => {
     await expect(service.criarEntrada('u1', { title: 'Retorno', startsAt: `${date}T09:30`, durationMin: 45 })).rejects.toThrow('Já existe')
   })
 })
+
+// PEDIDO FEITO NA PÁGINA DO ESCRITÓRIO.
+//
+// Duas naturezas, e a diferença é quem já tem dono: com advogado escolhido que
+// recebe no painel, o pedido nasce endereçado a ele (e o escritório junto, porque
+// entrou pela porta da sociedade); sem escolha, fica só do escritório e quem
+// administra encaminha.
+describe('solicitação pela página do escritório', () => {
+  // Padrão: o escritório CENTRALIZA o atendimento (assistantRoute institucional).
+  const firm = { id: 'f1', meetingInboxEnabled: true, assistantRoute: 'institutional' }
+  const delega = { ...firm, assistantRoute: 'lawyer' }
+
+  function servico(opts: { firm?: any; membro?: any } = {}) {
+    const create = vi.fn(async (_args: any) => ({ id: 'r1' }))
+    const membershipFindFirst = vi.fn(async (_args: any) => opts.membro ?? null)
+    const prisma = {
+      firm: { findUnique: vi.fn(async () => (opts.firm === undefined ? firm : opts.firm)) },
+      firmMembership: { findFirst: membershipFindFirst },
+      meetingRequest: { create },
+    }
+    return { svc: new AgendaService(prisma as any), create, membershipFindFirst, prisma }
+  }
+
+  const pedido = {
+    name: 'Maria',
+    email: 'maria@exemplo.com',
+    subject: 'Conversa sobre a empresa',
+    consent: true,
+  }
+
+  it('sem escolher advogado, o pedido fica na caixa da sociedade', async () => {
+    const { svc, create } = servico()
+    await expect(svc.solicitarNoEscritorio('andrade', pedido)).resolves.toEqual({ ok: true })
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ profileId: null, firmId: 'f1' }),
+      }),
+    )
+  })
+
+  it('delegando ao advogado, o pedido nasce endereçado a ele E ao escritório', async () => {
+    // O escritório continua vendo: foi pela página dele que o pedido entrou.
+    const { svc, create } = servico({ firm: delega, membro: { profile } })
+    await svc.solicitarNoEscritorio('andrade', { ...pedido, lawyerId: 'p1' })
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ profileId: 'p1', firmId: 'f1' }),
+      }),
+    )
+  })
+
+  it('centralizando, a escolha do visitante NÃO endereça — mas fica guardada', async () => {
+    // `assistantRoute` institucional é o escritório dizendo que os pedidos são
+    // dele. A caixa do advogado não passa por cima disso; e perder com quem a
+    // pessoa quis falar seria jogar fora a única coisa que ela disse sobre isso.
+    const { svc, create } = servico({ membro: { profile } })
+    await svc.solicitarNoEscritorio('andrade', { ...pedido, lawyerId: 'p1' })
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ profileId: null, preferredLawyerId: 'p1' }),
+      }),
+    )
+  })
+
+  it('a preferência só guarda quem é MEMBRO ATIVO de verdade', async () => {
+    const { svc, create } = servico({ membro: null })
+    await svc.solicitarNoEscritorio('andrade', { ...pedido, lawyerId: 'p-estranho' })
+    expect(create.mock.calls[0]![0].data.preferredLawyerId).toBe(null)
+  })
+
+  it('só aceita advogado ATIVO, deste escritório e com o perfil visível', async () => {
+    // `lawyerId` vem do corpo, que é do visitante. Sem esta conferência, nome,
+    // contato e assunto iriam para o painel de um perfil qualquer.
+    const { svc, membershipFindFirst } = servico({ firm: delega, membro: { profile } })
+    await svc.solicitarNoEscritorio('andrade', { ...pedido, lawyerId: 'p1' })
+    const where = membershipFindFirst.mock.calls[0]![0].where
+    expect(where).toMatchObject({ firmId: 'f1', status: 'active', profileId: 'p1' })
+    expect(where.profile).toBeTruthy() // perfilVisivelAoPublico()
+  })
+
+  it('advogado de fora, ou que não recebe no painel, cai na caixa do escritório', async () => {
+    const { svc, create } = servico({ firm: delega, membro: null })
+    await svc.solicitarNoEscritorio('andrade', { ...pedido, lawyerId: 'p-estranho' })
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ profileId: null }) }),
+    )
+  })
+
+  it('escritório com a caixa desligada não recebe pedido nenhum', async () => {
+    const { svc, create } = servico({ firm: { id: 'f1', meetingInboxEnabled: false, assistantRoute: 'institutional' } })
+    await expect(svc.solicitarNoEscritorio('andrade', pedido)).rejects.toThrow('não recebe')
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  // Quem guarda o dado é quem ligou a própria caixa. Um pedido aceito SÓ porque o
+  // advogado tem caixa é dele e de mais ninguém — o escritório que escolheu não
+  // guardar nada não ganha uma cópia pelas costas (e, sem `firmId`, o advogado
+  // volta a poder apagá-lo, porque o registro é dele).
+  it('caixa só do ADVOGADO: o pedido é dele, sem firmId', async () => {
+    const { svc, create } = servico({
+      firm: { id: 'f1', meetingInboxEnabled: false, assistantRoute: 'lawyer' },
+      membro: { profile },
+    })
+    await svc.solicitarNoEscritorio('andrade', { ...pedido, lawyerId: 'p1' })
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ profileId: 'p1', firmId: null }),
+      }),
+    )
+  })
+
+  it('caixa dos DOIS: o pedido é do advogado e do escritório', async () => {
+    const { svc, create } = servico({ firm: delega, membro: { profile } })
+    await svc.solicitarNoEscritorio('andrade', { ...pedido, lawyerId: 'p1' })
+    expect(create.mock.calls[0]![0].data).toMatchObject({ profileId: 'p1', firmId: 'f1' })
+  })
+
+  it('nenhuma caixa ligada: nem delegando o pedido entra', async () => {
+    const { svc, create } = servico({
+      firm: { id: 'f1', meetingInboxEnabled: false, assistantRoute: 'lawyer' },
+      membro: null,
+    })
+    await expect(
+      svc.solicitarNoEscritorio('andrade', { ...pedido, lawyerId: 'p1' }),
+    ).rejects.toThrow('não recebe')
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it('escritório que não existe responde igual ao que não recebe', async () => {
+    const { svc } = servico({ firm: null })
+    await expect(svc.solicitarNoEscritorio('sumiu', pedido)).rejects.toThrow('não recebe')
+  })
+
+  it('exige consentimento e contato, como a porta do perfil', async () => {
+    const { svc, create } = servico()
+    await expect(
+      svc.solicitarNoEscritorio('andrade', { ...pedido, consent: false }),
+    ).rejects.toThrow('Confirme')
+    await expect(
+      svc.solicitarNoEscritorio('andrade', { name: 'Maria', subject: 'Oi', consent: true }),
+    ).rejects.toThrow('WhatsApp ou e-mail')
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it('a triagem é conferida contra as perguntas DO ADVOGADO, nunca contra o corpo', async () => {
+    // Vale mesmo com o atendimento centralizado: foram as perguntas DELE que o
+    // visitante respondeu, ainda que quem vá responder seja o escritório.
+    const { svc, create } = servico({ membro: { profile } })
+    await svc.solicitarNoEscritorio('andrade', {
+      ...pedido,
+      lawyerId: 'p1',
+      triage: [
+        { id: 'q1', pergunta: 'Pergunta adulterada', resposta: 'Empresarial' },
+        { id: 'q9', pergunta: 'Pergunta forjada', resposta: 'Resposta forjada' },
+      ],
+    })
+    expect(create.mock.calls[0]![0].data.triage).toBe(
+      JSON.stringify([{ id: 'q1', pergunta: 'Qual assunto?', resposta: 'Empresarial' }]),
+    )
+  })
+
+  it('sem advogado escolhido não há triagem: a sociedade não tem perguntas próprias', async () => {
+    const { svc, create } = servico()
+    await svc.solicitarNoEscritorio('andrade', {
+      ...pedido,
+      triage: [{ id: 'q1', pergunta: 'Qual assunto?', resposta: 'Empresarial' }],
+    })
+    expect(create.mock.calls[0]![0].data.triage).toBe('[]')
+  })
+})
+
+// O pedido que veio pela sociedade aparece nas DUAS caixas. Apagá-lo da do
+// advogado sumiria também da de quem administra, que foi quem o encaminhou.
+describe('o advogado não apaga pedido do escritório', () => {
+  function servico(request: any) {
+    const del = vi.fn()
+    const prisma = {
+      profile: { findUnique: vi.fn(async () => profile) },
+      meetingRequest: { findFirst: vi.fn(async () => request), delete: del },
+    }
+    return { svc: new AgendaService(prisma as any), del }
+  }
+
+  it('recusa apagar o que tem firmId, e diz de quem é', async () => {
+    const { svc, del } = servico({ id: 'r1', profileId: 'p1', firmId: 'f1' })
+    await expect(svc.apagarSolicitacao('u1', 'r1')).rejects.toThrow('escritório')
+    expect(del).not.toHaveBeenCalled()
+  })
+
+  it('pedido do próprio perfil continua sendo apagável', async () => {
+    const { svc, del } = servico({ id: 'r1', profileId: 'p1', firmId: null })
+    await expect(svc.apagarSolicitacao('u1', 'r1')).resolves.toEqual({ ok: true })
+    expect(del).toHaveBeenCalled()
+  })
+})

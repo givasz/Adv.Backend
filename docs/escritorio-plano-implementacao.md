@@ -153,3 +153,61 @@ Nada disso é código — é operação, e depende de decisão:
 - **Terminar = commitar na `main` e dar push nos dois repos.**
 - **Backend mudou → atualizar a VPS** (`DEPLOY-VPS.md`, na raiz, fora do git).
   Dump antes de schema destrutivo.
+
+---
+
+## Fase 4 — paridade com o perfil individual (22/09/2026)
+
+Triagem, assistente e agenda tinham sido pensados para perfil de uma pessoa só.
+Esta fase fechou o que não atravessava para a sociedade. O que mudou, e por quê:
+
+**1. O plano do dono.** `createOrUpdate` criava o `FirmMembership` de quem monta o
+escritório e nunca aplicava plano nenhum — só `acceptInvite` fazia isso. Resultado:
+quem **criava** a sociedade seguia no plano que já tinha (normalmente o Free),
+enquanto todo convidado que aceitava virava Max. Agora a criação passa pela mesma
+porta do aceite (`ProfilesService.aplicarAssinaturaPorPerfil`) e grava
+`previousPlan`, para a saída devolver o plano certo.
+
+**2. Triagem do advogado escolhido.** A leitura das perguntas era privada de
+`profiles.service` — foi por isso que a página da sociedade nasceu sem triagem.
+Virou `triagemPublica`, em `profiles/agenda-publica.ts`, ao lado da leitura da
+grade, e o assistente do escritório faz as perguntas de quem o visitante escolheu,
+com as mesmas condições e as mesmas etapas tiradas (`semEtapas`). `CampoDaTriagem`
+saiu de `AssistantChat` para `components/assistant/pieces.tsx`, onde as duas
+conversas o usam.
+
+**3. Caixa de solicitações.** `MeetingRequest` ganhou `firmId` e `profileId` virou
+nulo. Três situações:
+
+- escritório **delega** (`assistantRoute: 'lawyer'`) e o advogado escolhido recebe
+  no painel → o pedido nasce dele (`profileId`) e do escritório (`firmId`);
+- escritório **centraliza** → `profileId` nulo, e a escolha do visitante fica em
+  `preferredLawyerId` (perdê-la seria jogar fora a única coisa que ele disse sobre
+  com quem quer falar);
+- caixa desligada → WhatsApp, como sempre.
+
+`Firm.meetingInboxEnabled` é o interruptor, desligado por padrão: ligar é passar a
+GUARDAR dado de visitante. `/escritorio/solicitacoes` encaminha, nega e apaga —
+**não confirma**: o compromisso entra na agenda de uma pessoa, e marcar horário no
+calendário de outra seria mexer na agenda dela. Pelo mesmo motivo, o advogado não
+apaga um pedido com `firmId`: ele responde, e quem apaga é quem administra.
+
+**4. Métricas.** `LinkEvent` ganhou `firmId` e `profileId` virou nulo. A visita é
+gravada ao servir a página (`getBySlug`), como no perfil; os cliques vão por
+`POST /api/firms/:slug/evento`. O resumo é `GET /api/analytics/firm`, com a
+conferência de papel vinda do próprio `FirmsService`. `bi.service.fecharMes` filtra
+`profileId: { not: null }` — o histórico de BI é por advogado.
+
+**5. Controle do dono.** `Firm.assistantGreeting` (abertura da conversa) e
+`Firm.extraAreas` (assuntos além dos derivados da área principal de cada advogado —
+sem eles, sociedade cujos membros não preencheram área ficava sem a pergunta de
+assunto). Os dois passam pela checagem da OAB no save. O editor ganhou um resumo em
+leitura de como a conversa se comporta com cada advogado (agenda, triagem, caixa) —
+tudo isso é escolha **dele**, no perfil dele, e o dono precisa entender por que a
+conversa muda.
+
+**Também nesta fase:** a censura parcial da moderação passou a alcançar a triagem
+(`hiddenSections: ['triagem']`), nas duas portas — ela é texto público como a bio.
+
+**Migração:** `prisma db push` aditivo (três colunas novas, duas colunas que ficam
+nulas). Nenhuma perda de dado.

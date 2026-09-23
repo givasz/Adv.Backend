@@ -232,16 +232,17 @@ export class BiService implements OnModuleInit, OnModuleDestroy {
 
     const somas = await this.prisma.linkEvent.groupBy({
       by: ['profileId', 'kind'],
-      where: { createdAt: { gte: inicio, lt: fim } },
+      // Só o que é de PERFIL. `LinkEvent` passou a receber também o movimento da
+      // página institucional do escritório (profileId nulo, firmId preenchido), e
+      // o histórico daqui é por advogado: sem este filtro, o agrupamento traria uma
+      // linha de profileId nulo que não cabe em BiEventoMes.
+      where: { createdAt: { gte: inicio, lt: fim }, profileId: { not: null } },
       _count: { _all: true },
     })
 
-    const linhas = somas.map((s) => ({
-      mes,
-      profileId: s.profileId,
-      evento: s.kind,
-      total: s._count._all,
-    }))
+    const linhas = somas.flatMap((s) =>
+      s.profileId ? [{ mes, profileId: s.profileId, evento: s.kind, total: s._count._all }] : [],
+    )
 
     // Apagar e reescrever o mês inteiro, em vez de somar por cima: o mês
     // corrente é refeito todo dia, e um `update` incremental contaria duas vezes

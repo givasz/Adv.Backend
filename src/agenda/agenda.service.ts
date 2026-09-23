@@ -112,11 +112,11 @@ export class AgendaService {
     return { ok: true }
   }
 
-  async solicitar(slug: string, body: any) {
-    const p = await this.prisma.profile.findFirst({ where: { slug, ...perfilVisivelAoPublico() } })
-    if (!p || planoVigente(p) !== 'premium' || !p.meetingInboxEnabled || !['assistant', 'whatsapp'].includes(p.schedulingMode)) {
-      throw new NotFoundException('Este perfil não recebe solicitações pelo site.')
-    }
+  /**
+   * Nome, contato, assunto e horário do pedido — a parte que não muda entre a
+   * porta do perfil e a da sociedade.
+   */
+  private dadosDoPedido(body: any) {
     if (body?.consent !== true) throw new BadRequestException('Confirme que seus dados serão enviados ao advogado.')
     const name = clean(body?.name, 70)
     const subject = clean(body?.subject, 220)
@@ -127,15 +127,25 @@ export class AgendaService {
     if (name.length < 2 || subject.length < 2 || (!whatsapp && !email)) {
       throw new BadRequestException('Informe nome, assunto e WhatsApp ou e-mail válido.')
     }
-    const preferredAt = body?.preferredAt ? horario(body.preferredAt) : null
+    return { name, subject, whatsapp, email, preferredAt: body?.preferredAt ? horario(body.preferredAt) : null }
+  }
+
+  /**
+   * As respostas da triagem, conferidas contra as perguntas que o ADVOGADO gravou.
+   *
+   * O enunciado que fica guardado é sempre o do banco, nunca o que veio no corpo:
+   * quem envia o pedido é o visitante, e aceitar o texto dele seria deixar
+   * qualquer um escrever a pergunta que o advogado lê no painel.
+   */
+  private respostasDaTriagem(p: { triageEnabled: boolean; triageQuestions: string } | null, body: any) {
     let configured: { id: string; label: string }[] = []
     try {
-      const parsed = JSON.parse(p.triageQuestions)
-      if (p.triageEnabled && Array.isArray(parsed)) configured = parsed
+      const parsed = p ? JSON.parse(p.triageQuestions) : []
+      if (p?.triageEnabled && Array.isArray(parsed)) configured = parsed
     } catch { /* sem triagem válida */ }
     const labels = new Map(configured.map((q) => [q.id, q.label]))
     const seen = new Set<string>()
-    const triage = (Array.isArray(body?.triage) ? body.triage : []).slice(0, 8).flatMap((row: any) => {
+    return (Array.isArray(body?.triage) ? body.triage : []).slice(0, 8).flatMap((row: any) => {
       const id = clean(row?.id, 40)
       const pergunta = labels.get(id)
       const resposta = clean(row?.resposta, 500)
@@ -143,7 +153,96 @@ export class AgendaService {
       seen.add(id)
       return [{ id, pergunta: clean(pergunta, 140), resposta }]
     })
-    await this.prisma.meetingRequest.create({ data: { profileId: p.id, name, subject, whatsapp, email, preferredAt, triage: JSON.stringify(triage) } })
+  }
+
+  /** O perfil recebe pedido pelo site? Mesma condição em toda porta que a anuncia. */
+  private recebePedido(p: { plan: string; planStatus: string; currentPeriodEnd: Date | null; graceUntil: Date | null; meetingInboxEnabled: boolean; schedulingMode: string } | null) {
+    return !!p && planoVigente(p) === 'premium' && p.meetingInboxEnabled && ['assistant', 'whatsapp'].includes(p.schedulingMode)
+  }
+
+  async solicitar(slug: string, body: any) {
+    const p = await this.prisma.profile.findFirst({ where: { slug, ...perfilVisivelAoPublico() } })
+    if (!this.recebePedido(p as any)) {
+      throw new NotFoundException('Este perfil não recebe solicitações pelo site.')
+    }
+    const dados = this.dadosDoPedido(body)
+    const triage = this.respostasDaTriagem(p as any, body)
+    // `firmId` fica NULO de propósito: pedido feito no perfil individual é dele e
+    // de mais ninguém — nem do escritório de que ele participa.
+    await this.prisma.meetingRequest.create({ data: { profileId: p!.id, ...dados, triage: JSON.stringify(triage) } })
+    return { ok: true }
+  }
+
+  /**
+   * Pedido vindo da PÁGINA DO ESCRITÓRIO.
+   *
+   * Duas situações, e a diferença entre elas é quem já tem dono:
+   *
+   *   • o visitante escolheu um advogado que recebe pedidos no painel → o pedido
+   *     nasce endereçado a ele (`profileId`), com o escritório junto (`firmId`),
+   *     porque quem administra a sociedade precisa ver o que entrou pela porta
+   *     dela. É este caminho que faz o `meetingInboxEnabled` do advogado valer
+   *     também aqui — antes, entrar pela página do escritório sempre jogava o
+   *     pedido no WhatsApp dele, ignorando a caixa que ele tinha ligado;
+   *   • não escolheu ninguém (ou escolheu quem não recebe assim) → o pedido fica
+   *     só do escritório (`profileId` nulo) e quem administra encaminha a um
+   *     membro. Só a partir daí existe agenda onde marcar.
+   */
+  async solicitarNoEscritorio(slug: string, body: any) {
+    const firm = await this.prisma.firm.findUnique({
+      where: { slug },
+      select: { id: true, meetingInboxEnabled: true, assistantRoute: true },
+    })
+    if (!firm) throw new NotFoundException('Este escritório não recebe solicitações pelo site.')
+    const dados = this.dadosDoPedido(body)
+
+    // O advogado escolhido, quando veio um. `lawyerId` é o id do PERFIL, como a
+    // página do escritório o publica. Conferimos tudo de novo aqui: que ele é
+    // mesmo deste escritório, que está ativo, que o perfil está visível e que
+    // recebe pedidos — o corpo da requisição é do visitante, não nosso.
+    const lawyerId = clean(body?.lawyerId, 40)
+    let escolhido: any = null
+    if (lawyerId) {
+      const membro = await this.prisma.firmMembership.findFirst({
+        where: { firmId: firm.id, status: 'active', profileId: lawyerId, profile: perfilVisivelAoPublico() },
+        select: { profile: true },
+      })
+      escolhido = membro?.profile ?? null
+    }
+
+    // Quem vai RESPONDER. Só quando o escritório DELEGA o atendimento
+    // (`assistantRoute: 'lawyer'`) e o advogado escolhido de fato recebe pedidos
+    // no painel dele: delegar é o escritório passando a decisão para ele, e a
+    // caixa ligada é ele dizendo onde quer receber.
+    const destino =
+      firm.assistantRoute === 'lawyer' && this.recebePedido(escolhido) ? escolhido : null
+
+    // De quem é o REGISTRO. `firmId` só entra quando o escritório ligou a própria
+    // caixa — ou seja, quando ele escolheu guardar dado de visitante. Um pedido
+    // que só é aceito porque o ADVOGADO tem caixa é dele e de mais ninguém: o
+    // escritório que não quis guardar nada não ganha uma cópia pelas costas.
+    const daSociedade = firm.meetingInboxEnabled === true
+
+    // Sem caixa em ponta nenhuma não há onde o pedido cair.
+    if (!daSociedade && !destino) {
+      throw new NotFoundException('Este escritório não recebe solicitações pelo site.')
+    }
+
+    // A triagem é a do advogado ESCOLHIDO — foram as perguntas dele que o
+    // visitante respondeu, mesmo que quem vá responder seja o escritório.
+    const triage = this.respostasDaTriagem(escolhido, body)
+    await this.prisma.meetingRequest.create({
+      data: {
+        profileId: destino?.id ?? null,
+        // A escolha do visitante, guardada mesmo quando não endereça nada: com o
+        // atendimento centralizado é a única coisa que ele disse sobre com quem
+        // quer falar, e perdê-la entre a conversa e a caixa seria jogá-la fora.
+        preferredLawyerId: escolhido?.id ?? null,
+        firmId: daSociedade ? firm.id : null,
+        ...dados,
+        triage: JSON.stringify(triage),
+      },
+    })
     return { ok: true }
   }
 
@@ -207,6 +306,15 @@ export class AgendaService {
     const p = await this.dono(userId)
     const request = await this.prisma.meetingRequest.findFirst({ where: { id, profileId: p.id } })
     if (!request) throw new NotFoundException('Solicitação não encontrada.')
+    // Pedido que entrou pela página do ESCRITÓRIO é registro da sociedade: ele
+    // aparece nas duas caixas, e apagá-lo daqui sumiria também da de quem
+    // administra, que foi quem o encaminhou. O advogado responde (confirma ou
+    // nega) e quem apaga é o escritório.
+    if (request.firmId) {
+      throw new ForbiddenException(
+        'Este pedido veio pela página do escritório. Responda por aqui — quem pode apagá-lo é quem administra a sociedade.',
+      )
+    }
     await this.prisma.meetingRequest.delete({ where: { id } })
     return { ok: true }
   }

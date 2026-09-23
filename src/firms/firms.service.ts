@@ -10,7 +10,7 @@ import { avisarIndexNow } from '../seo/indexnow'
 import { FIRM_PRICING, firmMonthlyPrice, slugify, type Plan } from '../plans'
 import { avatarPublico, ProfilesService } from '../profiles/profiles.service'
 import { perfilVisivelAoPublico, secoesCensuradas } from '../profiles/visibilidade'
-import { agendaPublica } from '../profiles/agenda-publica'
+import { agendaPublica, triagemPublica } from '../profiles/agenda-publica'
 import { planoVigente } from '../assinatura'
 import {
   clampOrNull,
@@ -32,6 +32,30 @@ import { CorreioService } from '../mail/correio.service'
 // Mesmo formato aceito no cadastro (auth.service).
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
+/**
+ * Assuntos escritos pelo dono do escritório, saneados.
+ *
+ * Existem porque a lista que o assistente oferece era DERIVADA da área principal
+ * de cada advogado e de mais nada: uma sociedade cujos membros não preencheram
+ * área ficava sem a pergunta de assunto, e quem administra não tinha como
+ * corrigir. Os derivados continuam entrando — estes se somam a eles.
+ */
+function areasProprias(raw: unknown): string[] {
+  const lista = Array.isArray(raw) ? raw : []
+  const out: string[] = []
+  const vistos = new Set<string>()
+  for (const item of lista) {
+    const label = typeof item === 'string' ? item : (item as { label?: unknown })?.label
+    const texto = typeof label === 'string' ? label.trim().slice(0, AREA_LABEL_MAX) : ''
+    const chave = texto.toLowerCase()
+    if (!texto || vistos.has(chave)) continue
+    vistos.add(chave)
+    out.push(texto)
+    if (out.length >= EXTRA_AREAS_MAX) break
+  }
+  return out
+}
+
 // Tetos de texto da página institucional. Nenhum campo entra sem limite: o corpo
 // do PUT é JSON livre e o que for gravado aqui é lido por visitantes.
 const FIRM_NAME_MAX = 90
@@ -51,6 +75,12 @@ const ROSTER_AREA_MAX = 60
 // indexável: sem um limite, uma conta grátis publicava milhares de pessoas reais
 // em /firms/<slug>. 120 cobre com folga qualquer sociedade real desta plataforma.
 const ROSTER_MAX = 120
+
+// Abertura do assistente institucional — mesmo teto da do perfil individual.
+const GREETING_MAX = 180
+// Assuntos escritos pelo dono, além dos derivados das áreas dos advogados.
+const AREA_LABEL_MAX = 60
+const EXTRA_AREAS_MAX = 12
 
 // Serviço do escritório (sociedade de advogados).
 //
@@ -115,6 +145,15 @@ export class FirmsService {
       },
     })
     if (!firm) throw new NotFoundException('Escritório não encontrado')
+    // A visita entra pela MESMA porta de todo acontecimento (LinkEvent) e pelo
+    // mesmo caminho do perfil individual — a página institucional não contava
+    // nada, e quem administra ficava sem saber se ela tinha movimento.
+    //
+    // ⚠️ O `.catch()` não é higiene: é o que faz a consulta ACONTECER.
+    // `PrismaPromise` é preguiçoso, e um `void` cru descartaria a promessa sem
+    // nunca tocá-la — foi exatamente assim que a visita do PERFIL passou meses
+    // sem ser gravada (ver profiles.service.getBySlug).
+    this.prisma.linkEvent.create({ data: { firmId: firm.id, kind: 'view' } }).catch(() => undefined)
     const out = this.toApi(firm)
     // O interruptor "Mostrar o endereço" vale AQUI, na porta pública — não em
     // toApi, porque toApi também serve o manageView e o DONO precisa continuar
@@ -145,6 +184,15 @@ export class FirmsService {
       select: { firmId: true },
     })
     return membership ? { id: membership.firmId } : null
+  }
+
+  /**
+   * O escritório que este usuário administra — dono ou admin. Público porque o
+   * resumo de visitas da página institucional (AnalyticsService) precisa da MESMA
+   * conferência de papel; uma segunda cópia dela é como uma porta fica sem trava.
+   */
+  async escritorioAdministrado(userId: string): Promise<{ id: string } | null> {
+    return this.findManagedFirm(userId)
   }
 
   private async requireManagedFirm(userId: string) {
@@ -271,10 +319,18 @@ export class FirmsService {
     const nome = clampText(d.name, FIRM_NAME_MAX)
     const tagline = clampText(d.tagline, TAGLINE_MAX)
     const about = clampText(d.about, ABOUT_MAX)
+    const abertura = clampText(d.assistantGreeting, GREETING_MAX)
+    const assuntos = areasProprias(d.extraAreas)
+    // Todo texto público do escritório passa pela mesma checagem, e a lista mora
+    // aqui inteira: a abertura do assistente e os assuntos são lidos por visitantes
+    // como a frase institucional é — uma vedação escondida num assunto ("Garanta
+    // seu direito") é publicidade irregular igual à que estaria no "Sobre".
     const campos: [string, string][] = [
       ['Nome da sociedade', nome],
       ['Frase institucional', tagline],
       ['Sobre o escritório', about],
+      ['Abertura do assistente', abertura],
+      ...assuntos.map((a): [string, string] => ['Assunto do assistente', a]),
     ]
     const travados = campos.filter(([, t]) => t && hasBlockingIssue(t)).map(([label]) => label)
     if (travados.length) {
@@ -286,7 +342,7 @@ export class FirmsService {
     // do banco com a sessão ainda válida, é 401 — nunca criar usuário aqui.
     const owner = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, profile: { select: { id: true } } },
+      select: { id: true, profile: { select: { id: true, plan: true } } },
     })
     if (!owner) throw new UnauthorizedException('Sessão inválida: usuário não encontrado')
 
@@ -320,6 +376,12 @@ export class FirmsService {
       brandAccent: safeHexColor(d.brandAccent),
       customDomain: safeHostname(d.customDomain),
       assistantRoute: d.assistantRoute === 'lawyer' ? 'lawyer' : 'institutional',
+      assistantGreeting: abertura,
+      extraAreas: JSON.stringify(assuntos),
+      // Ligar significa passar a GUARDAR nome, contato e assunto de visitante no
+      // nosso banco. É decisão de quem responde pelo escritório, e por isso vem
+      // do corpo — nunca por padrão.
+      meetingInboxEnabled: d.meetingInboxEnabled === true,
     }
 
     if (managed) {
@@ -342,11 +404,42 @@ export class FirmsService {
     // tem — nada de perfil duplicado. Se ele já estiver em outro escritório, o
     // vínculo antigo é respeitado (profileId é único) e ele fica só como dono.
     if (owner.profile) {
-      await this.prisma.firmMembership
+      const vinculo = await this.prisma.firmMembership
         .create({
-          data: { firmId: firm.id, profileId: owner.profile.id, role: 'owner', status: 'active' },
+          data: {
+            firmId: firm.id,
+            profileId: owner.profile.id,
+            role: 'owner',
+            status: 'active',
+            // O plano individual dele, guardado para a volta — exatamente como no
+            // aceite de convite. Sem isto, excluir a conta (que percorre os mesmos
+            // vínculos para devolver o plano) rebaixaria a Free quem pagava Pro.
+            previousPlan: owner.profile.plan,
+          },
         })
-        .catch(() => {})
+        .catch(() => null)
+      // O DONO também passa a usar o tier do escritório.
+      //
+      // Faltava: só `acceptInvite` aplicava plano, então quem CRIAVA a sociedade
+      // continuava no plano que já tinha — normalmente o Free — enquanto todo
+      // convidado que aceitava virava Max. O dono ficava sem assistente, sem
+      // triagem e sem agenda digital dentro do escritório que ele mesmo montou.
+      //
+      // Mesma porta do aceite (aplicarAssinaturaPorPerfil), nunca um `profile.update`
+      // cru: é ela que reconcilia o endereço numerado do Free ao subir de plano.
+      if (vinculo) {
+        await this.profiles.aplicarAssinaturaPorPerfil(
+          owner.profile.id,
+          {
+            plan: firm.plan as Plan,
+            planStatus: 'active',
+            currentPeriodEnd: null,
+            graceUntil: null,
+            planScheduled: null,
+          },
+          `criação do escritório: ${firm.plan}`,
+        )
+      }
     }
     await this.syncSeats(firm.id)
     avisarIndexNow([`/escritorio/${firm.slug}`])
@@ -719,6 +812,153 @@ export class FirmsService {
     return { status: 'left' as const }
   }
 
+  // ---- Caixa de solicitações do escritório ----------------------------------
+  //
+  // Os pedidos que entraram pela PÁGINA DA SOCIEDADE. São de duas naturezas, e a
+  // diferença é se já têm dono:
+  //
+  //   • com `profileId` → o visitante escolheu um advogado que recebe pedidos no
+  //     painel. O pedido já está na caixa dele, e aparece aqui também porque quem
+  //     administra precisa saber o que entrou pela porta do escritório;
+  //   • sem `profileId` → ninguém foi escolhido. Quem administra encaminha a um
+  //     membro, e só então existe agenda onde marcar — compromisso é de pessoa,
+  //     nunca de sociedade.
+  //
+  // Confirmar NÃO se faz daqui. Marcar no calendário de outra pessoa seria mexer
+  // na agenda dela; depois de encaminhado, quem confirma é o advogado, na própria
+  // agenda digital, pelo caminho que já existe.
+
+  private static readonly PEDIDOS_POR_PAGINA = 10
+
+  async solicitacoes(userId: string, page = 1, status = 'all') {
+    if (!['all', 'pending', 'confirmed', 'declined'].includes(status)) {
+      throw new BadRequestException('Estado de solicitação inválido.')
+    }
+    const firm = await this.requireManagedFirm(userId)
+    const pageSize = FirmsService.PEDIDOS_POR_PAGINA
+    const pedida = Number.isSafeInteger(page) ? Math.max(1, page) : 1
+
+    // Contagem por estado numa consulta — a lista nunca corta em silêncio, e o
+    // total é o mesmo número que a paginação usa (ver docs/plano-admin).
+    const grupos = await this.prisma.meetingRequest.groupBy({
+      by: ['status'],
+      where: { firmId: firm.id },
+      _count: { _all: true },
+    })
+    const counts = { pending: 0, confirmed: 0, declined: 0, all: 0 }
+    for (const g of grupos) {
+      if (g.status === 'pending' || g.status === 'confirmed' || g.status === 'declined') {
+        counts[g.status] += g._count._all
+      }
+      counts.all += g._count._all
+    }
+    const total = status === 'all' ? counts.all : counts[status as 'pending' | 'confirmed' | 'declined']
+    const totalPages = Math.max(1, Math.ceil(total / pageSize))
+    const currentPage = Math.min(pedida, totalPages)
+    const rows = await this.prisma.meetingRequest.findMany({
+      where: { firmId: firm.id, ...(status === 'all' ? {} : { status }) },
+      include: {
+        profile: { select: { id: true, name: true } },
+        calendarEntry: { select: { id: true, startsAt: true } },
+      },
+      // Desempate por id sempre: duas linhas no mesmo milissegundo trocariam de
+      // página entre uma consulta e a seguinte.
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: pageSize,
+      skip: (currentPage - 1) * pageSize,
+    })
+
+    // O NOME de quem o visitante pediu. Uma consulta para a página inteira, e só
+    // entre os membros deste escritório: o id está na linha, mas exibi-lo cru não
+    // diria nada a quem administra.
+    const pedidos = [...new Set(rows.map((r) => r.preferredLawyerId).filter(Boolean))] as string[]
+    const nomes = new Map<string, string>()
+    if (pedidos.length) {
+      const membros = await this.prisma.firmMembership.findMany({
+        where: { firmId: firm.id, profileId: { in: pedidos } },
+        select: { profile: { select: { id: true, name: true } } },
+      })
+      for (const m of membros) if (m.profile) nomes.set(m.profile.id, m.profile.name)
+    }
+
+    return {
+      items: rows.map((r) => ({
+        ...r,
+        triage: JSON.parse(r.triage || '[]'),
+        lawyer: r.profile ? { id: r.profile.id, name: r.profile.name } : null,
+        // Quem o visitante escolheu na conversa. Só aparece enquanto o pedido
+        // ainda não foi endereçado a essa mesma pessoa — repetir "pediu falar
+        // com Ana" embaixo de "para Ana" não acrescenta nada.
+        preferido:
+          r.preferredLawyerId && r.preferredLawyerId !== r.profileId && nomes.has(r.preferredLawyerId)
+            ? { id: r.preferredLawyerId, name: nomes.get(r.preferredLawyerId)! }
+            : null,
+        profile: undefined,
+      })),
+      page: currentPage,
+      pageSize,
+      total,
+      totalPages,
+      pendingCount: counts.pending,
+      counts,
+    }
+  }
+
+  /** Encaminha um pedido da sociedade ao advogado que vai responder. */
+  async encaminharSolicitacao(userId: string, id: string, lawyerId: unknown) {
+    const firm = await this.requireManagedFirm(userId)
+    const pedido = await this.prisma.meetingRequest.findFirst({
+      where: { id, firmId: firm.id },
+      select: { id: true, status: true, profileId: true },
+    })
+    if (!pedido) throw new NotFoundException('Solicitação não encontrada.')
+    if (pedido.status !== 'pending') {
+      throw new BadRequestException('Esta solicitação já foi respondida.')
+    }
+    const destino = typeof lawyerId === 'string' ? lawyerId.trim() : ''
+    // Só um MEMBRO ATIVO deste escritório recebe. O id vem da tela de quem
+    // administra, mas a tela não é a trava: sem esta conferência, um pedido com
+    // nome, contato e assunto de visitante iria para o painel de um perfil
+    // qualquer, escolhido pelo corpo da requisição.
+    const membro = await this.prisma.firmMembership.findFirst({
+      where: { firmId: firm.id, status: 'active', profileId: destino },
+      select: { profileId: true },
+    })
+    if (!membro) throw new BadRequestException('Escolha um advogado do escritório.')
+    await this.prisma.meetingRequest.update({
+      where: { id: pedido.id },
+      data: { profileId: membro.profileId },
+    })
+    return { ok: true }
+  }
+
+  /** Nega um pedido da sociedade. Só o que ainda está pendente. */
+  async negarSolicitacao(userId: string, id: string) {
+    const firm = await this.requireManagedFirm(userId)
+    const feito = await this.prisma.meetingRequest.updateMany({
+      where: { id, firmId: firm.id, status: 'pending' },
+      data: { status: 'declined' },
+    })
+    if (!feito.count) {
+      const existe = await this.prisma.meetingRequest.count({ where: { id, firmId: firm.id } })
+      if (!existe) throw new NotFoundException('Solicitação não encontrada.')
+      throw new BadRequestException('Esta solicitação já foi respondida.')
+    }
+    return { status: 'declined' as const }
+  }
+
+  /** Apaga o pedido — é o caminho de quem já respondeu e não quer guardar o dado. */
+  async apagarSolicitacao(userId: string, id: string) {
+    const firm = await this.requireManagedFirm(userId)
+    const pedido = await this.prisma.meetingRequest.findFirst({
+      where: { id, firmId: firm.id },
+      select: { id: true },
+    })
+    if (!pedido) throw new NotFoundException('Solicitação não encontrada.')
+    await this.prisma.meetingRequest.delete({ where: { id: pedido.id } })
+    return { ok: true }
+  }
+
   // ---- Shape público --------------------------------------------------------
 
   private toApi(firm: any) {
@@ -760,6 +1000,18 @@ export class FirmsService {
           // ela que deixa a conversa do escritório oferecer horário de verdade em
           // vez de só "esta semana, de manhã". Ver profiles/agenda-publica.ts.
           agenda: agendaPublica(p, planoVigente(p)),
+          // As perguntas que ELE escreveu. O visitante que escolhe este advogado
+          // pela página da sociedade passa pela mesma triagem que passaria no
+          // perfil dele — antes, entrar por aqui pulava tudo, e o mesmo advogado
+          // recebia pedidos de duas qualidades conforme a porta de entrada.
+          triagem: censura.has('triagem') ? undefined : triagemPublica(p, planoVigente(p)),
+          // Ele recebe pedidos no painel em vez de no WhatsApp? A condição é a
+          // MESMA que a rota pública confere ao gravar (agenda.service.solicitar):
+          // anunciar uma caixa que o servidor vai recusar seria um beco sem saída.
+          meetingInbox:
+            planoVigente(p) === 'premium' &&
+            p.meetingInboxEnabled === true &&
+            ['assistant', 'whatsapp'].includes(p.schedulingMode),
         }
       })
       // Advogados LISTADOS pelo escritório, que ainda não têm conta. Entram na
@@ -786,17 +1038,39 @@ export class FirmsService {
             // porque não há número dele aqui — cai no institucional, como já faz
             // quando o advogado escolhido não tem número.
             whatsapp: undefined,
-            // Sem conta não há perfil, e sem perfil não há agenda: a conversa pergunta período.
+            // Sem conta não há perfil, e sem perfil não há agenda nem triagem: a
+            // conversa pergunta período e encaminha ao WhatsApp institucional.
             agenda: undefined,
+            triagem: undefined,
+            meetingInbox: false,
           })),
       )
       // Ordem NEUTRA (alfabética) — sem hierarquia por senioridade/destaque.
       .sort((a: any, b: any) => a.name.localeCompare(b.name, 'pt-BR'))
 
-    // Áreas de triagem derivadas das áreas principais dos advogados (distintas).
-    const areas = Array.from(new Set(lawyers.map((l: any) => l.area).filter(Boolean)))
-      .sort((a, b) => (a as string).localeCompare(b as string, 'pt-BR'))
-      .map((label) => ({ id: label as string, label: label as string }))
+    // Assuntos que o assistente oferece: os DERIVADOS da área principal de cada
+    // advogado mais os que o dono escreveu.
+    //
+    // Só os derivados não bastavam: uma sociedade cujos membros ainda não
+    // preencheram área ficava sem a pergunta de assunto, e quem administra não
+    // tinha onde mexer. Repetido (mesmo rótulo nos dois lados) entra uma vez só.
+    let proprias: string[] = []
+    try {
+      const parsed = JSON.parse(typeof firm.extraAreas === 'string' ? firm.extraAreas : '[]')
+      if (Array.isArray(parsed)) proprias = parsed.filter((a: unknown) => typeof a === 'string')
+    } catch {
+      /* JSON inválido → só os assuntos derivados dos advogados */
+    }
+    const vistos = new Set<string>()
+    const areas = [...lawyers.map((l: any) => l.area as string), ...proprias]
+      .filter((label) => {
+        const chave = (label ?? '').trim().toLowerCase()
+        if (!chave || vistos.has(chave)) return false
+        vistos.add(chave)
+        return true
+      })
+      .sort((a, b) => a.localeCompare(b, 'pt-BR'))
+      .map((label) => ({ id: label, label }))
 
     return {
       slug: firm.slug,
@@ -820,6 +1094,11 @@ export class FirmsService {
       brandAccent: firm.brandAccent ?? undefined,
       customDomain: firm.customDomain ?? undefined,
       assistantRoute: firm.assistantRoute ?? 'institutional',
+      assistantGreeting: firm.assistantGreeting ?? '',
+      // Os assuntos escritos pelo dono voltam separados dos derivados: o editor
+      // precisa saber quais ele pode apagar (os dele) e quais vêm dos advogados.
+      extraAreas: proprias,
+      meetingInboxEnabled: firm.meetingInboxEnabled === true,
       areas,
       lawyers,
       // Metadados de plano/assentos (usados por área administrativa; inócuos ao público).

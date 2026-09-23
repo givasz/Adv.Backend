@@ -5,7 +5,8 @@
 // escritório não tinha como oferecer a agenda dos membros sem copiar a regra (e
 // uma cópia de poda de horário ocupado é exatamente o tipo de coisa que diverge).
 
-import { canUseScheduling, type Plan } from '../plans'
+import { canUseScheduling, canUseTriagem, type Plan } from '../plans'
+import { normalizarTriagem, triagemAtiva, type TriagemConfig } from '../triagem'
 
 /** Um dia da grade do assistente como fica na coluna `assistantDays`. */
 export interface AssistantDayCol {
@@ -85,4 +86,49 @@ export function agendaPublica(p: any, plano: Plan) {
   if (!canUseScheduling(plano) || p.schedulingMode !== 'assistant') return undefined
   const grade = gradeDoAssistente(p)
   return grade.days.length ? grade : undefined
+}
+
+/**
+ * A triagem gravada nas colunas planas, como objeto.
+ *
+ * Fonte única das DUAS portas que a publicam: o perfil individual (buildTriage,
+ * em profiles.service) e a página do escritório, onde o assistente da sociedade
+ * faz as perguntas do advogado escolhido. Era privada do profiles.service, que é
+ * exatamente por que o escritório ficou sem triagem nenhuma.
+ *
+ * Perk do Max: fora dele devolve `undefined`, e a trava vale na LEITURA também —
+ * pela janela entre o vencimento da assinatura e a varredura que reconcilia o
+ * banco (mesmo motivo do vídeo e do balão).
+ */
+export function triagemDoPerfil(p: any, plano: Plan): TriagemConfig | undefined {
+  if (!canUseTriagem(plano)) return undefined
+  let questions: unknown = []
+  try {
+    questions = JSON.parse(typeof p.triageQuestions === 'string' ? p.triageQuestions : '[]')
+  } catch {
+    /* JSON inválido → triagem vazia (a conversa volta a ser só a de agendamento) */
+  }
+  let semEtapas: unknown = []
+  try {
+    semEtapas = JSON.parse(typeof p.triageSkipSteps === 'string' ? p.triageSkipSteps : '[]')
+  } catch {
+    /* JSON inválido → nenhuma etapa tirada (a conversa faz todas) */
+  }
+  return normalizarTriagem({ enabled: p.triageEnabled === true, questions, semEtapas })
+}
+
+/**
+ * A triagem de um MEMBRO do escritório, para o assistente da sociedade fazer as
+ * perguntas dele.
+ *
+ * Só quando vale de verdade: plano, interruptor ligado e ao menos uma pergunta
+ * respondível — as mesmas três condições do perfil individual. Fora disso,
+ * `undefined`, e a conversa do escritório segue o roteiro curto de sempre.
+ *
+ * Nada aqui é novo para o público: são as mesmas perguntas que o perfil dele já
+ * publica. O que muda é a porta por onde o visitante chegou.
+ */
+export function triagemPublica(p: any, plano: Plan): TriagemConfig | undefined {
+  const config = triagemDoPerfil(p, plano)
+  return config && triagemAtiva(config) ? config : undefined
 }

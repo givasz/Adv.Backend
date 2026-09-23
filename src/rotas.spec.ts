@@ -136,6 +136,10 @@ const PUBLICAS: Record<string, string> = {
     'denunciar não pode exigir conta: quem vê publicidade irregular costuma ser cliente, não advogado. Teto por IP e por IP+perfil',
   'POST /profiles/:slug/meeting-requests':
     'visitante solicita uma reunião com contato e consentimento; o serviço exige perfil Max visível com caixa de pedidos habilitada, e o controller limita pedidos por IP e perfil',
+  'POST /firms/:slug/evento':
+    'quem toca no botão da página do escritório é o visitante, que não tem conta nem deve ter. Mesma porta do evento de perfil: 204 sempre, IP só como chave de limite e nada dele gravado',
+  'POST /firms/:slug/meeting-requests':
+    'visitante solicita uma conversa pela página da sociedade, com contato e consentimento; o serviço exige escritório com caixa de pedidos ligada e confere o advogado escolhido contra os membros ativos. Teto por IP e por escritório',
 
   // --- Serviço de apoio -------------------------------------------------------
   'GET /geo/cep/:cep':

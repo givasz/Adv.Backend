@@ -7,7 +7,12 @@ import {
 import { createHash } from 'node:crypto'
 import { PrismaService } from '../prisma/prisma.service'
 import { perfilVisivelAoPublico, secoesCensuradas } from './visibilidade'
-import { type AssistantDayCol, gradeDoAssistente, horariosOcupados } from './agenda-publica'
+import {
+  type AssistantDayCol,
+  gradeDoAssistente,
+  horariosOcupados,
+  triagemDoPerfil,
+} from './agenda-publica'
 import { botaoFlutuantePublico, colunasDoBotaoFlutuante } from './botao-flutuante'
 import { areaComMaisDeUma, perguntaComMaisDeUma } from '../campo-unico'
 import { faixa, pagina } from '../admin/paginacao'
@@ -422,6 +427,12 @@ export class ProfilesService {
       out.videoOrientation = 'auto'
     }
     if (set.has('socials')) out.socials = []
+    // A triagem é texto PÚBLICO — o visitante lê cada enunciado e cada opção, e a
+    // checagem de conformidade já os confere (publicTexts). Faltava a censura
+    // alcançá-la: o moderador escondia a pergunta irregular e ela seguia sendo
+    // feita pelo assistente. Vale nas duas portas — a página da sociedade também
+    // a esconde (firms.service.toApi).
+    if (set.has('triagem')) out.triage = undefined
     if (set.has('areas')) out.areas = []
     else if (out.areas) out.areas = out.areas.filter((a: { id: string }) => !set.has(`area:${a.id}`))
     return out
@@ -556,20 +567,10 @@ export class ProfilesService {
    * reconcilia o banco (mesmo motivo do vídeo e do balão).
    */
   private buildTriage(p: any, plano: Plan): TriagemConfig | undefined {
-    if (!canUseTriagem(plano)) return undefined
-    let questions: unknown = []
-    try {
-      questions = JSON.parse(typeof p.triageQuestions === 'string' ? p.triageQuestions : '[]')
-    } catch {
-      /* JSON inválido → triagem vazia (a conversa volta a ser só a de agendamento) */
-    }
-    let semEtapas: unknown = []
-    try {
-      semEtapas = JSON.parse(typeof p.triageSkipSteps === 'string' ? p.triageSkipSteps : '[]')
-    } catch {
-      /* JSON inválido → nenhuma etapa tirada (a conversa faz todas) */
-    }
-    return normalizarTriagem({ enabled: p.triageEnabled === true, questions, semEtapas })
+    // A leitura mora em profiles/agenda-publica.ts, com a da grade: a página do
+    // escritório precisa da MESMA resposta para fazer as perguntas do advogado
+    // escolhido, e uma cópia da regra de plano é o tipo de coisa que diverge.
+    return triagemDoPerfil(p, plano)
   }
 
   /**

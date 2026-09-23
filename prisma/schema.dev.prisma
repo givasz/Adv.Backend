@@ -373,6 +373,18 @@ model Firm {
   //   "institutional" (padrão) → WhatsApp do escritório
   //   "lawyer"                 → WhatsApp do advogado escolhido na conversa
   assistantRoute    String  @default("institutional")
+  // Frase de abertura do assistente institucional. Vazio = a fala padrão. Passa
+  // pela checagem da OAB como qualquer outro texto público (ver oab/compliance).
+  assistantGreeting String  @default("")
+  // Assuntos que o assistente oferece ALÉM dos derivados da área principal de
+  // cada advogado. Sem isto, uma sociedade cujos membros não preencheram área
+  // ficava sem a pergunta de assunto e o dono não tinha como corrigir.
+  // JSON: ["Direito Empresarial"]
+  extraAreas        String  @default("[]")
+  // Pedidos feitos na página da sociedade chegam à caixa do escritório em vez de
+  // sair pelo WhatsApp. Desligado por padrão: ligar significa passar a GUARDAR
+  // dado de visitante, e essa escolha é de quem responde pelo escritório.
+  meetingInboxEnabled Boolean @default(false)
   // ---- Plano / assentos (billing real entra depois; hoje é campo, como Profile.plan) ----
   plan              String    @default("premium") // escritório opera no tier alto
   seatsPurchased    Int     @default(5) // base do plano Escritório inclui 5 assentos
@@ -381,6 +393,9 @@ model Firm {
   ownerUser   User               @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
   members     FirmMembership[]
   invites     FirmInvite[]
+  // Pedidos recebidos pela página institucional e acontecimentos da página.
+  meetingRequests MeetingRequest[]
+  events          LinkEvent[]
   // Advogados listados pelo escritório que ainda não têm conta — ver o modelo.
   roster      FirmRosterLawyer[]
 
@@ -717,8 +732,17 @@ model CalendarEntry {
 // O visitante fornece contato com ciência de que será guardado para resposta.
 model MeetingRequest {
   id          String   @id @default(cuid())
-  profileId   String
-  profile     Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  // NULO quando o pedido chegou pela página do escritório sem advogado escolhido:
+  // a caixa da sociedade o recebe e quem administra encaminha a um membro. Só a
+  // partir daí existe agenda onde marcar — o compromisso é sempre de uma pessoa.
+  profileId   String?
+  profile     Profile? @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  // Escritório de origem. Presente em todo pedido vindo da página institucional,
+  // inclusive nos que já nascem endereçados a um advogado: quem administra precisa
+  // ver o que entrou pela porta da sociedade. Pedido feito no perfil individual
+  // tem isto NULO e nunca aparece para o escritório.
+  firmId      String?
+  firm        Firm?    @relation(fields: [firmId], references: [id], onDelete: Cascade)
   name        String
   whatsapp    String?
   email       String?
@@ -732,6 +756,7 @@ model MeetingRequest {
   updatedAt   DateTime @updatedAt
 
   @@index([profileId, status, createdAt])
+  @@index([firmId, status, createdAt])
 }
 
 // Denúncia feita por qualquer visitante sobre um perfil (conteúdo que viola as
@@ -804,12 +829,17 @@ model SocialLink {
 // Analytics de cliques/visitas
 model LinkEvent {
   id        String   @id @default(cuid())
-  profileId String
-  profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  // Um dos dois, nunca os dois: o acontecimento é de UMA página. Perfil individual
+  // grava profileId; a página institucional da sociedade grava firmId.
+  profileId String?
+  profile   Profile? @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  firmId    String?
+  firm      Firm?    @relation(fields: [firmId], references: [id], onDelete: Cascade)
   kind      String // "view" | "whatsapp" | "scheduling" | "social:instagram" ...
   createdAt DateTime @default(now())
 
   @@index([profileId, kind])
+  @@index([firmId, kind])
 }
 
 // Trilha de auditoria imutável das alterações de perfil e do resultado de conformidade.
