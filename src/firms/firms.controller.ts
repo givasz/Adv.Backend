@@ -4,8 +4,10 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
   Put,
+  Query,
   Req,
   UnauthorizedException,
 } from '@nestjs/common'
@@ -144,6 +146,41 @@ export class FirmsController {
   @Post('firms/me/leave')
   async leave(@Req() req: RequisicaoComAuth) {
     return this.firms.leave(await this.resolveUser(req))
+  }
+
+  // ---- Caixa de solicitações da sociedade -----------------------------------
+
+  // GET /api/firms/me/requests?page=&status=  → pedidos vindos da página do escritório
+  @Get('firms/me/requests')
+  async requests(
+    @Req() req: RequisicaoComAuth,
+    @Query('page') page?: string,
+    @Query('status') status?: string,
+  ) {
+    return this.firms.solicitacoes(await this.resolveUser(req), Number(page ?? 1), status ?? 'all')
+  }
+
+  // PATCH /api/firms/me/requests/:id  → { lawyerId } encaminha, { status:'declined' } nega.
+  // Confirmar NÃO passa por aqui: o compromisso entra na agenda do advogado, e é
+  // ele quem confirma, na própria agenda digital.
+  @Patch('firms/me/requests/:id')
+  async decideRequest(
+    @Param('id') id: string,
+    @Body() body: { lawyerId?: string; status?: string },
+    @Req() req: RequisicaoComAuth,
+  ) {
+    const userId = await this.resolveUser(req)
+    this.limitarEscrita(userId)
+    if (body?.status === 'declined') return this.firms.negarSolicitacao(userId, id)
+    return this.firms.encaminharSolicitacao(userId, id, body?.lawyerId)
+  }
+
+  // DELETE /api/firms/me/requests/:id
+  @Delete('firms/me/requests/:id')
+  async removeRequest(@Param('id') id: string, @Req() req: RequisicaoComAuth) {
+    const userId = await this.resolveUser(req)
+    this.limitarEscrita(userId)
+    return this.firms.apagarSolicitacao(userId, id)
   }
 
   // GET /api/firms/:slug  (público) — página institucional do escritório

@@ -147,3 +147,64 @@ describe('o detalhe é recurso pago', () => {
     }
   })
 })
+
+// A PÁGINA DO ESCRITÓRIO também conta.
+//
+// Ela não contava nada: "Quem visita você" existia só para o perfil individual, e
+// quem administra uma sociedade não sabia se a página tinha movimento. Uma linha
+// de LinkEvent tem `profileId` OU `firmId`, nunca os dois — o acontecimento é de
+// uma página só, e misturar os dois recortes é o que faria o número de um
+// aparecer no painel do outro.
+describe('visitas da página do escritório', () => {
+  function servicoDeEscritorio(linhas: { kind: string; createdAt: Date }[], firma: unknown = { id: 'f1' }) {
+    const prisma = {
+      firm: { findUnique: vi.fn(async () => firma) },
+      linkEvent: {
+        count: vi.fn(async (_args: any) => linhas.filter((l) => l.kind === 'view').length),
+        findMany: vi.fn(async (_args: any) => linhas),
+        create: vi.fn(async (_args: any) => ({})),
+      },
+    }
+    return { s: new AnalyticsService(prisma as never), prisma }
+  }
+
+  it('grava o evento no escritório, nunca num perfil', async () => {
+    const { s, prisma } = servicoDeEscritorio([])
+    await s.registrarEscritorio('andrade', 'assistente')
+    expect(prisma.linkEvent.create).toHaveBeenCalledWith({
+      data: { firmId: 'f1', kind: 'assistente' },
+    })
+  })
+
+  it('a lista fechada de eventos vale aqui também', async () => {
+    const { s, prisma } = servicoDeEscritorio([])
+    await s.registrarEscritorio('andrade', 'qualquer-coisa')
+    expect(prisma.linkEvent.create).not.toHaveBeenCalled()
+    // E nem chega a consultar o escritório: recusa antes.
+    expect(prisma.firm.findUnique).not.toHaveBeenCalled()
+  })
+
+  it('escritório que não existe não vira linha, e não vira erro', async () => {
+    const { s, prisma } = servicoDeEscritorio([], null)
+    await expect(s.registrarEscritorio('sumiu', 'whatsapp')).resolves.toBeUndefined()
+    expect(prisma.linkEvent.create).not.toHaveBeenCalled()
+  })
+
+  it('o resumo lê só as linhas DESTE escritório', async () => {
+    const { s, prisma } = servicoDeEscritorio([
+      { kind: 'view', createdAt: hoje() },
+      { kind: 'assistente', createdAt: hoje() },
+    ])
+    const r = await s.resumoDoEscritorio('f1')
+    expect(prisma.linkEvent.count.mock.calls[0]![0].where).toMatchObject({ firmId: 'f1' })
+    expect(prisma.linkEvent.findMany.mock.calls[0]![0].where).toMatchObject({ firmId: 'f1' })
+    // Nenhum filtro de perfil se mistura ao recorte.
+    expect(prisma.linkEvent.findMany.mock.calls[0]![0].where.profileId).toBeUndefined()
+    expect(r.visitas.total).toBe(1)
+  })
+
+  it('o resumo do escritório é sempre detalhado — a sociedade opera no tier alto', async () => {
+    const { s } = servicoDeEscritorio([{ kind: 'view', createdAt: hoje() }])
+    expect((await s.resumoDoEscritorio('f1')).detalhado).toBe(true)
+  })
+})

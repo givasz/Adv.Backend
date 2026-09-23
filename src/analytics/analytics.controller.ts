@@ -1,5 +1,17 @@
-import { Body, Controller, Get, Headers, HttpCode, Ip, Param, Post, Req } from '@nestjs/common'
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  HttpCode,
+  Ip,
+  NotFoundException,
+  Param,
+  Post,
+  Req,
+} from '@nestjs/common'
 import { AnalyticsService } from './analytics.service'
+import { FirmsService } from '../firms/firms.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { SessionService } from '../auth/session.service'
 import type { RequisicaoComAuth } from '../auth/session-context'
@@ -14,7 +26,10 @@ export class AnalyticsController {
     private readonly analytics: AnalyticsService,
     private readonly sessions: SessionService,
     private readonly prisma: PrismaService,
+    private readonly firms: FirmsService,
   ) {}
+
+
 
   /**
    * POST /api/profiles/:slug/evento  { evento }  (PÚBLICO, sem sessão)
@@ -41,7 +56,6 @@ export class AnalyticsController {
     @Ip() ip?: string,
     @Headers('x-forwarded-for') forwardedFor?: string,
   ): Promise<void> {
-    const chave = `evento:${clientIp(ip, forwardedFor)}`
     // Teto generoso: uma pessoa lendo um perfil e tocando em dois ou três botões
     // gera meia dúzia de eventos, e um escritório inteiro pode sair pelo mesmo
     // IP. O que este limite barra é o laço de terminal que encheria a tabela de
@@ -49,10 +63,49 @@ export class AnalyticsController {
     //
     // `checkRateLimit` e não `enforceRateLimit`: estourar aqui não é erro que se
     // conte a alguém, é evento que se descarta.
+    const chave = `evento:${clientIp(ip, forwardedFor)}`
     if (!checkRateLimit(chave, { windowMs: 60_000, max: 60 })) return
     if (!checkRateLimit(chave, { windowMs: 3_600_000, max: 600 })) return
 
     await this.analytics.registrar(slug, body?.evento)
+  }
+
+  /**
+   * POST /api/firms/:slug/evento  { evento }  (PÚBLICO, sem sessão)
+   *
+   * O mesmo, para a página institucional do escritório — que até aqui não contava
+   * nada e deixava quem administra sem saber se a página tinha movimento.
+   * Responde 204 sempre, pelos mesmos motivos da porta do perfil.
+   */
+  @Post('firms/:slug/evento')
+  @HttpCode(204)
+  async registrarEscritorio(
+    @Param('slug') slug: string,
+    @Body() body: { evento?: string },
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') forwardedFor?: string,
+  ): Promise<void> {
+    const chave = `evento:${clientIp(ip, forwardedFor)}`
+    if (!checkRateLimit(chave, { windowMs: 60_000, max: 60 })) return
+    if (!checkRateLimit(chave, { windowMs: 3_600_000, max: 600 })) return
+
+    await this.analytics.registrarEscritorio(slug, body?.evento)
+  }
+
+  /**
+   * GET /api/analytics/firm — o resumo da página do escritório que o usuário
+   * administra. Quem pode ver é quem pode editar: a conferência de papel é a
+   * mesma função que o editor usa (FirmsService), nunca uma cópia dela.
+   */
+  @Get('analytics/firm')
+  async doEscritorio(@Req() req: RequisicaoComAuth) {
+    const userId = await this.sessions.requireUser(
+      req,
+      'Entre na sua conta para ver as visitas do escritório.',
+    )
+    const firma = await this.firms.escritorioAdministrado(userId)
+    if (!firma) throw new NotFoundException('Você ainda não tem um escritório')
+    return this.analytics.resumoDoEscritorio(firma.id)
   }
 
   /**

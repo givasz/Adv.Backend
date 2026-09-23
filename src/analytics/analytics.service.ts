@@ -69,6 +69,26 @@ export class AnalyticsService {
       .catch(() => undefined)
   }
 
+  /**
+   * O mesmo, para a PÁGINA DO ESCRITÓRIO.
+   *
+   * Ela não contava nada: o painel "Quem visita" existia só para perfil
+   * individual, e quem administra uma sociedade não tinha como saber quantas
+   * visitas ou quantas conversas a página institucional gerou.
+   *
+   * Uma linha de `LinkEvent` tem `profileId` OU `firmId`, nunca os dois — o
+   * acontecimento é de uma página só. As mesmas ausências valem aqui: sem IP, sem
+   * identificador de visitante, sem nada que diga QUEM. Ver eventos.ts.
+   */
+  async registrarEscritorio(slug: string, evento: unknown): Promise<void> {
+    if (!ehEvento(evento)) return
+    const firma = await this.prisma.firm.findUnique({ where: { slug }, select: { id: true } })
+    if (!firma) return
+    await this.prisma.linkEvent
+      .create({ data: { firmId: firma.id, kind: evento } })
+      .catch(() => undefined)
+  }
+
   /** O resumo do perfil de quem está logado. */
   async resumoDoDono(userId: string, plano: Plan): Promise<ResumoDeMetricas> {
     const perfil = await this.prisma.profile.findUnique({
@@ -76,10 +96,22 @@ export class AnalyticsService {
       select: { id: true },
     })
     if (!perfil) throw new NotFoundException('Perfil não encontrado')
-    return this.resumo(perfil.id, plano)
+    return this.resumo({ profileId: perfil.id }, plano)
   }
 
-  private async resumo(profileId: string, plano: Plan): Promise<ResumoDeMetricas> {
+  /**
+   * O resumo da página de um escritório. Sempre detalhado: a sociedade opera no
+   * tier alto, e quem chega aqui já passou pela conferência de quem administra.
+   */
+  async resumoDoEscritorio(firmId: string): Promise<ResumoDeMetricas> {
+    return this.resumo({ firmId }, 'premium')
+  }
+
+  /**
+   * `alvo` é o recorte: `{ profileId }` ou `{ firmId }`. A conta é idêntica nos
+   * dois casos — é a mesma tela, lida por outra pessoa.
+   */
+  private async resumo(alvo: { profileId: string } | { firmId: string }, plano: Plan): Promise<ResumoDeMetricas> {
     const janelaDias = JANELA_PADRAO_DIAS
     const desde = inicioDoDia(new Date())
     desde.setDate(desde.getDate() - (janelaDias - 1))
@@ -89,9 +121,9 @@ export class AnalyticsService {
     // por perfil em 30 dias, e fazer isso no banco exigiria SQL específico de
     // Postgres (date_trunc, extract) que quebraria o SQLite do ambiente local.
     const [totalVisitas, linhas] = await Promise.all([
-      this.prisma.linkEvent.count({ where: { profileId, kind: 'view' } }),
+      this.prisma.linkEvent.count({ where: { ...alvo, kind: 'view' } }),
       this.prisma.linkEvent.findMany({
-        where: { profileId, createdAt: { gte: desde } },
+        where: { ...alvo, createdAt: { gte: desde } },
         select: { kind: true, createdAt: true },
         take: 200_000,
       }),
