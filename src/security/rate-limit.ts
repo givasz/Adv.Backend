@@ -193,6 +193,17 @@ export const BILLING_RATE_RULES = {
   perIp: { windowMs: 60 * 1000, max: 240 } as Rule,
 }
 
+// Checkout — formulário de cartão é alvo clássico de "teste de cartão": um robô
+// usa a página para descobrir quais cartões roubados ainda passam. Cada tentativa
+// recusada custa ao lojista, e uma sequência delas faz o antifraude do provedor
+// desconfiar da CONTA inteira. O teto por conta é o que segura (exige login, e
+// criar conta também tem teto); o por endereço pega a rajada de várias contas.
+// Seis por hora é folga para quem erra a digitação duas ou três vezes.
+export const CHECKOUT_RATE_RULES = {
+  porConta: { windowMs: HORA, max: 6 } as Rule,
+  porIp: { windowMs: HORA, max: 15 } as Rule,
+}
+
 // Correio — pedir um link por e-mail e usar o link.
 //
 // Todo pedido aqui faz a plataforma MANDAR UM E-MAIL para um endereço digitado
