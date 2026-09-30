@@ -14,3 +14,5 @@ prisma/migrations/
 *.log
 .DS_Store
 deploy.tgz
+prisma/e2e.db
+prisma/e2e.db-journal
