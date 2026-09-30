@@ -58,7 +58,7 @@ import {
   type PlanStatus,
 } from '../assinatura'
 import { AsaasApi, AsaasErro, type CobrancaAsaas, type MeioDePagamento } from './asaas.api'
-import { marcaExterna } from './asaas'
+import { lerMarca, marcaExterna } from './asaas'
 import { limparCartao } from './checkout.service'
 
 /** Prazo do direito de arrependimento (CDC, art. 49), em dias corridos. */
@@ -78,6 +78,12 @@ export interface ResumoDaAssinatura {
   validoAte: string | null
   planScheduled: Plan | null
   assinatura: null | {
+    /**
+     * O plano que ESTA assinatura cobra (da referência que nós gravamos). É o que
+     * a tela mostra enquanto o primeiro pagamento não chega — o plano contratado
+     * ainda é o Free, mas a pessoa está comprando o Max.
+     */
+    planoCobrado: Plan | null
     meio: MeioDePagamento
     valor: number
     /** yyyy-mm-dd — `null` depois de cancelada */
@@ -192,6 +198,7 @@ export class MinhaAssinaturaService {
       return {
         ...base,
         assinatura: {
+          planoCobrado: lerMarca(sub.externalReference).plan ?? null,
           meio: sub.billingType,
           valor: sub.value ?? PLAN_PRICE[(perfil.plan as 'pro' | 'premium')] ?? 0,
           proximaCobranca: sub.status === 'ACTIVE' ? sub.nextDueDate : null,
