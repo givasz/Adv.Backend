@@ -17,6 +17,7 @@
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { AsaasApi } from './asaas.api'
 import { CheckoutService } from './checkout.service'
+import { MinhaAssinaturaService } from './minha-assinatura.service'
 
 const REAL =
   process.env.ASAAS_TESTE_REAL === '1' &&
@@ -52,16 +53,19 @@ describe.skipIf(!REAL)('checkout contra o sandbox do Asaas', () => {
     user: { email: 'sandbox-teste@example.com', emailVerifiedAt: new Date() },
   }
   // Banco de mentira que GUARDA o que é gravado — o fluxo depende disso entre chamadas.
+  const chamados: any[] = []
   const prisma = {
     profile: {
       findUnique: async () => perfil,
       update: async (a: any) => Object.assign(perfil, a.data),
     },
+    supportTicket: { create: async (a: any) => (chamados.push(a.data), {}) },
   }
   const profiles = {
     aplicarAssinaturaPorPerfil: async (_: string, patch: any) => Object.assign(perfil, patch),
   }
   const svc = new CheckoutService(prisma as any, profiles as any, api, { ativo: false } as any)
+  const minha = new MinhaAssinaturaService(prisma as any, profiles as any, api)
 
   const cartao = (numero: string) => ({
     plano: 'premium',
@@ -117,10 +121,43 @@ describe.skipIf(!REAL)('checkout contra o sandbox do Asaas', () => {
     expect(await api.assinaturasDoCliente(perfil.billingCustomerId)).toHaveLength(1)
   }, 60_000)
 
-  it('cancelar apaga no Asaas e mantém o mês pago', async () => {
-    const r = await svc.cancelar('u')
-    expect(r.valeAte).not.toBeNull()
+  it('minha assinatura: cartão, valor, próxima cobrança e o prazo de arrependimento aberto', async () => {
+    const r = await minha.resumo('u')
+    expect(r.assinatura).toMatchObject({ meio: 'CREDIT_CARD', valor: 49, cartao: { final: '4444' }, emAberto: null })
+    expect(r.assinatura?.proximaCobranca).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(r.assinatura?.arrependimentoAte).not.toBeNull()
+  }, 60_000)
+
+  it('trocar o cartão: o Asaas passa a cobrar no novo', async () => {
+    const r = await minha.trocarCartao(
+      'u',
+      { cpfCnpj: cpf, cartao: { numero: '4111111111111111', nomeImpresso: 'TESTE SANDBOX', mes: '11', ano: '2031', cvv: '321' }, titular: { cep: '80420210', numeroEndereco: '1488', telefone: '41999999999' } },
+      '200.200.200.200',
+    )
+    expect(r.assinatura?.cartao?.final).toBe('1111')
+  }, 60_000)
+
+  it('descer para o Pro fica agendado, e o Asaas passa a cobrar R$ 29 na próxima', async () => {
+    const r = (await minha.trocarPlano('u', { plano: 'pro' }, '200.200.200.200')) as any
+    expect(perfil.plan).toBe('premium') // o mês pago de Max continua
+    expect(perfil.planScheduled).toBe('pro')
+    expect(r.assinatura.valor).toBe(29)
+  }, 60_000)
+
+  it('desfazer a descida: volta a R$ 49 e some o agendamento', async () => {
+    const r = (await minha.trocarPlano('u', { plano: 'premium' }, '200.200.200.200')) as any
+    expect(perfil.planScheduled).toBeNull()
+    expect(r.assinatura.valor).toBe(49)
+  }, 60_000)
+
+  it('cancelar dentro dos 7 dias DEVOLVE o valor e termina o plano agora', async () => {
+    const antes = Date.now()
+    const r = await minha.cancelar('u')
+    expect(r).toMatchObject({ devolucao: 'feita', valeAte: null, valorDevolvido: 49 })
+    expect(chamados).toHaveLength(0)
     expect(perfil.planStatus).toBe('canceled')
+    expect(new Date(perfil.currentPeriodEnd).getTime()).toBeGreaterThanOrEqual(antes - 1000)
+    expect(new Date(perfil.currentPeriodEnd).getTime()).toBeLessThanOrEqual(Date.now() + 1000)
     expect(await api.assinaturasDoCliente(perfil.billingCustomerId)).toHaveLength(0)
   }, 60_000)
 })

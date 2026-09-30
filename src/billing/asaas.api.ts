@@ -84,6 +84,15 @@ export interface CobrancaAsaas {
   value: number
   invoiceUrl?: string
   bankSlipUrl?: string | null
+  confirmedDate?: string | null
+  paymentDate?: string | null
+  clientPaymentDate?: string | null
+}
+
+/** Há chave e ambiente do Asaas neste servidor? Função pura — lida por quem não injeta a AsaasApi. */
+export function asaasConfigurado(): boolean {
+  const ambiente = (process.env.ASAAS_AMBIENTE ?? '').trim()
+  return !!(process.env.ASAAS_API_KEY ?? '').trim() && (ambiente === 'sandbox' || ambiente === 'producao')
 }
 
 export interface PixAsaas {
@@ -108,7 +117,7 @@ export class AsaasApi {
 
   /** Há chave e ambiente declarados? Sem os dois, nada sai daqui. */
   get configurado(): boolean {
-    return !!this.chave && !!this.base
+    return asaasConfigurado()
   }
 
   get ambiente(): string {
@@ -235,6 +244,102 @@ export class AsaasApi {
     )
     // A mais antiga primeiro: é a do ciclo que está sendo pago agora.
     return [...(r.data ?? [])].sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+  }
+
+  /** A assinatura como o Asaas a vê agora — meio, valor, próximo vencimento, final do cartão. */
+  async obterAssinatura(id: string): Promise<(AssinaturaAsaas & { value?: number; deleted?: boolean }) | null> {
+    try {
+      return await this.chamar('GET', `/subscriptions/${encodeURIComponent(id)}`)
+    } catch (e) {
+      if (e instanceof AsaasErro && e.status === 404) return null
+      throw e
+    }
+  }
+
+  /**
+   * Muda valor, referência e descrição da assinatura — a troca de plano.
+   *
+   * `updatePendingPayments` leva a mudança também às cobranças já geradas e ainda
+   * não pagas (conferido no sandbox em 30/09/2026: a cobrança pendente do Pix
+   * passou a ter o valor e a referência novos). As já pagas não mudam.
+   *
+   * ⚠️ Em assinatura de CARTÃO, a documentação diz que mudar o valor exige a
+   * tokenização habilitada na conta. No sandbox ela vem ligada e funcionou; em
+   * produção pode vir recusada — quem chama trata (ver MinhaAssinaturaService).
+   */
+  atualizarAssinatura(id: string, p: { valor: number; externalReference: string; descricao: string }) {
+    return this.chamar<AssinaturaAsaas & { value?: number }>('PUT', `/subscriptions/${encodeURIComponent(id)}`, {
+      value: p.valor,
+      externalReference: p.externalReference,
+      description: p.descricao,
+      updatePendingPayments: true,
+    })
+  }
+
+  /** Troca o cartão de uma assinatura. Não exige tokenização (endpoint próprio). */
+  trocarCartao(id: string, p: { cartao: Cartao; titular: Titular; remoteIp: string }) {
+    return this.chamar<AssinaturaAsaas>('PUT', `/subscriptions/${encodeURIComponent(id)}/creditCard`, {
+      creditCard: {
+        holderName: p.cartao.nomeImpresso,
+        number: p.cartao.numero,
+        expiryMonth: p.cartao.mes,
+        expiryYear: p.cartao.ano,
+        ccv: p.cartao.cvv,
+      },
+      creditCardHolderInfo: {
+        name: p.titular.nome,
+        email: p.titular.email,
+        cpfCnpj: p.titular.cpfCnpj,
+        postalCode: p.titular.cep,
+        addressNumber: p.titular.numeroEndereco,
+        phone: p.titular.telefone,
+      },
+      remoteIp: p.remoteIp,
+    })
+  }
+
+  /**
+   * Devolve uma cobrança paga (o direito de arrependimento).
+   *
+   * No cartão, o Asaas NÃO devolve a nós as taxas da cobrança — quem paga o
+   * arrependimento somos nós, e é assim que deve ser: o advogado recebe o valor
+   * integral. No Pix, a devolução logo depois do recebimento pode falhar por saldo
+   * (o saldo é o líquido, já sem as taxas); quem chama trata a falha.
+   */
+  estornar(cobrancaId: string, descricao: string) {
+    return this.chamar<{ id: string; status: string }>('POST', `/payments/${encodeURIComponent(cobrancaId)}/refund`, {
+      description: descricao,
+    })
+  }
+
+  /**
+   * Deixa as notificações do Asaas para o cliente só por E-MAIL.
+   *
+   * Todo cliente novo nasce com oito avisos de cobrança (criada, vencendo, vencida,
+   * recebida…). É por eles que o Pix e o boleto de cada mês chegam ao advogado —
+   * por isso o e-mail FICA. SMS, WhatsApp e ligação saem: têm tarifa por envio, e
+   * uma plataforma que se apresenta como sóbria não liga para o advogado para
+   * cobrar R$ 29. A documentação diz que em produção o SMS vem ligado por padrão;
+   * no sandbox veio desligado. Por isso o desligamento é explícito, cliente a
+   * cliente, e não depende do padrão da conta.
+   */
+  async notificacoesSoPorEmail(customer: string): Promise<void> {
+    const r = await this.chamar<{ data?: Record<string, any>[] }>(
+      'GET',
+      `/customers/${encodeURIComponent(customer)}/notifications`,
+    )
+    const lista = (r.data ?? []).map((n) => ({
+      id: n.id,
+      enabled: n.enabled,
+      emailEnabledForCustomer: n.emailEnabledForCustomer,
+      emailEnabledForProvider: n.emailEnabledForProvider,
+      smsEnabledForProvider: n.smsEnabledForProvider,
+      smsEnabledForCustomer: false,
+      whatsappEnabledForCustomer: false,
+      phoneCallEnabledForCustomer: false,
+    }))
+    if (!lista.length) return
+    await this.chamar('PUT', '/notifications/batch', { customer, notifications: lista })
   }
 
   pixQrCode(cobrancaId: string) {
