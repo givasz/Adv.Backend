@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { ProfilesModule } from '../profiles/profiles.module'
 import { BillingController } from './billing.controller'
-import { PagarmeController } from './pagarme.controller'
+import { AsaasController } from './asaas.controller'
 import { BillingService } from './billing.service'
 import { AssinaturasService } from './assinaturas.service'
 
@@ -11,7 +11,7 @@ import { AssinaturasService } from './assinaturas.service'
 // caminho do checkout do usuário — ProfilesService.aplicarAssinaturaPorPerfil.
 @Module({
   imports: [ProfilesModule],
-  controllers: [BillingController, PagarmeController],
+  controllers: [BillingController, AsaasController],
   providers: [BillingService, AssinaturasService, PrismaService],
   exports: [BillingService, AssinaturasService],
 })

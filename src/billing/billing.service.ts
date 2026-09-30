@@ -50,6 +50,12 @@ export interface EventoDeCobranca {
   /** momento SEGUNDO O PROVEDOR (não o da chegada) — é por ele que se ordena */
   occurredAt: string
   provider?: string
+  /**
+   * O id do PERFIL, quando o provedor devolve uma referência que nós mesmos
+   * gravamos (o `externalReference` do Asaas). É a chave mais forte de todas:
+   * não depende de o provedor ter guardado o vínculo, nem de o e-mail casar.
+   */
+  profileId?: string
   /** identificadores do provedor, para casar com o perfil */
   customerId?: string
   subscriptionId?: string
@@ -117,7 +123,7 @@ export class BillingService {
   /**
    * Guarda um evento SEM aplicar nada.
    *
-   * Serve ao adaptador de provedor (ver `pagarme.controller.ts`) para o tráfego
+   * Serve ao adaptador de provedor (ver `asaas.controller.ts`) para o tráfego
    * que não mexe em assinatura — `charge.created`, antifraude, estorno. É a maior
    * parte do que um provedor manda, e jogar fora seria perder a única resposta
    * possível para "o que exatamente eles nos contaram naquele dia".
@@ -170,6 +176,7 @@ export class BillingService {
       // mas o evento não é descartado — e o registro guarda o payload cru.
       occurredAt: (Number.isNaN(quando.getTime()) ? new Date() : quando).toISOString(),
       provider: texto(raw?.provider, 40),
+      profileId: texto(raw?.profileId, 60),
       customerId: texto(raw?.customerId, 120),
       subscriptionId: texto(raw?.subscriptionId, 120),
       email: texto(raw?.email, 200)?.toLowerCase(),
@@ -180,9 +187,14 @@ export class BillingService {
   }
 
   /**
-   * Encontra o perfil dono do evento. Três chaves, da mais específica para a menos:
-   * a assinatura, o cliente, e — só na PRIMEIRA cobrança, quando ainda não há
+   * Encontra o perfil dono do evento. Quatro chaves, da mais específica para a
+   * menos: a referência nossa que o provedor devolve (o perfil em si), a
+   * assinatura, o cliente, e — só na PRIMEIRA cobrança, quando ainda não há
    * vínculo gravado — o e-mail da conta.
+   *
+   * O e-mail é o elo fraco: é por ele que um pagamento errado daria plano à
+   * pessoa errada. Por isso fica por último, e por isso o adaptador do Asaas
+   * carimba o perfil no `externalReference` — com ele, o e-mail nunca é consultado.
    */
   private async acharPerfil(ev: EventoDeCobranca) {
     const campos = {
@@ -197,6 +209,10 @@ export class BillingService {
       billingSubscriptionId: true,
     } as const
 
+    if (ev.profileId) {
+      const p = await this.prisma.profile.findFirst({ where: { id: ev.profileId }, select: campos })
+      if (p) return p
+    }
     if (ev.subscriptionId) {
       const p = await this.prisma.profile.findFirst({
         where: { billingSubscriptionId: ev.subscriptionId },
