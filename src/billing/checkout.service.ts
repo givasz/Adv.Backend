@@ -43,7 +43,7 @@ import { PrismaService } from '../prisma/prisma.service'
 import { ProfilesService } from '../profiles/profiles.service'
 import { CorreioService } from '../mail/correio.service'
 import { PLAN_NAME, PLAN_PRICE } from '../plans'
-import { aoCancelar, aoConfirmarPagamento, planoVigente } from '../assinatura'
+import { aoConfirmarPagamento, planoVigente } from '../assinatura'
 import { AsaasApi, AsaasErro, type Cartao, type MeioDePagamento, type Titular } from './asaas.api'
 import { fimDoPeriodoPorVencimento, marcaExterna } from './asaas'
 import { digitos, documentoValido } from './documento'
@@ -136,10 +136,26 @@ export function limparPedido(
   if (!plano) throw new BadRequestException('Plano inválido.')
   const meio = MEIOS.includes(b.meio) ? (b.meio as MeioDePagamento) : null
   if (!meio) throw new BadRequestException('Escolha a forma de pagamento.')
+  if (meio !== 'CREDIT_CARD') {
+    const cpfCnpj = documentoValido(b.cpfCnpj)
+    if (!cpfCnpj) throw new BadRequestException('Confira o CPF ou CNPJ: o número não é válido.')
+    return { plano, meio, cpfCnpj }
+  }
+  return { plano, meio, ...limparCartao(b, { agora, exigirLuhn }) }
+}
+
+/**
+ * Documento, cartão e endereço da fatura — a parte do pedido que também serve à
+ * troca de cartão e à troca de plano no cartão (ver minha-assinatura.service.ts).
+ * Mesmas regras, mesmas mensagens, em um lugar só.
+ */
+export function limparCartao(
+  bruto: unknown,
+  { agora = new Date(), exigirLuhn = true }: { agora?: Date; exigirLuhn?: boolean } = {},
+): Required<Pick<PedidoLimpo, 'cpfCnpj' | 'cartao' | 'titular'>> {
+  const b = (bruto && typeof bruto === 'object' ? bruto : {}) as Record<string, any>
   const cpfCnpj = documentoValido(b.cpfCnpj)
   if (!cpfCnpj) throw new BadRequestException('Confira o CPF ou CNPJ: o número não é válido.')
-
-  if (meio !== 'CREDIT_CARD') return { plano, meio, cpfCnpj }
 
   const c = (b.cartao && typeof b.cartao === 'object' ? b.cartao : {}) as Record<string, unknown>
   const numero = digitos(c.numero)
@@ -169,8 +185,6 @@ export function limparPedido(
   if (telefone.length < 10 || telefone.length > 11) throw new BadRequestException('Confira o telefone, com DDD.')
 
   return {
-    plano,
-    meio,
     cpfCnpj,
     cartao: { nomeImpresso, numero, mes: String(mes).padStart(2, '0'), ano: String(ano), cvv },
     titular: { cep, numeroEndereco, telefone },
@@ -233,8 +247,8 @@ export class CheckoutService {
     // ainda não passa por aqui. Criar uma segunda seria cobrar duas vezes.
     if (perfil.billingSubscriptionId && vigente !== 'free' && perfil.planStatus !== 'canceled') {
       throw new ConflictException(
-        'Você já tem uma assinatura ativa. Para mudar de plano ou de forma de pagamento, ' +
-          'cancele a atual em Conta — o plano continua valendo até o fim do mês pago — e assine de novo.',
+        'Você já tem uma assinatura ativa. Para mudar de plano, trocar o cartão ou cancelar, ' +
+          'use Minha assinatura.',
       )
     }
 
@@ -272,6 +286,12 @@ export class CheckoutService {
           })
         ).id
         await this.prisma.profile.update({ where: { id: perfil.id }, data: { billingCustomerId: customer } })
+        // Só e-mail: é por ele que o Pix e o boleto de cada mês chegam. SMS,
+        // WhatsApp e ligação têm tarifa e não combinam com a plataforma. Falhar
+        // aqui não pode derrubar a assinatura — fica o padrão do Asaas, e o log.
+        await this.asaas.notificacoesSoPorEmail(customer).catch((e) => {
+          this.log.warn(`notificações do cliente não ajustadas: ${e instanceof AsaasErro ? e.codigo : 'erro'}`)
+        })
       }
 
       // ---- 2. O que ficou de tentativas anteriores ---------------------------
@@ -400,50 +420,5 @@ export class CheckoutService {
         'Não foi possível falar com o provedor de pagamento agora. Tente de novo em instantes.',
       )
     }
-  }
-
-  /**
-   * Cancelamento pedido pela pessoa. Apaga a assinatura no Asaas (e as cobranças
-   * ainda não pagas) e aplica `aoCancelar`: quem pagou o mês tem o mês. O webhook
-   * SUBSCRIPTION_DELETED chega depois e regrava o mesmo estado.
-   */
-  async cancelar(userId: string): Promise<{ ok: true; valeAte: string | null }> {
-    if (!this.asaas.configurado) this.indisponivel()
-    const perfil = await this.prisma.profile.findUnique({
-      where: { userId },
-      select: {
-        id: true,
-        plan: true,
-        planStatus: true,
-        currentPeriodEnd: true,
-        graceUntil: true,
-        planScheduled: true,
-        billingSubscriptionId: true,
-      },
-    })
-    if (!perfil) throw new NotFoundException('Perfil não encontrado')
-    if (!perfil.billingSubscriptionId) throw new BadRequestException('Não há assinatura para cancelar.')
-
-    try {
-      await this.asaas.cancelarAssinatura(perfil.billingSubscriptionId)
-    } catch (e) {
-      if (e instanceof AsaasErro) {
-        throw new ServiceUnavailableException(
-          'Não foi possível cancelar agora. Nada mudou na sua assinatura; tente de novo em instantes.',
-        )
-      }
-      throw e
-    }
-
-    // Plano nunca pago (Pix ou boleto em aberto): não há mês a respeitar nem
-    // status a mudar. Some só o vínculo com a assinatura apagada.
-    if (perfil.plan === 'free') {
-      await this.prisma.profile.update({ where: { id: perfil.id }, data: { billingSubscriptionId: null } })
-      return { ok: true, valeAte: null }
-    }
-
-    const patch = aoCancelar(perfil as any)
-    await this.profiles.aplicarAssinaturaPorPerfil(perfil.id, patch, 'cancelamento pedido pela pessoa (Asaas)')
-    return { ok: true, valeAte: patch.currentPeriodEnd ? patch.currentPeriodEnd.toISOString() : null }
   }
 }

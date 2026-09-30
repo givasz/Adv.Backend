@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -21,6 +22,7 @@ import { aceiteVigente, TERMS_VERSION } from '../legal/termos'
 import { devoRegistrarEdicao, registrarAcesso } from '../security/access-log'
 import { avisarIndexNow } from '../seo/indexnow'
 import { CorreioService } from '../mail/correio.service'
+import { asaasConfigurado } from '../billing/asaas.api'
 import {
   AREA_LIMIT,
   canUseFaq,
@@ -1551,10 +1553,36 @@ export class ProfilesService {
         currentPeriodEnd: true,
         graceUntil: true,
         planScheduled: true,
+        billingSubscriptionId: true,
         user: { select: { emailVerifiedAt: true } },
       },
     })
     if (!current) throw new NotFoundException('Perfil não encontrado')
+
+    // ---- Com o pagamento on-line ligado, esta porta não cobra nada ----
+    //
+    // Esta rota nasceu quando assinar era clicar um botão e o plano abria de
+    // graça. Com o Asaas ligado, ela vira um atalho perigoso nos dois sentidos:
+    //
+    //  • SUBIR por aqui seria plano pago sem pagamento — qualquer pessoa logada
+    //    chamaria a rota direto e ganharia o Max. Quem abre plano é o pagamento
+    //    confirmado (webhook ou checkout).
+    //  • DESCER ou cancelar por aqui uma assinatura do Asaas mudaria o plano no
+    //    nosso banco e deixaria a cobrança correndo lá — a pessoa sairia do Max
+    //    e continuaria pagando por ele. Isso passa por MinhaAssinaturaService,
+    //    que fala com o Asaas antes.
+    //
+    // Sem o Asaas configurado, nada muda: a rota segue como sempre foi.
+    if (asaasConfigurado()) {
+      if (ehRebaixamento(next, planoVigente(current as any))) {
+        throw new ForbiddenException('O plano é ativado pelo pagamento. Assine pela página do plano.')
+      }
+      if (current.billingSubscriptionId && current.planStatus !== 'canceled') {
+        throw new ConflictException(
+          'Sua assinatura é cobrada pelo provedor de pagamento: troque de plano ou cancele em Minha assinatura.',
+        )
+      }
+    }
 
     // ---- Assinar pede o e-mail confirmado; publicar, não ----
     //

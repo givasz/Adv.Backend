@@ -253,9 +253,19 @@ export class BillingService {
       }
       case 'payment_failed':
         return aoFalharPagamento(perfil ?? {})
-      case 'subscription_canceled':
-        // O fim do período informado pelo provedor manda: é até quando ela pagou.
+      case 'subscription_canceled': {
+        // CANCELAMENTO QUE PARTIU DAQUI já gravou a data certa, e o aviso do
+        // provedor não a muda. É o caso do arrependimento: o valor é devolvido e o
+        // plano termina na hora (MinhaAssinaturaService.cancelar). O aviso de
+        // assinatura apagada chega segundos depois trazendo a data da próxima
+        // cobrança — e, sem esta regra, devolveria um mês a quem acabou de
+        // receber o dinheiro de volta.
+        if (perfil?.planStatus === 'canceled') return aoCancelar(perfil)
+        // Cancelamento que partiu do PROVEDOR (apagado no painel, ou ele desistiu
+        // de cobrar): o fim do período informado por ele manda — é até quando a
+        // pessoa pagou, mesmo que o aviso do último pagamento tenha se perdido.
         return aoCancelar({ ...perfil, currentPeriodEnd: fimValido ?? perfil?.currentPeriodEnd })
+      }
       case 'subscription_paused':
         return aoPausar()
       case 'subscription_resumed':

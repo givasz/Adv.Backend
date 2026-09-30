@@ -84,6 +84,7 @@ function montar(o: { perfil?: Qualquer; asaas?: Qualquer; correioAtivo?: boolean
     ]),
     pixQrCode: vi.fn(async () => ({ encodedImage: 'iVBORw0K', payload: '00020126...', expirationDate: '2026-09-30' })),
     cancelarAssinatura: vi.fn(async () => {}),
+    notificacoesSoPorEmail: vi.fn(async () => {}),
     ...o.asaas,
   }
   const correio = { ativo: o.correioAtivo ?? false }
@@ -151,6 +152,22 @@ describe('o preço é do servidor', () => {
     const { svc, asaas } = montar()
     await svc.assinar('u1', { ...CARTAO, valor: 1, value: 1, price: 1 }, '1.1.1.1')
     expect(asaas.criarAssinatura.mock.calls[0][0].valor).toBe(49)
+  })
+})
+
+describe('notificações do Asaas', () => {
+  it('cliente novo fica só com e-mail (SMS, WhatsApp e ligação têm tarifa)', async () => {
+    const { svc, asaas } = montar()
+    await svc.assinar('u1', PIX, '1.1.1.1')
+    expect(asaas.notificacoesSoPorEmail).toHaveBeenCalledWith('cus_1')
+  })
+
+  it('se o ajuste falhar, a assinatura segue — o padrão do Asaas fica, e o log avisa', async () => {
+    const { svc } = montar({
+      asaas: { notificacoesSoPorEmail: vi.fn(async () => { throw new AsaasErro(500, 'erro', '') }) },
+    })
+    const r = await svc.assinar('u1', PIX, '1.1.1.1')
+    expect(r.situacao).toBe('aguardando')
   })
 })
 
@@ -301,35 +318,5 @@ describe('tentativas anteriores', () => {
     expect(erro).toBeInstanceOf(ServiceUnavailableException)
     expect(erro.message).toContain('não é cobrado duas vezes')
     expect(erro.message).not.toMatch(/nada foi cobrado/i)
-  })
-})
-
-describe('cancelar', () => {
-  it('plano pago: apaga no Asaas e aplica o cancelamento — quem pagou o mês tem o mês', async () => {
-    const fim = new Date('2026-10-20T12:00:00.000Z')
-    const { svc, asaas, profiles } = montar({
-      perfil: { plan: 'premium', billingSubscriptionId: 'sub_1', currentPeriodEnd: fim },
-    })
-    const r = await svc.cancelar('u1')
-    expect(asaas.cancelarAssinatura).toHaveBeenCalledWith('sub_1')
-    const patch = (profiles.aplicarAssinaturaPorPerfil.mock.calls[0] as any[])[1]
-    expect(patch).toMatchObject({ planStatus: 'canceled' })
-    expect(r.valeAte).toBe(fim.toISOString())
-  })
-
-  it('plano nunca pago (Pix em aberto): só some o vínculo, o status não muda', async () => {
-    const { svc, profiles, escritas } = montar({ perfil: { billingSubscriptionId: 'sub_pix' } })
-    await svc.cancelar('u1')
-    expect(profiles.aplicarAssinaturaPorPerfil).not.toHaveBeenCalled()
-    expect(escritas).toEqual([{ billingSubscriptionId: null }])
-  })
-
-  it('falha no Asaas: diz que nada mudou, e nada muda', async () => {
-    const { svc, profiles } = montar({
-      perfil: { plan: 'pro', billingSubscriptionId: 'sub_1' },
-      asaas: { cancelarAssinatura: vi.fn(async () => { throw new AsaasErro(500, 'erro', '') }) },
-    })
-    await expect(svc.cancelar('u1')).rejects.toThrow('Nada mudou')
-    expect(profiles.aplicarAssinaturaPorPerfil).not.toHaveBeenCalled()
   })
 })

@@ -229,6 +229,27 @@ describe('o que cada evento faz', () => {
     expect(calls.assinatura[0].patch.currentPeriodEnd).toEqual(dias(9))
   })
 
+  it('cancelamento feito AQUI (com devolução) não é estendido pelo aviso do provedor', async () => {
+    // Arrependimento: o valor voltou e o plano terminou agora. O aviso de
+    // assinatura apagada chega depois com a data da próxima cobrança — que não
+    // pode devolver um mês a quem acabou de receber o dinheiro de volta.
+    const terminouAgora = new Date('2026-09-30T15:00:00.000Z')
+    const { svc, calls } = service({
+      perfil: {
+        id: 'p1',
+        plan: 'premium',
+        planStatus: 'canceled',
+        currentPeriodEnd: terminouAgora,
+        graceUntil: null,
+        planScheduled: null,
+        billingEventAt: null,
+      },
+    })
+    const { json, corpo } = evento({ type: 'subscription_canceled', currentPeriodEnd: dias(30).toISOString() })
+    await svc.processar(json, corpo)
+    expect(calls.assinatura[0].patch.currentPeriodEnd).toEqual(terminouAgora)
+  })
+
   it('a renovação REALIZA o rebaixamento que estava agendado', async () => {
     // A pessoa pediu para descer no fim do período; o período virou e é o plano
     // menor que está sendo cobrado agora. Sem isto, ela pagaria o menor e
