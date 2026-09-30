@@ -1,5 +1,24 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_THEME, LEGACY_THEME, THEME_TIER, resolveTheme } from './plans'
+import { DEFAULT_THEME, LEGACY_THEME, PLAN_PRICE, THEME_TIER, resolveTheme } from './plans'
+
+describe('preço cobrado — a vitrine e a fatura dizem o mesmo número', () => {
+  // O front mostra; o servidor cobra. Se divergirem, quem descobre é o cliente,
+  // na fatura do cartão — o pior lugar possível para descobrir qualquer coisa.
+  const front = readFileSync(join(__dirname, '..', '..', 'frontend', 'src', 'lib', 'plans.ts'), 'utf8')
+  const bloco = /export const PLAN_PRICE[^=]*=\s*\{([^}]*)\}/.exec(front)?.[1] ?? ''
+
+  it('o bloco de preços existe no front', () => {
+    expect(bloco).not.toBe('')
+  })
+
+  for (const [plano, preco] of Object.entries(PLAN_PRICE)) {
+    it(`${plano}: R$ ${preco} nos dois lados`, () => {
+      expect(new RegExp(`\\b${plano}:\\s*${preco}\\b`).test(bloco)).toBe(true)
+    })
+  }
+})
 
 describe('resolveTheme — o servidor decide o tema que fica gravado', () => {
   it('tema do plano fica; tema acima do plano cai para o neutro', () => {

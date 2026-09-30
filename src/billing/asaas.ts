@@ -195,9 +195,17 @@ function idDe(...valores: unknown[]): string | undefined {
  * daqui a seis horas.
  */
 function fimDoPeriodoDe(r: Record<string, unknown>): string | undefined {
-  const proximo = iso(r.nextDueDate)
-  if (proximo) return proximo
-  const vence = iso(r.dueDate)
+  return iso(r.nextDueDate) ?? fimDoPeriodoPorVencimento(r.dueDate)
+}
+
+/**
+ * Vencimento deste ciclo + 1 mês. Exportado porque o checkout, quando o cartão é
+ * confirmado na hora, ativa o plano sem esperar o webhook — e tem de gravar
+ * EXATAMENTE a data que o webhook gravaria logo depois. Duas contas para a mesma
+ * data é como elas começam a divergir.
+ */
+export function fimDoPeriodoPorVencimento(vencimento: unknown): string | undefined {
+  const vence = iso(vencimento)
   if (!vence) return undefined
   const d = new Date(vence)
   const dia = d.getUTCDate()
