@@ -151,7 +151,7 @@ export function marcaExterna(profileId: string, plano: Plan): string {
   return `advocme:${profileId}:${plano}`
 }
 
-function lerMarca(v: unknown): { profileId?: string; plan?: Plan } {
+export function lerMarca(v: unknown): { profileId?: string; plan?: Plan } {
   const s = texto(v, 200)
   if (!s) return {}
   const [prefixo, profileId, plano] = s.split(':')
