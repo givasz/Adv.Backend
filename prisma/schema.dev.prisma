@@ -743,6 +743,12 @@ model MeetingRequest {
   // tem isto NULO e nunca aparece para o escritório.
   firmId      String?
   firm        Firm?    @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  // O advogado que o VISITANTE pediu, quando pediu algum. É diferente de
+  // `profileId`: este é quem vai responder, aquele é o que foi escolhido na
+  // conversa. Quando o escritório centraliza o atendimento, a escolha não
+  // endereça o pedido — mas perdê-la seria jogar fora a única coisa que o
+  // visitante disse sobre com quem quer falar.
+  preferredLawyerId String?
   name        String
   whatsapp    String?
   email       String?
