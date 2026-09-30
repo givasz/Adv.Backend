@@ -86,6 +86,18 @@ function evento(campos: Qualquer) {
   return { corpo, json: JSON.parse(corpo), assinatura: assinar(corpo) }
 }
 
+describe('dono do evento', () => {
+  it('a referência nossa (o perfil) vem antes da assinatura, do cliente e do e-mail', async () => {
+    const { svc, prisma } = service()
+    const { json, corpo } = evento({ id: 'evt_ref', profileId: 'p1', email: 'alguem@exemplo.adv.br' })
+    await svc.processar(json, corpo)
+    // O e-mail é o elo fraco: com a referência presente, a primeira consulta já é
+    // pelo id do perfil, e o e-mail nem chega a ser olhado.
+    expect(prisma.profile.findFirst.mock.calls[0][0].where).toEqual({ id: 'p1' })
+    expect(prisma.profile.findFirst).toHaveBeenCalledTimes(1)
+  })
+})
+
 beforeEach(() => {
   process.env.BILLING_WEBHOOK_SECRET = SEGREDO
 })

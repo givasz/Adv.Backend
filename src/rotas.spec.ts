@@ -112,8 +112,8 @@ const PUBLICAS: Record<string, string> = {
     'o canal de quem a sanção impediu de entrar: confere e-mail e senha e NÃO abre sessão. Bloqueá-lo com login seria tirar o direito de contestar justamente de quem foi suspenso',
   'POST /billing/webhook':
     'quem chama é o servidor do provedor, sem cookie e sem navegador: a fronteira é a assinatura HMAC sobre o corpo cru, conferida antes de o corpo virar qualquer coisa',
-  'POST /billing/pagarme/:token':
-    'a porta da Pagar.me, que NÃO assina o corpo (no painel dela a autenticação do webhook é um campo opcional, não um HMAC do payload). A fronteira aqui é o segredo no caminho e/ou o Basic Auth, conferidos em tempo constante e antes de tudo — e sem nenhum dos dois configurado a rota recusa tudo',
+  'POST /billing/asaas':
+    'a porta do Asaas: quem chama é o servidor do provedor, sem cookie. A fronteira é o token que NÓS cadastramos no webhook, no cabeçalho asaas-access-token, conferido em tempo constante antes de tudo — e sem token configurado a rota recusa tudo. A lista de tokens aceitos também separa sandbox de produção (contas diferentes, tokens diferentes)',
 
   // --- Leitura pública: é o produto ------------------------------------------
   'GET /profiles/:slug':
