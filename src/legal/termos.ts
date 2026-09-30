@@ -15,7 +15,7 @@
 // registro que aponta para o vazio.
 
 /** Versão vigente — é a data da revisão. Espelha TERMS_VERSION do front. */
-export const TERMS_VERSION = '2026-09-19-1'
+export const TERMS_VERSION = '2026-09-29-1'
 
 /**
  * Quem opera a plataforma — espelha OPERADOR do front (frontend/src/lib/legalIdentity.ts).
@@ -26,8 +26,8 @@ export const TERMS_VERSION = '2026-09-19-1'
  * conferida em termos.spec.ts.
  */
 export const OPERADOR = {
-  razaoSocial: 'VEACCI SERVIÇOS DE T.I LTDA — ME',
-  cnpj: '43.563.547/0001-08',
+  razaoSocial: 'SELF CODING DESENVOLVIMENTO DE SOFTWARE SOB ENCOMENDA LTDA',
+  cnpj: '69.366.280/0001-52',
 } as const
 
 /**
