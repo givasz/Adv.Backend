@@ -43,6 +43,66 @@ export const PROVEDOR = 'asaas'
 /** Cabeçalho onde o Asaas manda o token que nós cadastramos no webhook. */
 export const CABECALHO_TOKEN = 'asaas-access-token'
 
+export function tokensDeWebhookValidos(env: NodeJS.ProcessEnv = process.env): string[] {
+  const tokens = (env.ASAAS_WEBHOOK_TOKEN ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (!tokens.length || tokens.some((token) => token.length < 32 || token.length > 255)) return []
+  const apiKey = (env.ASAAS_API_KEY ?? '').trim()
+  if (apiKey && tokens.includes(apiKey)) return []
+  return tokens
+}
+
+const CAMPOS_SENSIVEIS = new Set(
+  [
+    'accessToken',
+    'address',
+    'addressNumber',
+    'authorization',
+    'ccv',
+    'city',
+    'complement',
+    'creditCardHolderInfo',
+    'creditcardnumber',
+    'creditcardtoken',
+    'cpfcnpj',
+    'cvv',
+    'email',
+    'expirymonth',
+    'expiryyear',
+    'holderName',
+    'mobilephone',
+    'name',
+    'number',
+    'phone',
+    'postalcode',
+    'province',
+  ].map((campo) => campo.toLowerCase().replace(/[^a-z0-9]/g, '')),
+)
+
+/**
+ * O webhook do Asaas pode trazer `creditCardToken` e dados do titular. Eles nao
+ * sao necessarios para conciliacao e nunca devem entrar no registro de auditoria.
+ */
+export function payloadSeguroParaAuditoria(raw: unknown): string {
+  const limpar = (valor: unknown, profundidade: number): unknown => {
+    if (profundidade > 12) return '[TRUNCADO]'
+    if (Array.isArray(valor)) return valor.slice(0, 100).map((item) => limpar(item, profundidade + 1))
+    if (!valor || typeof valor !== 'object') {
+      return typeof valor === 'string' ? valor.slice(0, 2_000) : valor
+    }
+    const seguro: Record<string, unknown> = {}
+    for (const [chave, conteudo] of Object.entries(valor as Record<string, unknown>).slice(0, 200)) {
+      const normalizada = chave.toLowerCase().replace(/[^a-z0-9]/g, '')
+      seguro[chave] = CAMPOS_SENSIVEIS.has(normalizada) ? '[REMOVIDO]' : limpar(conteudo, profundidade + 1)
+    }
+    return seguro
+  }
+
+  return JSON.stringify(limpar(raw, 0))
+}
+
 /**
  * O que cada evento do Asaas significa para a assinatura.
  *
@@ -67,8 +127,8 @@ export const CABECALHO_TOKEN = 'asaas-access-token'
  * `eventId` barra o mesmo evento repetido — o Asaas entrega "pelo menos uma vez",
  * então repetição é rotina, não exceção.
  *
- * `PAYMENT_REFUNDED` e chargeback ficam de fora por escolha: estorno é conversa,
- * não automação. Fica registrado (ver `registrarBruto`) e alguém olha.
+ * Estorno e chargeback revogam o acesso imediatamente: o período que havia sido
+ * concedido por aquele dinheiro não continua válido depois da reversão.
  */
 const MAPA: Record<string, TipoDeEvento> = {
   PAYMENT_CONFIRMED: 'payment_succeeded',
@@ -76,6 +136,10 @@ const MAPA: Record<string, TipoDeEvento> = {
   // Vencido é o nosso "falhou": abre a carência de 7 dias e NÃO tira nada do ar.
   // É o estado em que o Asaas ainda cobra e em que nós avisamos.
   PAYMENT_OVERDUE: 'payment_failed',
+  PAYMENT_CREDIT_CARD_CAPTURE_REFUSED: 'payment_failed',
+  PAYMENT_REPROVED_BY_RISK_ANALYSIS: 'payment_failed',
+  PAYMENT_REFUNDED: 'payment_reversed',
+  PAYMENT_CHARGEBACK_REQUESTED: 'payment_reversed',
   SUBSCRIPTION_DELETED: 'subscription_canceled',
   SUBSCRIPTION_INACTIVATED: 'subscription_canceled',
 }
@@ -98,6 +162,11 @@ function texto(v: unknown, max = 200): string | undefined {
 
 function objeto(v: unknown): Record<string, unknown> {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+}
+
+function numero(v: unknown): number | undefined {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : Number.NaN
+  return Number.isFinite(n) && n >= 0 ? n : undefined
 }
 
 /**
@@ -125,7 +194,7 @@ export function lerEnvelope(raw: unknown): EnvelopeAsaas {
     id,
     event,
     // Sem data válida no topo, vale a chegada. Perde-se a ordenação fina entre
-    // eventos, mas o evento não é jogado fora — e o payload cru fica guardado.
+    // eventos, mas o evento não é jogado fora — e o payload saneado fica guardado.
     occurredAt: iso(corpo.dateCreated) ?? new Date().toISOString(),
     // Cobrança e assinatura chegam em chaves diferentes conforme o evento.
     recurso: { ...objeto(corpo.subscription), ...objeto(corpo.payment) },
@@ -247,6 +316,7 @@ export function traduzir(env: EnvelopeAsaas): EventoDeCobranca | null {
     customerId: idDe(r.customer),
     subscriptionId: idDe(r.subscription, texto(r.object) === 'subscription' ? r.id : undefined),
     plan: marca.plan,
+    amount: numero(r.value),
     currentPeriodEnd: fimDoPeriodoDe(r),
     reason: motivoDe(r),
   }
@@ -272,10 +342,7 @@ function igual(a: string, b: string): boolean {
  * Sem token configurado, recusa tudo. Fail closed.
  */
 export function conferirEntrada(recebido: string | undefined): void {
-  const aceitos = (process.env.ASAAS_WEBHOOK_TOKEN ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
+  const aceitos = tokensDeWebhookValidos()
   if (!aceitos.length) throw new UnauthorizedException('Cobrança não configurada neste ambiente.')
   const token = (recebido ?? '').trim()
   // `some` com comparação de tempo constante em cada item: a lista tem dois

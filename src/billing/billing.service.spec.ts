@@ -26,10 +26,15 @@ interface Opcoes {
   perfil?: Qualquer | null
   /** ids de evento já registrados (a chave única do banco recusa repetidos) */
   jaVistos?: string[]
+  falharAplicacaoUmaVez?: boolean
+  erroAoCriarEvento?: Error
+  eventoPendente?: boolean
+  eventoPendenteDesde?: Date
 }
 
 function service(o: Opcoes = {}) {
   const vistos = new Set(o.jaVistos ?? [])
+  let eventoPendente = o.eventoPendente === true
   const calls: Qualquer = { assinatura: [], eventos: [], profileUpdate: [] }
   const perfil =
     o.perfil === undefined
@@ -49,26 +54,50 @@ function service(o: Opcoes = {}) {
   const prisma: Qualquer = {
     billingEvent: {
       create: vi.fn((a: Qualquer) => {
+        if (o.erroAoCriarEvento) return Promise.reject(o.erroAoCriarEvento)
         const id = a.data.eventId
-        if (vistos.has(id)) return Promise.reject(new Error('unique constraint'))
+        if (eventoPendente) return Promise.reject(Object.assign(new Error('unique constraint'), { code: 'P2002' }))
+        if (vistos.has(id)) return Promise.reject(Object.assign(new Error('unique constraint'), { code: 'P2002' }))
         vistos.add(id)
         calls.eventos.push(a.data)
         return Promise.resolve({ id: `be-${id}` })
       }),
       update: vi.fn((a: Qualquer) => (calls.eventos.push(a.data), Promise.resolve({}))),
+      delete: vi.fn((a: Qualquer) => {
+        const id = String(a.where.id).replace(/^be-/, '')
+        vistos.delete(id)
+        return Promise.resolve({})
+      }),
+      deleteMany: vi.fn(() => {
+        eventoPendente = false
+        return Promise.resolve({ count: 1 })
+      }),
+      findUnique: vi.fn(async () =>
+        eventoPendente
+          ? { applied: false, note: '', createdAt: o.eventoPendenteDesde ?? new Date() }
+          : (o.erroAoCriarEvento as Qualquer | undefined)?.code === 'P2002'
+            ? null
+            : { applied: true, note: 'aplicado', createdAt: new Date() },
+      ),
     },
     profile: {
       findFirst: vi.fn(() => Promise.resolve(perfil)),
       update: vi.fn((a: Qualquer) => (calls.profileUpdate.push(a.data), Promise.resolve({}))),
     },
   }
+  let falharAplicacao = o.falharAplicacaoUmaVez === true
   const profiles: Qualquer = {
     aplicarAssinaturaPorPerfil: vi.fn((profileId: string, patch: Qualquer, motivo: string) => {
+      if (falharAplicacao) {
+        falharAplicacao = false
+        return Promise.reject(new Error('falha transitória ao aplicar'))
+      }
       calls.assinatura.push({ profileId, patch, motivo })
       return Promise.resolve({})
     }),
   }
-  return { svc: new BillingService(prisma as any, profiles as any), calls, prisma, profiles }
+  const lock = { comPerfil: vi.fn(async (_id: string, acao: () => Promise<unknown>) => acao()) }
+  return { svc: new BillingService(prisma as any, profiles as any, lock as any), calls, prisma, profiles }
 }
 
 /** Monta corpo + assinatura como o provedor mandaria. */
@@ -94,7 +123,8 @@ describe('dono do evento', () => {
     // O e-mail é o elo fraco: com a referência presente, a primeira consulta já é
     // pelo id do perfil, e o e-mail nem chega a ser olhado.
     expect(prisma.profile.findFirst.mock.calls[0][0].where).toEqual({ id: 'p1' })
-    expect(prisma.profile.findFirst).toHaveBeenCalledTimes(1)
+    expect(prisma.profile.findFirst).toHaveBeenCalledTimes(2)
+    expect(prisma.profile.findFirst.mock.calls[1][0].where).toEqual({ id: 'p1' })
   })
 })
 
@@ -165,6 +195,50 @@ describe('idempotência e ordem', () => {
     expect(calls.assinatura).toHaveLength(0)
   })
 
+  it('erro de banco ao registrar não é escondido como evento repetido', async () => {
+    const { svc } = service({ erroAoCriarEvento: new Error('banco indisponível') })
+    const { json, corpo } = evento({})
+
+    await expect(svc.processar(json, corpo)).rejects.toThrow('banco indisponível')
+  })
+
+  it('P2002 de outra chave não é confundido com eventId repetido', async () => {
+    const erro = Object.assign(new Error('outra chave única'), { code: 'P2002' })
+    const { svc } = service({ erroAoCriarEvento: erro })
+    const { json, corpo } = evento({})
+
+    await expect(svc.processar(json, corpo)).rejects.toThrow('outra chave única')
+  })
+
+  it('entrega concorrente não confirma como concluído um evento que ainda está processando', async () => {
+    const { svc } = service({ eventoPendente: true })
+    const { json, corpo } = evento({})
+
+    await expect(svc.processar(json, corpo)).rejects.toThrow(/processamento/i)
+  })
+
+  it('libera evento abandonado por processo interrompido para a próxima retentativa', async () => {
+    const { svc } = service({
+      eventoPendente: true,
+      eventoPendenteDesde: new Date(Date.now() - 11 * 60 * 1000),
+    })
+    const { json, corpo } = evento({})
+
+    await expect(svc.processar(json, corpo)).rejects.toThrow(/retentativa/i)
+    await expect(svc.processar(json, corpo)).resolves.toMatchObject({ applied: true })
+  })
+
+  it('falha transitória não consome o evento: a repetição consegue aplicá-lo', async () => {
+    const { svc, calls } = service({ falharAplicacaoUmaVez: true })
+    const { json, corpo } = evento({})
+
+    await expect(svc.processar(json, corpo)).rejects.toThrow('falha transitória')
+    const repeticao = await svc.processar(json, corpo)
+
+    expect(repeticao.applied).toBe(true)
+    expect(calls.assinatura).toHaveLength(1)
+  })
+
   it('evento mais antigo que o último aplicado é registrado e ignorado', async () => {
     // O caso caro: o "falhou" de ontem chegando depois do "pagou" de hoje.
     const { svc, calls } = service({
@@ -184,6 +258,57 @@ describe('idempotência e ordem', () => {
     const r = await svc.processar(json, corpo)
     expect(r.applied).toBe(false)
     expect(r.reason).toMatch(/fora de ordem/i)
+    expect(calls.assinatura).toHaveLength(0)
+  })
+
+  it('evento de assinatura antiga não altera a assinatura atual do perfil', async () => {
+    const { svc, calls } = service({
+      perfil: {
+        id: 'p1',
+        plan: 'premium',
+        planStatus: 'active',
+        currentPeriodEnd: dias(30),
+        billingEventAt: null,
+        billingCustomerId: 'cus_1',
+        billingSubscriptionId: 'sub_atual',
+      },
+    })
+    const { json, corpo } = evento({
+      id: 'evt_sub_antiga',
+      type: 'subscription_canceled',
+      profileId: 'p1',
+      subscriptionId: 'sub_antiga',
+    })
+
+    const r = await svc.processar(json, corpo)
+
+    expect(r).toMatchObject({ applied: false })
+    expect(r.reason).toMatch(/assinatura diferente/i)
+    expect(calls.assinatura).toHaveLength(0)
+  })
+
+  it('evento de outro cliente não é aceito só porque cita o id do perfil', async () => {
+    const { svc, calls } = service({
+      perfil: {
+        id: 'p1',
+        plan: 'premium',
+        planStatus: 'active',
+        billingEventAt: null,
+        billingCustomerId: 'cus_atual',
+        billingSubscriptionId: null,
+      },
+    })
+    const { json, corpo } = evento({
+      id: 'evt_cliente_antigo',
+      profileId: 'p1',
+      subscriptionId: undefined,
+      customerId: 'cus_antigo',
+    })
+
+    const r = await svc.processar(json, corpo)
+
+    expect(r.applied).toBe(false)
+    expect(r.reason).toMatch(/cliente diferente/i)
     expect(calls.assinatura).toHaveLength(0)
   })
 
@@ -213,12 +338,37 @@ describe('o que cada evento faz', () => {
     expect(calls.assinatura[0].patch).toMatchObject({ planStatus: 'active', graceUntil: null })
   })
 
+  it('pagamento do Asaas com valor diferente do plano não libera acesso', async () => {
+    const { svc, calls } = service()
+    const { json, corpo } = evento({ provider: 'asaas', plan: 'premium', amount: 1 })
+
+    const r = await svc.processar(json, corpo)
+
+    expect(r.applied).toBe(false)
+    expect(r.reason).toMatch(/valor divergente/i)
+    expect(calls.assinatura).toHaveLength(0)
+  })
+
   it('pagamento falhado abre carência SEM rebaixar', async () => {
     const { svc, calls } = service()
     const { json, corpo } = evento({ type: 'payment_failed' })
     await svc.processar(json, corpo)
     expect(calls.assinatura[0].patch.planStatus).toBe('past_due')
     expect(calls.assinatura[0].patch.plan).toBeUndefined()
+  })
+
+  it('estorno integral encerra imediatamente o período que o pagamento tinha aberto', async () => {
+    const { svc, calls } = service()
+    const { json, corpo } = evento({ type: 'payment_reversed' })
+
+    await svc.processar(json, corpo)
+
+    expect(calls.assinatura[0].patch).toMatchObject({
+      planStatus: 'canceled',
+      graceUntil: null,
+      planScheduled: null,
+    })
+    expect(calls.assinatura[0].patch.currentPeriodEnd).toEqual(HOJE)
   })
 
   it('cancelamento respeita o mês já pago', async () => {
@@ -273,7 +423,30 @@ describe('o que cada evento faz', () => {
     })
   })
 
-  it('não sobrescreve identificador já gravado', async () => {
+  it('cancelamento atrasado não religa no perfil uma assinatura já apagada', async () => {
+    const { svc, calls } = service({
+      perfil: {
+        id: 'p1',
+        plan: 'free',
+        planStatus: 'active',
+        billingCustomerId: 'cus_9',
+        billingSubscriptionId: null,
+        billingEventAt: null,
+      },
+    })
+    const { json, corpo } = evento({
+      id: 'evt_cancelada',
+      type: 'subscription_canceled',
+      customerId: 'cus_9',
+      subscriptionId: 'sub_apagada',
+    })
+
+    await svc.processar(json, corpo)
+
+    expect(calls.profileUpdate[0]).not.toHaveProperty('billingSubscriptionId')
+  })
+
+  it('não aceita nem sobrescreve identificador de outra assinatura', async () => {
     const { svc, calls } = service({
       perfil: {
         id: 'p1',
@@ -284,9 +457,9 @@ describe('o que cada evento faz', () => {
       },
     })
     const { json, corpo } = evento({ customerId: 'cus_outro', subscriptionId: 'sub_outro' })
-    await svc.processar(json, corpo)
-    expect(calls.profileUpdate[0]).not.toHaveProperty('billingCustomerId')
-    expect(calls.profileUpdate[0]).not.toHaveProperty('billingSubscriptionId')
+    const r = await svc.processar(json, corpo)
+    expect(r.applied).toBe(false)
+    expect(calls.profileUpdate).toHaveLength(0)
   })
 
   it('pausar e retomar não mexem no plano contratado', async () => {

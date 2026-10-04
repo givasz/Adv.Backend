@@ -3,10 +3,8 @@
 // X-Forwarded-For é um cabeçalho que QUALQUER pessoa pode escrever. Confiar nele
 // sem estar atrás de um proxy que o reescreve significa que trocar o cabeçalho a
 // cada requisição zera todo limite de tentativas (login, denúncia, IA). Por isso
-// ele só vale quando TRUST_PROXY estiver ligado — aí sim há um proxy (Nginx da
-// VPS, Render) garantindo que o primeiro valor da lista é real.
-
-const TRUST_PROXY = process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY === 'true'
+// ele nunca é lido diretamente aqui. O Express resolve `req.ip` usando exatamente
+// um salto confiável configurado em main.ts; valores extras do cliente ficam fora.
 
 /**
  * IP do cliente.
@@ -25,9 +23,6 @@ const TRUST_PROXY = process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY =
  * cumpre obrigação nenhuma.
  */
 export function clientIp(ip?: string, forwardedFor?: string): string {
-  if (TRUST_PROXY) {
-    const first = forwardedFor?.split(',')[0]?.trim()
-    if (first) return first.slice(0, 60)
-  }
+  void forwardedFor
   return (ip ?? '').slice(0, 60) || 'sem-ip'
 }

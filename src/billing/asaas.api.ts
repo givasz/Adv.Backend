@@ -21,6 +21,7 @@
 // disponível, e nada sai daqui.
 
 import { Injectable, Logger } from '@nestjs/common'
+import { tokensDeWebhookValidos } from './asaas'
 
 export type MeioDePagamento = 'CREDIT_CARD' | 'PIX' | 'BOLETO'
 
@@ -30,13 +31,11 @@ const BASE: Record<string, string> = {
 }
 
 /**
- * Teto por chamada. O checkout passa pelo proxy do Netlify, que corta em 26 s, e
- * um checkout faz até quatro chamadas em sequência (cliente, assinatura,
- * cobranças, QR Code). Doze segundos por chamada é folga para a autorização do
- * cartão e ainda deixa o erro chegar ao advogado como mensagem nossa, e não como
- * uma página de erro do proxy.
+ * O Asaas exige no mínimo 60 s nas operações com cartão para reduzir criação
+ * duplicada quando a autorização demora. O navegador pode perder a resposta antes,
+ * mas o backend termina a chamada e a próxima tentativa adota a assinatura criada.
  */
-const TETO_MS = 12_000
+export const ASAAS_TIMEOUT_MS = 65_000
 
 /** Erro vindo do Asaas (ou da rede até ele). A mensagem nunca contém o que foi enviado. */
 export class AsaasErro extends Error {
@@ -92,7 +91,11 @@ export interface CobrancaAsaas {
 /** Há chave e ambiente do Asaas neste servidor? Função pura — lida por quem não injeta a AsaasApi. */
 export function asaasConfigurado(): boolean {
   const ambiente = (process.env.ASAAS_AMBIENTE ?? '').trim()
-  return !!(process.env.ASAAS_API_KEY ?? '').trim() && (ambiente === 'sandbox' || ambiente === 'producao')
+  return (
+    !!(process.env.ASAAS_API_KEY ?? '').trim() &&
+    tokensDeWebhookValidos().length > 0 &&
+    (ambiente === 'sandbox' || ambiente === 'producao')
+  )
 }
 
 export interface PixAsaas {
@@ -127,7 +130,7 @@ export class AsaasApi {
   private async chamar<T>(metodo: string, caminho: string, corpo?: unknown): Promise<T> {
     if (!this.configurado) throw new AsaasErro(0, 'nao_configurado', 'Pagamento on-line indisponível.')
     const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), TETO_MS)
+    const timer = setTimeout(() => ctrl.abort(), ASAAS_TIMEOUT_MS)
     let resposta: Response
     try {
       resposta = await fetch(this.base + caminho, {
@@ -224,7 +227,7 @@ export class AsaasApi {
   /**
    * As assinaturas vivas de um cliente.
    *
-   * Existe por causa do tempo esgotado: se a criação da assinatura passa dos 12 s,
+   * Existe por causa do tempo esgotado: se a criação da assinatura passa dos 65 s,
    * nós desistimos de esperar — mas o Asaas pode ter criado a assinatura e cobrado
    * o cartão do lado dele. Sem esta consulta, a segunda tentativa do advogado
    * criaria outra, e cobraria de novo. Ver `CheckoutService.assinar`.

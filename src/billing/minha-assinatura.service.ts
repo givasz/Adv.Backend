@@ -236,6 +236,15 @@ export class MinhaAssinaturaService {
     const perfil = await this.perfilDe(userId)
     const id = perfil.billingSubscriptionId
     if (!id) throw new BadRequestException('Não há assinatura para cancelar.')
+    if (perfil.planStatus === 'canceled') {
+      const fim = perfil.currentPeriodEnd ? new Date(perfil.currentPeriodEnd) : null
+      return {
+        ok: true,
+        valeAte: fim && fim.getTime() > agora.getTime() ? fim.toISOString() : null,
+        devolucao: null,
+        valorDevolvido: 0,
+      }
+    }
 
     // As cobranças são lidas ANTES de apagar: é delas que sai o direito de
     // arrependimento. Se o Asaas não responder, não se decide nada — mais vale
@@ -378,8 +387,28 @@ export class MinhaAssinaturaService {
           },
           remoteIp,
         })
-        await this.asaas.cancelarAssinatura(id)
-        await this.prisma.profile.update({ where: { id: perfil.id }, data: { billingSubscriptionId: nova.id } })
+        try {
+          await this.asaas.cancelarAssinatura(id)
+        } catch (erroAoCancelarAntiga) {
+          // A nova ainda não virou a assinatura local. Se a antiga segue viva,
+          // apagar a substituta é a compensação que impede duas recorrências.
+          await this.asaas.cancelarAssinatura(nova.id).catch((erroDaCompensacao) => {
+            this.log.error(
+              `falha ao desfazer assinatura substituta ${nova.id}: ${
+                erroDaCompensacao instanceof AsaasErro ? erroDaCompensacao.codigo : 'erro'
+              }`,
+            )
+          })
+          throw erroAoCancelarAntiga
+        }
+        try {
+          await this.prisma.profile.update({ where: { id: perfil.id }, data: { billingSubscriptionId: nova.id } })
+        } catch (erroDoBanco) {
+          // Sem conseguir guardar o novo id, ele viraria uma cobrança órfã. A
+          // assinatura antiga já foi apagada; a pessoa pode refazer a troca.
+          await this.asaas.cancelarAssinatura(nova.id).catch(() => undefined)
+          throw erroDoBanco
+        }
       } catch (e2) {
         this.falhaDoAsaas(e2, 'Não foi possível trocar de plano agora. Nada mudou; tente de novo.')
       }

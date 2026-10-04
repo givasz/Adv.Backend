@@ -120,6 +120,17 @@ describe('resumo', () => {
 })
 
 describe('cancelar', () => {
+  it('repetir um cancelamento concluído não tenta estornar a mesma cobrança outra vez', async () => {
+    const { svc, asaas, profiles } = montar({ perfil: { planStatus: 'canceled' } })
+
+    const r = await svc.cancelar('u1')
+
+    expect(r.ok).toBe(true)
+    expect(asaas.estornar).not.toHaveBeenCalled()
+    expect(asaas.cancelarAssinatura).not.toHaveBeenCalled()
+    expect(profiles.aplicarAssinaturaPorPerfil).not.toHaveBeenCalled()
+  })
+
   it('no prazo: APAGA primeiro, devolve depois, e o plano termina agora', async () => {
     const { svc, profiles, ordem } = montar()
     const r = await svc.cancelar('u1')
@@ -239,6 +250,35 @@ describe('trocar de plano', () => {
     expect(escritas).toContainEqual({ billingSubscriptionId: 'sub_nova' })
     // e nada do cartão foi para o banco
     expect(JSON.stringify(escritas)).not.toMatch(/4444444444444444|987|52998224725/)
+  })
+
+  it('se a assinatura antiga não puder ser cancelada, desfaz a nova para não cobrar duas vezes', async () => {
+    const cancelar = vi.fn(async (id: string) => {
+      if (id === 'sub_1') throw new AsaasErro(500, 'erro', '')
+    })
+    const { svc } = montar({
+      perfil: { plan: 'pro' },
+      asaas: {
+        atualizarAssinatura: vi.fn(async () => {
+          throw new AsaasErro(400, 'invalid_action', 'Tokenização não habilitada')
+        }),
+        cancelarAssinatura: cancelar,
+      },
+    })
+
+    await expect(
+      svc.trocarPlano(
+        'u1',
+        {
+          plano: 'premium',
+          cpfCnpj: '529.982.247-25',
+          cartao: { numero: '4444 4444 4444 4444', nomeImpresso: 'MARINA SALES', mes: '12', ano: '30', cvv: '987' },
+          titular: { cep: '80420-210', numeroEndereco: '1488', telefone: '41999999999' },
+        },
+        '200.1.2.3',
+      ),
+    ).rejects.toThrow()
+    expect(cancelar.mock.calls.map((c) => c[0])).toEqual(['sub_1', 'sub_nova'])
   })
 
   it('sem assinatura ativa: conflito, para a tela mandar ao checkout', async () => {

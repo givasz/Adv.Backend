@@ -631,6 +631,11 @@ model Profile {
   // quem acabou de pagar.
   billingEventId        String?
   billingEventAt        DateTime?
+  // Mutex distribuído das operações financeiras. Impede checkout, cancelamento
+  // e webhook concorrentes de criarem cobrança dupla ou gravarem estado antigo.
+  // Trava abandonada por queda do processo expira em src/billing/billing-lock.ts.
+  billingOperationId    String?
+  billingOperationAt    DateTime?
   theme                 String           @default("papel") // ThemeId — ver frontend/src/lib/themes.ts
   // LEGADO, inerte. Nada lê e nada escreve — e nada nunca escreveu: a coluna
   // existia desde o começo e NENHUMA linha do código a incrementava, então a tela
@@ -877,9 +882,9 @@ model AuditLog {
 //  3. DEPURAÇÃO. Evento que não casou com nenhum perfil fica aqui com
 //     `profileId` nulo, em vez de sumir num log que roda.
 //
-// O `payload` guarda o corpo cru recebido. Ele NÃO tem dado de cartão — provedor
-// sério não manda número de cartão em webhook — mas pode ter e-mail, então
-// entra no mesmo prazo de guarda da auditoria (ver retencao.service.ts).
+// O `payload` guarda uma cópia limitada e saneada. O Asaas pode mandar token de
+// cartão e dados do titular no webhook; esses campos são removidos ANTES da
+// persistência. O restante ainda entra no prazo da auditoria (retencao.service.ts).
 model BillingEvent {
   id         String   @id @default(cuid())
   // Id do evento NO PROVEDOR. É esta coluna que faz a idempotência valer.

@@ -5,6 +5,7 @@ import { CHECKOUT_RATE_RULES, enforceRateLimit } from '../security/rate-limit'
 import { clientIp } from '../security/net'
 import { CheckoutService } from './checkout.service'
 import { MinhaAssinaturaService } from './minha-assinatura.service'
+import { BillingLockService } from './billing-lock'
 
 /**
  * As rotas da assinatura paga — assinar, ver, trocar de plano, trocar o cartão e
@@ -21,6 +22,7 @@ export class CheckoutController {
     private readonly checkout: CheckoutService,
     private readonly assinatura: MinhaAssinaturaService,
     private readonly sessions: SessionService,
+    private readonly lock: BillingLockService,
   ) {}
 
   /**
@@ -52,7 +54,7 @@ export class CheckoutController {
     this.tetoDeCartao(userId, origem)
     // O IP vai ao Asaas porque ele exige o do CLIENTE na cobrança por cartão
     // (antifraude). Não é gravado aqui.
-    return this.checkout.assinar(userId, body, origem)
+    return this.lock.comUsuario(userId, () => this.checkout.assinar(userId, body, origem))
   }
 
   /** GET /api/billing/assinatura — o que a tela "Minha assinatura" mostra. */
@@ -67,7 +69,7 @@ export class CheckoutController {
   @HttpCode(200)
   async cancelar(@Req() req: RequisicaoComAuth) {
     const userId = await this.sessions.requireUser(req, 'Entre na sua conta para cancelar.')
-    return this.assinatura.cancelar(userId)
+    return this.lock.comUsuario(userId, () => this.assinatura.cancelar(userId))
   }
 
   /** POST /api/billing/trocar-plano — sobe na hora, desce no fim do mês pago, Free cancela. */
@@ -83,7 +85,7 @@ export class CheckoutController {
     const origem = clientIp(ip, xff)
     // Só conta como tentativa de cartão quando HÁ cartão no pedido.
     if (body && typeof body === 'object' && 'cartao' in body) this.tetoDeCartao(userId, origem)
-    return this.assinatura.trocarPlano(userId, body, origem)
+    return this.lock.comUsuario(userId, () => this.assinatura.trocarPlano(userId, body, origem))
   }
 
   /** POST /api/billing/cartao — troca o cartão da assinatura. */
@@ -98,6 +100,6 @@ export class CheckoutController {
     const userId = await this.sessions.requireUser(req, 'Entre na sua conta para trocar o cartão.')
     const origem = clientIp(ip, xff)
     this.tetoDeCartao(userId, origem)
-    return this.assinatura.trocarCartao(userId, body, origem)
+    return this.lock.comUsuario(userId, () => this.assinatura.trocarCartao(userId, body, origem))
   }
 }

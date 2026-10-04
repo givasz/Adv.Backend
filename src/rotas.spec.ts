@@ -126,9 +126,6 @@ const PUBLICAS: Record<string, string> = {
   // (A02 — remover o que não se usa; a decisão estava documentada em SEGURANCA.md).
   'GET /sitemap': 'só slug e data, para o /sitemap.xml da borda; mesma regra de visibilidade',
   'GET /health': 'sonda de disponibilidade; não lê banco nem devolve dado de ninguém',
-  'GET /contratos/conferir':
-    'quem confere um contrato é o cliente, a outra parte ou um juiz — gente sem conta. Recebe só impressões digitais (o arquivo não sobe) e devolve só o que o próprio PDF já traz impresso: código, modelo, data e o nome informado. Sem IP, sem conta; teto por IP',
-
   // --- Escrita pública, deliberadamente --------------------------------------
   'POST /profiles/:slug/evento':
     'quem toca no botão do perfil é o visitante, que não tem conta nem deve ter. Responde 204 sempre — inclusive quando recusa — para não virar oráculo de quais slugs existem. O IP é só chave de limite e não é gravado',

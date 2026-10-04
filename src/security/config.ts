@@ -75,6 +75,26 @@ export function assertSecureConfig(warn: (msg: string) => void = console.warn): 
     problemas.push('FRONTEND_ORIGIN ausente — o CORS cairia no localhost de desenvolvimento.')
   }
 
+  const asaasApi = (process.env.ASAAS_API_KEY ?? '').trim()
+  const asaasAmbiente = (process.env.ASAAS_AMBIENTE ?? '').trim()
+  const asaasTokens = (process.env.ASAAS_WEBHOOK_TOKEN ?? '')
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean)
+  const asaasParcial = !!asaasApi || !!asaasAmbiente || asaasTokens.length > 0
+  if (asaasParcial) {
+    if (!asaasApi) problemas.push('ASAAS_API_KEY ausente — a configuração de cobrança está incompleta.')
+    if (asaasAmbiente !== 'sandbox' && asaasAmbiente !== 'producao') {
+      problemas.push('ASAAS_AMBIENTE precisa ser exatamente "sandbox" ou "producao".')
+    }
+    if (!asaasTokens.length || asaasTokens.some((token) => token.length < 32 || token.length > 255)) {
+      problemas.push('ASAAS_WEBHOOK_TOKEN ausente ou fora do intervalo de 32 a 255 caracteres.')
+    }
+    if (asaasApi && asaasTokens.includes(asaasApi)) {
+      problemas.push('ASAAS_WEBHOOK_TOKEN não pode reutilizar a ASAAS_API_KEY.')
+    }
+  }
+
   if (!problemas.length) return
 
   const texto = problemas.map((p) => `  • ${p}`).join('\n')

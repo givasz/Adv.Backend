@@ -66,6 +66,22 @@ describe('assertSecureConfig em produção', () => {
     expect(() => assertSecureConfig()).not.toThrow()
   })
 
+  it('derruba o boot quando a cobrança pode sair sem webhook seguro para conciliá-la', async () => {
+    const { assertSecureConfig } = await carregar({
+      NODE_ENV: 'production',
+      AUTH_SESSION_SECRET: FORTE,
+      ADMIN_SESSION_SECRET: `${FORTE}x`,
+      ADMIN_PASSWORD: 'uma-senha-bem-longa-aqui',
+      ADMIN_TOKEN: undefined,
+      FRONTEND_ORIGIN: 'https://advoc.me',
+      ASAAS_API_KEY: '$aact_producao',
+      ASAAS_AMBIENTE: 'producao',
+      ASAAS_WEBHOOK_TOKEN: undefined,
+    })
+
+    expect(() => assertSecureConfig()).toThrow(/ASAAS_WEBHOOK_TOKEN/)
+  })
+
   it('fora de produção apenas avisa — o dev sobe sem .env', async () => {
     const { assertSecureConfig } = await carregar({
       NODE_ENV: 'development',

@@ -11,6 +11,7 @@ import { AssinaturasService } from './assinaturas.service'
 import { CheckoutService } from './checkout.service'
 import { MinhaAssinaturaService } from './minha-assinatura.service'
 import { AsaasApi } from './asaas.api'
+import { BillingLockService } from './billing-lock'
 
 // Cobrança, em três partes:
 //
@@ -24,7 +25,7 @@ import { AsaasApi } from './asaas.api'
 @Module({
   imports: [ProfilesModule, SessionModule, CorreioModule],
   controllers: [BillingController, AsaasController, CheckoutController],
-  providers: [BillingService, AssinaturasService, CheckoutService, MinhaAssinaturaService, AsaasApi, PrismaService],
+  providers: [BillingService, BillingLockService, AssinaturasService, CheckoutService, MinhaAssinaturaService, AsaasApi, PrismaService],
   exports: [BillingService, AssinaturasService],
 })
 export class BillingModule {}

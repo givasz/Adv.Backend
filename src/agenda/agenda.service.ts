@@ -124,7 +124,8 @@ export class AgendaService {
     const digits = phone?.replace(/\D/g, '') ?? ''
     const whatsapp = digits.length >= 10 && digits.length <= 15 ? phone : null
     const email = safeEmail(body?.email)
-    if (name.length < 2 || subject.length < 2 || (!whatsapp && !email)) {
+    const viaWhatsapp = body?.viaWhatsapp === true
+    if (name.length < 2 || subject.length < 2 || (!viaWhatsapp && !whatsapp && !email)) {
       throw new BadRequestException('Informe nome, assunto e WhatsApp ou e-mail válido.')
     }
     return { name, subject, whatsapp, email, preferredAt: body?.preferredAt ? horario(body.preferredAt) : null }
@@ -166,6 +167,11 @@ export class AgendaService {
       throw new NotFoundException('Este perfil não recebe solicitações pelo site.')
     }
     const dados = this.dadosDoPedido(body)
+    // O resumo sem contato só faz sentido no fluxo em que o contato segue pelo
+    // WhatsApp. Formulários comuns continuam exigindo telefone ou e-mail.
+    if (body?.viaWhatsapp === true && p!.schedulingMode !== 'assistant') {
+      throw new BadRequestException('O acompanhamento pelo WhatsApp só está disponível no assistente virtual.')
+    }
     const triage = this.respostasDaTriagem(p as any, body)
     // `firmId` fica NULO de propósito: pedido feito no perfil individual é dele e
     // de mais ninguém — nem do escritório de que ele participa.
@@ -262,7 +268,7 @@ export class AgendaService {
     const currentPage = Math.min(requestedPage, totalPages)
     const where = { profileId: p.id, ...(status === 'all' ? {} : { status }) }
     const rows = await this.prisma.meetingRequest.findMany({ where, include: { calendarEntry: { select: { id: true, startsAt: true } } }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: pageSize, skip: (currentPage - 1) * pageSize })
-    return { items: rows.map((r) => ({ ...r, triage: JSON.parse(r.triage || '[]') })), page: currentPage, pageSize, total, totalPages, pendingCount: counts.pending, counts }
+    return { items: rows.map((r) => ({ ...r, triage: JSON.parse(r.triage || '[]'), viaWhatsapp: !r.whatsapp && !r.email })), page: currentPage, pageSize, total, totalPages, pendingCount: counts.pending, counts }
   }
 
   async decidir(userId: string, id: string, body: { status: string; startsAt?: string; durationMin?: number }) {
