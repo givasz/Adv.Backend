@@ -8,7 +8,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest'
 import { UnauthorizedException } from '@nestjs/common'
-import { conferirEntrada, lerEnvelope, marcaExterna, traduzir } from './asaas'
+import { conferirEntrada, lerEnvelope, marcaExterna, payloadSeguroParaAuditoria, traduzir } from './asaas'
 
 const HOJE = '2026-09-29 14:00:00'
 
@@ -41,11 +41,12 @@ describe('tradução', () => {
   }
 
   it('cartão CONFIRMADO libera já — não espera os ~30 dias até o dinheiro cair', () => {
-    expect(traduzir(envelope('PAYMENT_CONFIRMED', cobranca))).toMatchObject({
+    expect(traduzir(envelope('PAYMENT_CONFIRMED', { ...cobranca, value: 49 }))).toMatchObject({
       type: 'payment_succeeded',
       provider: 'asaas',
       profileId: 'perfil_1',
       plan: 'premium',
+      amount: 49,
       customerId: 'cus_1',
       subscriptionId: 'sub_1',
     })
@@ -58,6 +59,20 @@ describe('tradução', () => {
 
   it('VENCIDO vira falha de pagamento: abre a carência, não tira nada do ar', () => {
     expect(traduzir(envelope('PAYMENT_OVERDUE', cobranca))?.type).toBe('payment_failed')
+  })
+
+  it('captura recusada no cartão também vira falha de pagamento', () => {
+    expect(traduzir(envelope('PAYMENT_CREDIT_CARD_CAPTURE_REFUSED', cobranca))?.type).toBe('payment_failed')
+  })
+
+  it('reprovação pela análise de risco também vira falha de pagamento', () => {
+    expect(traduzir(envelope('PAYMENT_REPROVED_BY_RISK_ANALYSIS', cobranca))?.type).toBe('payment_failed')
+  })
+
+  it('estorno integral e chargeback revertem o direito criado pelo pagamento', () => {
+    for (const evento of ['PAYMENT_REFUNDED', 'PAYMENT_CHARGEBACK_REQUESTED']) {
+      expect(traduzir(envelope(evento, cobranca))?.type).toBe('payment_reversed')
+    }
   })
 
   it('assinatura removida ou inativada vira cancelamento', () => {
@@ -124,7 +139,6 @@ describe('tradução', () => {
       'PAYMENT_UPDATED',
       'PAYMENT_DELETED',
       'PAYMENT_RESTORED',
-      'PAYMENT_REFUNDED',
       'PAYMENT_BANK_SLIP_VIEWED',
       'PAYMENT_CHECKOUT_VIEWED',
       'SUBSCRIPTION_CREATED',
@@ -172,5 +186,33 @@ describe('fronteira', () => {
     process.env.ASAAS_WEBHOOK_TOKEN = ` ${PROD} , ${SANDBOX} `
     expect(() => conferirEntrada(SANDBOX)).not.toThrow()
     expect(() => conferirEntrada('outro-token-qualquer-com-32-caracteres')).toThrow()
+  })
+})
+
+describe('payload de auditoria', () => {
+  it('remove credenciais de cartao e dados do titular antes de persistir o webhook', () => {
+    const payload = payloadSeguroParaAuditoria({
+      id: 'evt_1',
+      event: 'PAYMENT_CONFIRMED',
+      payment: {
+        id: 'pay_1',
+        status: 'CONFIRMED',
+        creditCard: {
+          creditCardNumber: '8829',
+          creditCardToken: 'token-reutilizavel',
+          credit_card_token: 'token-em-snake-case',
+          holderName: 'Nome do Titular',
+        },
+        cpfCnpj: '52998224725',
+        email: 'titular@exemplo.com',
+        address: 'Rua Particular',
+      },
+    })
+
+    expect(payload).toContain('PAYMENT_CONFIRMED')
+    expect(payload).not.toMatch(
+      /token-reutilizavel|token-em-snake-case|Nome do Titular|52998224725|titular@exemplo\.com|8829|Rua Particular/,
+    )
+    expect(payload).toContain('[REMOVIDO]')
   })
 })

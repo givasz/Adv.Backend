@@ -300,7 +300,7 @@ export class CheckoutService {
       // abandonado, boleto não pago) ou se já foi cancelada, sai do caminho.
       //
       // E as assinaturas do cliente no Asaas são conferidas uma a uma, por causa do
-      // tempo esgotado: se a tentativa anterior estourou os 12 s, o Asaas pode ter
+      // tempo esgotado: se a tentativa anterior estourou os 65 s, o Asaas pode ter
       // criado a assinatura — e cobrado o cartão — sem que soubéssemos. Uma igual à
       // pedida (mesmo plano, mesmo meio) é ADOTADA, não duplicada. Qualquer outra
       // nossa sai.

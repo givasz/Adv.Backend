@@ -14,7 +14,6 @@ import { RetencaoModule } from './retencao/retencao.module'
 import { BillingModule } from './billing/billing.module'
 import { BiModule } from './bi/bi.module'
 import { GeoModule } from './geo/geo.module'
-import { ContratosModule } from './contratos/contratos.module'
 import { CorreioModule } from './mail/correio.module'
 import { AgendaModule } from './agenda/agenda.module'
 
@@ -34,7 +33,6 @@ import { AgendaModule } from './agenda/agenda.module'
     BillingModule,
     BiModule,
     GeoModule,
-    ContratosModule,
     CorreioModule,
     AgendaModule,
   ],

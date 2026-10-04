@@ -53,6 +53,19 @@ describe('agenda digital', () => {
     expect(create).not.toHaveBeenCalled()
   })
 
+  it('registra o resumo do assistente ao abrir o WhatsApp sem exigir contato duplicado', async () => {
+    const create = vi.fn(async () => ({ id: 'r-whatsapp' }))
+    const service = new AgendaService({ profile: { findFirst: vi.fn(async () => profile) }, meetingRequest: { create } } as any)
+    const preferredAt = `${nextMonday()}T09:00`
+    await expect(service.solicitar('ana', {
+      name: 'Maria', subject: 'Consulta sobre família', preferredAt,
+      consent: true, viaWhatsapp: true,
+    })).resolves.toEqual({ ok: true })
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      profileId: 'p1', whatsapp: null, email: null, preferredAt,
+    }) }))
+  })
+
   it('não deixa uma conta decidir o pedido de outra', async () => {
     const service = new AgendaService({
       profile: { findUnique: vi.fn(async () => profile) },

@@ -1,13 +1,15 @@
-import { Body, Controller, Headers, HttpCode, Ip, Post, Req } from '@nestjs/common'
+import { Body, Controller, Headers, HttpCode, Ip, Post } from '@nestjs/common'
 import { BillingService, type ResultadoDoEvento } from './billing.service'
-import { CABECALHO_TOKEN, conferirEntrada, lerEnvelope, traduzir, PROVEDOR } from './asaas'
+import {
+  CABECALHO_TOKEN,
+  conferirEntrada,
+  lerEnvelope,
+  payloadSeguroParaAuditoria,
+  traduzir,
+  PROVEDOR,
+} from './asaas'
 import { BILLING_RATE_RULES, enforceRateLimit } from '../security/rate-limit'
 import { clientIp } from '../security/net'
-
-/** Request com o corpo CRU preservado pelo body parser (ver main.ts). */
-interface RequisicaoComCorpoCru {
-  rawBody?: Buffer
-}
 
 /**
  * POST /api/billing/asaas — a porta do Asaas.
@@ -37,7 +39,6 @@ export class AsaasController {
   @HttpCode(200)
   async webhook(
     @Body() body: unknown,
-    @Req() req: RequisicaoComCorpoCru,
     @Headers(CABECALHO_TOKEN) token?: string,
     @Ip() ip?: string,
     @Headers('x-forwarded-for') xff?: string,
@@ -52,14 +53,13 @@ export class AsaasController {
     conferirEntrada(token)
 
     const envelope = lerEnvelope(body)
-    const cru = req.rawBody?.toString('utf8') ?? ''
+    const cru = payloadSeguroParaAuditoria(body)
     const evento = traduzir(envelope)
 
-    // Evento que não mexe em assinatura — cobrança criada, boleto visualizado,
-    // estorno. É a maioria do tráfego. Fica REGISTRADO com o payload cru e não é
-    // aplicado: é esse registro que responde, meses depois, o que o Asaas contou
-    // naquele dia — e é por ele que a forma real do payload vai ser conferida
-    // contra o que este adaptador supõe.
+    // Evento que não mexe em assinatura — cobrança criada, boleto visualizado etc.
+    // É a maioria do tráfego. Fica REGISTRADO com uma cópia saneada do payload e
+    // não é aplicado: esse registro permite conferir o que o Asaas contou sem
+    // persistir token de cartão nem os dados pessoais do titular.
     if (!evento) {
       return this.billing.registrarBruto({
         id: envelope.id,

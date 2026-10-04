@@ -2,6 +2,7 @@ import { Body, Controller, Headers, Ip, Post, Req } from '@nestjs/common'
 import { BillingService, type ResultadoDoEvento } from './billing.service'
 import { BILLING_RATE_RULES, enforceRateLimit } from '../security/rate-limit'
 import { clientIp } from '../security/net'
+import { payloadSeguroParaAuditoria } from './asaas'
 
 /** Request com o corpo CRU preservado pelo body parser (ver main.ts). */
 interface RequisicaoComCorpoCru {
@@ -46,8 +47,8 @@ export class BillingController {
     )
 
     this.billing.conferirAssinatura(req.rawBody, assinatura)
-    // O corpo cru vai ao registro do evento: é a prova do que o provedor mandou,
-    // exatamente como mandou.
-    return this.billing.processar(body, req.rawBody?.toString('utf8') ?? '')
+    // O corpo cru serviu apenas à assinatura. O registro recebe uma cópia saneada,
+    // sem credenciais de cartão nem dados pessoais desnecessários.
+    return this.billing.processar(body, payloadSeguroParaAuditoria(body))
   }
 }

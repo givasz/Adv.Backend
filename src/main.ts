@@ -10,6 +10,7 @@ import { configDoGoogle, descreverGoogle } from './auth/google'
 import { securityHeaders } from './security/headers'
 import { sessionContext } from './auth/session-context'
 import { CSRF_HEADER, origemPermitida } from './auth/csrf'
+import { precisaPreservarCorpoCru } from './billing/raw-body'
 
 // Teto do corpo da requisição. O maior payload legítimo é o perfil com a foto
 // embutida (data URI ~300 KB, ver security/sanitize.ts) — 1 MB dá folga sem
@@ -43,7 +44,9 @@ async function bootstrap() {
   // TRUST_PROXY=1 quando houver um proxy à frente (Nginx da VPS, Render): é o que
   // faz req.ip ser o IP real. Sem proxy, confiar no cabeçalho seria deixar
   // qualquer um escolher a própria identidade no rate limit (ver security/net.ts).
-  app.set('trust proxy', process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY === 'true')
+  // Confia em exatamente um salto (o Nginx/Render imediatamente à frente). Usar
+  // `true` confiaria também em valores X-Forwarded-For prefixados pelo cliente.
+  app.set('trust proxy', process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY === 'true' ? 1 : false)
   // O corpo CRU é preservado para o webhook de cobrança conferir a assinatura
   // HMAC. Tem de ser o byte a byte recebido: `JSON.stringify(JSON.parse(x))` não
   // devolve `x` (ordem de chaves, espaços, escapes), e uma diferença de um byte
@@ -54,7 +57,7 @@ async function bootstrap() {
   app.useBodyParser('json', {
     limit: BODY_LIMIT,
     verify: (req: { url?: string; rawBody?: Buffer }, _res: unknown, buf: Buffer) => {
-      if (req.url?.startsWith('/api/billing/')) req.rawBody = Buffer.from(buf)
+      if (precisaPreservarCorpoCru(req.url)) req.rawBody = Buffer.from(buf)
     },
   })
   app.useBodyParser('urlencoded', { limit: BODY_LIMIT, extended: true })

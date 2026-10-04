@@ -37,16 +37,23 @@ function service(linha: Record<string, unknown>) {
 }
 
 describe('setPlan com o Asaas ligado', () => {
-  const antes = { chave: process.env.ASAAS_API_KEY, ambiente: process.env.ASAAS_AMBIENTE }
+  const antes = {
+    chave: process.env.ASAAS_API_KEY,
+    ambiente: process.env.ASAAS_AMBIENTE,
+    webhook: process.env.ASAAS_WEBHOOK_TOKEN,
+  }
   beforeEach(() => {
     process.env.ASAAS_API_KEY = '$aact_teste'
     process.env.ASAAS_AMBIENTE = 'producao'
+    process.env.ASAAS_WEBHOOK_TOKEN = 'token-de-webhook-com-32-caracteres-ou-mais'
   })
   afterEach(() => {
     if (antes.chave === undefined) delete process.env.ASAAS_API_KEY
     else process.env.ASAAS_API_KEY = antes.chave
     if (antes.ambiente === undefined) delete process.env.ASAAS_AMBIENTE
     else process.env.ASAAS_AMBIENTE = antes.ambiente
+    if (antes.webhook === undefined) delete process.env.ASAAS_WEBHOOK_TOKEN
+    else process.env.ASAAS_WEBHOOK_TOKEN = antes.webhook
   })
 
   it('subir é recusado: plano pago só abre com pagamento', async () => {
@@ -63,8 +70,11 @@ describe('setPlan com o Asaas ligado', () => {
     expect(update).not.toHaveBeenCalled()
   })
 
-  it('só conta como ligado com chave E ambiente válido ("sandbox" ou "producao")', () => {
+  it('só conta como ligado com chave, webhook forte e ambiente válido', () => {
     expect(asaasConfigurado()).toBe(true)
+    delete process.env.ASAAS_WEBHOOK_TOKEN
+    expect(asaasConfigurado()).toBe(false)
+    process.env.ASAAS_WEBHOOK_TOKEN = 'token-de-webhook-com-32-caracteres-ou-mais'
     process.env.ASAAS_AMBIENTE = 'prod'
     expect(asaasConfigurado()).toBe(false)
     process.env.ASAAS_AMBIENTE = 'sandbox'

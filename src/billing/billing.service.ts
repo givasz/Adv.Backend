@@ -1,7 +1,9 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common'
+import { BadRequestException, ConflictException, Injectable, Logger } from '@nestjs/common'
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { PrismaService } from '../prisma/prisma.service'
 import { ProfilesService } from '../profiles/profiles.service'
+import { PLAN_PRICE } from '../plans'
+import { BillingLockService } from './billing-lock'
 import {
   aoCancelar,
   aoConfirmarPagamento,
@@ -37,6 +39,7 @@ import {
 export const TIPOS_DE_EVENTO = [
   'payment_succeeded',
   'payment_failed',
+  'payment_reversed',
   'subscription_canceled',
   'subscription_paused',
   'subscription_resumed',
@@ -63,6 +66,8 @@ export interface EventoDeCobranca {
   email?: string
   /** plano contratado (obrigatório em payment_succeeded) */
   plan?: Plan
+  /** valor efetivamente informado pelo provedor, em reais */
+  amount?: number
   /** fim do período pago, ISO */
   currentPeriodEnd?: string
   /** motivo/descrição do provedor, guardado no registro */
@@ -77,6 +82,11 @@ export interface ResultadoDoEvento {
 }
 
 const CABECALHO_ASSINATURA = 'x-advocme-signature'
+const EVENTO_PENDENTE_EXPIRA_MS = 10 * 60 * 1000
+
+function chaveUnicaViolada(erro: unknown): boolean {
+  return !!erro && typeof erro === 'object' && (erro as { code?: unknown }).code === 'P2002'
+}
 
 @Injectable()
 export class BillingService {
@@ -85,6 +95,7 @@ export class BillingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly profiles: ProfilesService,
+    private readonly lock: BillingLockService,
   ) {}
 
   /**
@@ -124,7 +135,7 @@ export class BillingService {
    * Guarda um evento SEM aplicar nada.
    *
    * Serve ao adaptador de provedor (ver `asaas.controller.ts`) para o tráfego
-   * que não mexe em assinatura — `charge.created`, antifraude, estorno. É a maior
+   * que não mexe em assinatura — `charge.created`, visualização de boleto etc. É a maior
    * parte do que um provedor manda, e jogar fora seria perder a única resposta
    * possível para "o que exatamente eles nos contaram naquele dia".
    *
@@ -153,8 +164,9 @@ export class BillingService {
         },
         select: { id: true },
       })
-    } catch {
-      return { ok: true, applied: false, reason: 'repetido' }
+    } catch (erro) {
+      if (chaveUnicaViolada(erro)) return { ok: true, applied: false, reason: 'repetido' }
+      throw erro
     }
     return { ok: true, applied: false, reason: dados.note }
   }
@@ -173,7 +185,7 @@ export class BillingService {
       id,
       type,
       // Sem data válida do provedor, usamos a chegada. Perde-se a ordenação fina,
-      // mas o evento não é descartado — e o registro guarda o payload cru.
+      // mas o evento não é descartado — e o registro guarda o payload auditável.
       occurredAt: (Number.isNaN(quando.getTime()) ? new Date() : quando).toISOString(),
       provider: texto(raw?.provider, 40),
       profileId: texto(raw?.profileId, 60),
@@ -181,6 +193,7 @@ export class BillingService {
       subscriptionId: texto(raw?.subscriptionId, 120),
       email: texto(raw?.email, 200)?.toLowerCase(),
       plan: raw?.plan === 'pro' || raw?.plan === 'premium' ? raw.plan : undefined,
+      amount: typeof raw?.amount === 'number' && Number.isFinite(raw.amount) ? raw.amount : undefined,
       currentPeriodEnd: texto(raw?.currentPeriodEnd, 40),
       reason: texto(raw?.reason, 300),
     }
@@ -253,6 +266,10 @@ export class BillingService {
       }
       case 'payment_failed':
         return aoFalharPagamento(perfil ?? {})
+      case 'payment_reversed': {
+        if (perfil?.planStatus === 'canceled') return aoCancelar(perfil)
+        return aoCancelar({ ...perfil, currentPeriodEnd: new Date(ev.occurredAt) })
+      }
       case 'subscription_canceled': {
         // CANCELAMENTO QUE PARTIU DAQUI já gravou a data certa, e o aviso do
         // provedor não a muda. É o caso do arrependimento: o valor é devolvido e o
@@ -297,54 +314,123 @@ export class BillingService {
         },
         select: { id: true },
       })
-    } catch {
-      // Chave única violada: já vimos este evento. Nada a fazer, e 200.
-      return { ok: true, applied: false, reason: 'repetido' }
+    } catch (erro) {
+      // Chave única violada: uma entrega concluída é repetida; uma ainda sem nota
+      // está sendo processada por outra requisição e não pode receber um falso 200.
+      if (chaveUnicaViolada(erro)) {
+        const existente = await this.prisma.billingEvent.findUnique({
+          where: { eventId: ev.id },
+          select: { applied: true, note: true, createdAt: true },
+        })
+        if (!existente) throw erro
+        if (existente && !existente.applied && !existente.note) {
+          if (Date.now() - existente.createdAt.getTime() >= EVENTO_PENDENTE_EXPIRA_MS) {
+            // Um processo pode morrer entre o INSERT e a anotação final. Só apaga
+            // se a linha continuar pendente; assim a próxima entrega pode refazer.
+            await this.prisma.billingEvent.deleteMany({
+              where: { eventId: ev.id, applied: false, note: '' },
+            })
+            throw new ConflictException('Evento abandonado liberado; aguarde a retentativa.')
+          }
+          throw new ConflictException('Evento de cobrança ainda em processamento.')
+        }
+        return { ok: true, applied: false, reason: 'repetido' }
+      }
+      throw erro
     }
 
-    const anotar = async (note: string, applied: boolean, profileId?: string) => {
-      await this.prisma.billingEvent.update({
-        where: { id: registro.id },
-        data: { note, applied, profileId: profileId ?? null },
+    try {
+      const anotar = async (note: string, applied: boolean, profileId?: string) => {
+        await this.prisma.billingEvent.update({
+          where: { id: registro.id },
+          data: { note, applied, profileId: profileId ?? null },
+        })
+        return { ok: true as const, applied, reason: note }
+      }
+
+      // 2. DONO. Evento sem perfil correspondente fica registrado para quem for
+      //    depurar — some num log que roda, não.
+      const candidato = await this.acharPerfil(ev)
+      if (!candidato) return anotar('perfil não encontrado', false)
+
+      return await this.lock.comPerfil(candidato.id, async () => {
+        // Releitura já com a trava: outro evento pode ter mudado o vínculo ou a
+        // marca temporal entre a primeira busca e a aquisição do mutex.
+        const perfil = await this.acharPerfil(ev)
+        if (!perfil) return anotar('perfil não encontrado após adquirir a trava', false)
+
+        // A referência externa contém o perfil, mas ela é reutilizada quando uma
+        // assinatura é substituída. Um aviso atrasado da assinatura antiga não pode
+        // cancelar ou rebaixar a que está valendo agora.
+        if (
+          ev.subscriptionId &&
+          perfil.billingSubscriptionId &&
+          ev.subscriptionId !== perfil.billingSubscriptionId
+        ) {
+          return anotar('assinatura diferente da assinatura atual', false, perfil.id)
+        }
+        if (
+          ev.customerId &&
+          perfil.billingCustomerId &&
+          ev.customerId !== perfil.billingCustomerId
+        ) {
+          return anotar('cliente diferente do cliente de cobrança atual', false, perfil.id)
+        }
+
+        if (ev.provider === 'asaas' && ev.type === 'payment_succeeded') {
+          const esperado =
+            ev.plan === 'pro' || ev.plan === 'premium' ? PLAN_PRICE[ev.plan] : undefined
+          const recebido = ev.amount
+          if (
+            esperado === undefined ||
+            recebido === undefined ||
+            Math.round(recebido * 100) !== Math.round(esperado * 100)
+          ) {
+            return anotar('valor divergente do plano', false, perfil.id)
+          }
+        }
+
+        // 3. ORDEM. Evento mais antigo que o último aplicado é registrado e ignorado.
+        const ultimo = perfil.billingEventAt ? new Date(perfil.billingEventAt).getTime() : 0
+        if (new Date(ev.occurredAt).getTime() < ultimo) {
+          return anotar('fora de ordem (mais antigo que o último aplicado)', false, perfil.id)
+        }
+
+        // 4. EFEITO. Uma porta só, a mesma do checkout e da varredura — o que garante
+        //    que tema e agendamento sejam reconciliados junto com o plano.
+        const patch = this.patchDoEvento(ev, perfil)
+        await this.profiles.aplicarAssinaturaPorPerfil(
+          perfil.id,
+          patch,
+          `cobrança: ${ev.type}${ev.reason ? ` (${ev.reason})` : ''}`,
+        )
+
+        // 5. VÍNCULO E MARCA D'ÁGUA DO EVENTO. Gravados fora do patch de assinatura
+        //    porque não são estado de plano: são a costura com o provedor.
+        const podeVincular = ev.type === 'payment_succeeded' || ev.type === 'payment_failed'
+        await this.prisma.profile.update({
+          where: { id: perfil.id },
+          data: {
+            billingEventId: ev.id,
+            billingEventAt: new Date(ev.occurredAt),
+            ...(podeVincular && ev.customerId && !perfil.billingCustomerId
+              ? { billingCustomerId: ev.customerId }
+              : {}),
+            ...(podeVincular && ev.subscriptionId && !perfil.billingSubscriptionId
+              ? { billingSubscriptionId: ev.subscriptionId }
+              : {}),
+          },
+        })
+
+        this.log.log(`evento ${ev.type} aplicado ao perfil ${perfil.id}`)
+        return anotar('aplicado', true, perfil.id)
       })
-      return { ok: true as const, applied, reason: note }
+    } catch (erro) {
+      // Só um evento completamente processado pode ocupar a chave idempotente.
+      // Se qualquer passo falhar, a retentativa do provedor precisa conseguir
+      // executar o mesmo evento outra vez em vez de receber um falso "repetido".
+      await this.prisma.billingEvent.delete({ where: { id: registro.id } }).catch(() => undefined)
+      throw erro
     }
-
-    // 2. DONO. Evento sem perfil correspondente fica registrado para quem for
-    //    depurar — some num log que roda, não.
-    const perfil = await this.acharPerfil(ev)
-    if (!perfil) return anotar('perfil não encontrado', false)
-
-    // 3. ORDEM. Evento mais antigo que o último aplicado é registrado e ignorado.
-    const ultimo = perfil.billingEventAt ? new Date(perfil.billingEventAt).getTime() : 0
-    if (new Date(ev.occurredAt).getTime() < ultimo) {
-      return anotar('fora de ordem (mais antigo que o último aplicado)', false, perfil.id)
-    }
-
-    // 4. EFEITO. Uma porta só, a mesma do checkout e da varredura — o que garante
-    //    que tema e agendamento sejam reconciliados junto com o plano.
-    const patch = this.patchDoEvento(ev, perfil)
-    await this.profiles.aplicarAssinaturaPorPerfil(
-      perfil.id,
-      patch,
-      `cobrança: ${ev.type}${ev.reason ? ` (${ev.reason})` : ''}`,
-    )
-
-    // 5. VÍNCULO E MARCA D'ÁGUA DO EVENTO. Gravados fora do patch de assinatura
-    //    porque não são estado de plano: são a costura com o provedor.
-    await this.prisma.profile.update({
-      where: { id: perfil.id },
-      data: {
-        billingEventId: ev.id,
-        billingEventAt: new Date(ev.occurredAt),
-        ...(ev.customerId && !perfil.billingCustomerId ? { billingCustomerId: ev.customerId } : {}),
-        ...(ev.subscriptionId && !perfil.billingSubscriptionId
-          ? { billingSubscriptionId: ev.subscriptionId }
-          : {}),
-      },
-    })
-
-    this.log.log(`evento ${ev.type} aplicado ao perfil ${perfil.id}`)
-    return anotar('aplicado', true, perfil.id)
   }
 }
