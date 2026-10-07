@@ -126,7 +126,7 @@ describe('as rotas do painel', () => {
     const decisoes = DO_PAINEL.filter(
       (r) =>
         ESCREVE.has(r.metodo) &&
-        /exigir\(\s*req,\s*'(moderacao:decidir|suporte:responder|contas:sancionar)'/.test(r.corpo),
+        /exigir\(\s*req,\s*'(moderacao:decidir|suporte:responder|contas:sancionar|parceiros:gerir)'/.test(r.corpo),
     )
     expect(decisoes.length).toBeGreaterThan(0)
     for (const rota of decisoes) {

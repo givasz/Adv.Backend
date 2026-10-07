@@ -312,6 +312,10 @@ export function traduzir(env: EnvelopeAsaas): EventoDeCobranca | null {
     type,
     occurredAt: env.occurredAt,
     provider: PROVEDOR,
+    // O id da COBRANÇA, nos eventos de cobrança. `env.id` continua sendo o do
+    // webhook (idempotência do BillingEvent); este é o do dinheiro, e é o que se
+    // repete entre PAYMENT_CONFIRMED e PAYMENT_RECEIVED do mesmo pagamento.
+    paymentId: env.event.startsWith('PAYMENT_') ? texto(r.id, 120) : undefined,
     profileId: marca.profileId,
     customerId: idDe(r.customer),
     subscriptionId: idDe(r.subscription, texto(r.object) === 'subscription' ? r.id : undefined),

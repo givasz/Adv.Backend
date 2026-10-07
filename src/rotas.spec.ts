@@ -138,6 +138,10 @@ const PUBLICAS: Record<string, string> = {
   'POST /firms/:slug/meeting-requests':
     'visitante solicita uma conversa pela página da sociedade, com contato e consentimento; o serviço exige escritório com caixa de pedidos ligada e confere o advogado escolhido contra os membros ativos. Teto por IP e por escritório',
 
+  // --- Programa Advocme Parceiros ---------------------------------------------
+  'POST /partners/attribution':
+    'quem abre o link de um parceiro ainda não tem conta. Grava só um cookie HttpOnly assinado (HMAC com domínio próprio, 30 dias, Path=/api/auth); responde accepted true/false e nunca diz de quem é o código; não lê dado pessoal; origem conferida e teto por IP. Código inválido não apaga a atribuição anterior (first-touch)',
+
   // --- Serviço de apoio -------------------------------------------------------
   'GET /geo/cep/:cep':
     'o onboarding preenche endereço antes de a conta existir. Só dígitos, dois hosts fixos, nada gravado; teto por IP para não virarmos proxy de varredura do ViaCEP',
@@ -230,6 +234,79 @@ describe('o que nunca pode sair numa resposta', () => {
     for (const arquivo of controllers(SRC)) {
       const codigo = semComentario(readFileSync(arquivo, 'utf8'))
       expect(proibido.test(codigo), `${arquivo} menciona credencial numa resposta`).toBe(false)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// PROGRAMA ADVOCME PARCEIROS — as fronteiras que não podem ceder.
+//
+// O programa recompensa a indicação do SOFTWARE, e só isso. Se o código dele
+// passar a enxergar visitante, contato, triagem ou pedido de reunião, a porta para
+// "recompensa por cliente" está aberta — e isso é captação de clientela. E o link
+// do parceiro não pode aparecer em lugar público: ele não é publicidade do
+// advogado, é um convite entre colegas no painel autenticado.
+// ---------------------------------------------------------------------------
+
+function arquivosDe(dir: string): string[] {
+  const achados: string[] = []
+  for (const entrada of readdirSync(dir, { withFileTypes: true })) {
+    const caminho = join(dir, entrada.name)
+    if (entrada.isDirectory()) achados.push(...arquivosDe(caminho))
+    else if (entrada.name.endsWith('.ts') && !entrada.name.endsWith('.spec.ts')) achados.push(caminho)
+  }
+  return achados
+}
+
+
+describe('Programa Advocme Parceiros — fronteiras', () => {
+  const doPrograma = arquivosDe(join(SRC, 'partners'))
+  const semComentario = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+
+  it('o código do programa não conhece cliente, visitante, contato, triagem nem pedido de reunião', () => {
+    expect(doPrograma.length).toBeGreaterThan(3)
+    const proibido = /\b(meetingRequest|MeetingRequest|linkEvent|LinkEvent|calendarEntry|CalendarEntry|triage\w*|triagem\w*|report|Report)\b/
+    for (const arquivo of doPrograma) {
+      expect(proibido.test(semComentario(readFileSync(arquivo, 'utf8'))), `${arquivo} toca em dado de cliente/visitante`).toBe(false)
+    }
+  })
+
+  it('nenhuma rota pública de perfil ou escritório devolve dado do programa', () => {
+    const publicos = [
+      join(SRC, 'profiles', 'profiles.controller.ts'),
+      join(SRC, 'firms', 'firms.controller.ts'),
+      join(SRC, 'firms', 'firms.service.ts'),
+      ...arquivosDe(join(SRC, 'seo')),
+    ]
+    for (const arquivo of publicos) {
+      expect(/referralCode|partnerBenefit|PartnerMembership|\/r\//.test(readFileSync(arquivo, 'utf8')), arquivo).toBe(false)
+    }
+    // O toApi do perfil só devolve o benefício no bloco do DONO, e nunca o código.
+    const perfis = readFileSync(join(SRC, 'profiles', 'profiles.service.ts'), 'utf8')
+    expect(perfis).not.toMatch(/referralCode/)
+    const dono = perfis.indexOf('if (p.moderationStatus !== undefined) {')
+    const beneficio = perfis.indexOf('out.partnerBenefit')
+    expect(dono).toBeGreaterThan(0)
+    expect(beneficio).toBeGreaterThan(dono)
+  })
+
+  it('as rotas do parceiro exigem sessão e o usuário vem dela, nunca de parâmetro', () => {
+    const doParceiro = TODAS.filter((r) => r.caminho.startsWith('partners/') && r.caminho !== 'partners/attribution')
+    expect(doParceiro.map((r) => r.caminho).sort()).toEqual(['partners/accept', 'partners/me', 'partners/me/resumo'])
+    for (const r of doParceiro) {
+      expect(TEM_SESSAO(r.corpo), r.caminho).toBe(true)
+      expect(/@Param\(/.test(r.corpo), `${r.caminho} recebe id de fora`).toBe(false)
+    }
+  })
+
+  it('o console do programa pede as permissões próprias, e escrita só com parceiros:gerir', () => {
+    const doConsole = TODAS.filter((r) =>
+      /^admin\/(partners|partner-rewards|referrals)|^admin\/users\/:userId\/partner/.test(r.caminho),
+    )
+    expect(doConsole.length).toBe(9)
+    for (const r of doConsole) {
+      const pedida = /exigir\(\s*req,\s*'([^']+)'/.exec(r.corpo)?.[1]
+      expect(pedida, r.caminho).toBe(r.metodo === 'Get' ? 'parceiros:ler' : 'parceiros:gerir')
     }
   })
 })

@@ -1,9 +1,10 @@
-import { BadRequestException, ConflictException, Injectable, Logger } from '@nestjs/common'
+import { BadRequestException, ConflictException, Injectable, Logger, Optional } from '@nestjs/common'
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { PrismaService } from '../prisma/prisma.service'
 import { ProfilesService } from '../profiles/profiles.service'
 import { PLAN_PRICE } from '../plans'
 import { BillingLockService } from './billing-lock'
+import { PartnersService } from '../partners/partners.service'
 import {
   aoCancelar,
   aoConfirmarPagamento,
@@ -49,6 +50,13 @@ export type TipoDeEvento = (typeof TIPOS_DE_EVENTO)[number]
 export interface EventoDeCobranca {
   /** id do evento NO PROVEDOR — é ele que faz a idempotência valer */
   id: string
+  /**
+   * id do PAGAMENTO no provedor (o `payment.id` do Asaas), nos eventos de
+   * pagamento. Não confundir com `id`: PAYMENT_CONFIRMED e PAYMENT_RECEIVED do
+   * MESMO pagamento chegam com ids de evento diferentes e este id igual. É ele que
+   * o Programa Parceiros usa para não recompensar duas vezes o mesmo dinheiro.
+   */
+  paymentId?: string
   type: TipoDeEvento
   /** momento SEGUNDO O PROVEDOR (não o da chegada) — é por ele que se ordena */
   occurredAt: string
@@ -96,6 +104,8 @@ export class BillingService {
     private readonly prisma: PrismaService,
     private readonly profiles: ProfilesService,
     private readonly lock: BillingLockService,
+    // Opcional só para os testes anteriores ao programa. No app vem do PartnersModule.
+    @Optional() private readonly partners?: PartnersService,
   ) {}
 
   /**
@@ -188,6 +198,7 @@ export class BillingService {
       // mas o evento não é descartado — e o registro guarda o payload auditável.
       occurredAt: (Number.isNaN(quando.getTime()) ? new Date() : quando).toISOString(),
       provider: texto(raw?.provider, 40),
+      paymentId: texto(raw?.paymentId, 120),
       profileId: texto(raw?.profileId, 60),
       customerId: texto(raw?.customerId, 120),
       subscriptionId: texto(raw?.subscriptionId, 120),
@@ -291,6 +302,38 @@ export class BillingService {
   }
 
   /**
+   * O pagamento confirmado chega ao Programa Parceiros. Uma falha aqui NÃO desfaz a
+   * cobrança: a assinatura já foi aplicada, e um erro do programa não pode fazer o
+   * provedor reenviar o evento em laço até desligar o webhook. Fica no log.
+   */
+  private async avisarPagamentoAoPrograma(ev: EventoDeCobranca, profileId: string, billingEventId: string) {
+    if (!this.partners || !ev.paymentId) return
+    try {
+      await this.partners.registrarConversao({
+        profileId,
+        plan: ev.plan,
+        amount: ev.amount,
+        paymentId: ev.paymentId,
+        billingEventId,
+        occurredAt: ev.occurredAt,
+      })
+    } catch (e) {
+      this.log.error(`programa parceiros (conversão) falhou no evento ${ev.id}: ${e instanceof Error ? e.message : e}`)
+    }
+  }
+
+  private async avisarEstornoAoPrograma(ev: EventoDeCobranca) {
+    if (!this.partners || !ev.paymentId) return
+    try {
+      await this.partners.revogarPorPagamento(ev.paymentId, `estorno ou contestação do pagamento (${ev.reason ?? 'sem motivo informado'})`)
+    } catch (e) {
+      // Revogação perdida é dia de Max indevido, não dinheiro: o console revoga à
+      // mão. Bloquear o estorno da ASSINATURA por isso seria pior.
+      this.log.error(`programa parceiros (estorno) falhou no evento ${ev.id}: ${e instanceof Error ? e.message : e}`)
+    }
+  }
+
+  /**
    * Processa um evento. Devolve sempre 200 para o provedor quando o evento foi
    * ACEITO — inclusive quando não havia o que fazer. Devolver erro num evento
    * repetido ou desconhecido faz o provedor reenviar em laço e, depois de algumas
@@ -340,6 +383,12 @@ export class BillingService {
     }
 
     try {
+      // ESTORNO E CHARGEBACK valem para o Programa Parceiros pelo PAGAMENTO, antes
+      // de qualquer conferência de assinatura: um estorno de uma assinatura antiga
+      // (ou de um evento "fora de ordem") continua sendo dinheiro que voltou. A
+      // revogação é idempotente — a segunda entrega encontra a recompensa revogada.
+      if (ev.type === 'payment_reversed') await this.avisarEstornoAoPrograma(ev)
+
       const anotar = async (note: string, applied: boolean, profileId?: string) => {
         await this.prisma.billingEvent.update({
           where: { id: registro.id },
@@ -421,6 +470,12 @@ export class BillingService {
               : {}),
           },
         })
+
+        // 6. PROGRAMA PARCEIROS. Só depois de tudo validado e aplicado: token,
+        //    perfil, assinatura, cliente, valor e ordem. O mesmo método do checkout
+        //    imediato; repetição (CONFIRMED + RECEIVED, ou checkout + webhook) é
+        //    resolvida pelo id do PAGAMENTO, não pelo do evento.
+        if (ev.type === 'payment_succeeded') await this.avisarPagamentoAoPrograma(ev, perfil.id, registro.id)
 
         this.log.log(`evento ${ev.type} aplicado ao perfil ${perfil.id}`)
         return anotar('aplicado', true, perfil.id)

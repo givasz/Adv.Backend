@@ -55,10 +55,13 @@ import {
 import {
   aoPerderOPlano,
   aoTrocarPlano,
+  beneficioParceiroAtivo,
   ehRebaixamento,
   emCortesia,
   enderecoVenceu,
+  planoDaAssinatura,
   planoVigente,
+  SELECT_PARCEIRO,
   valeAte,
   type PatchAssinatura,
 } from '../assinatura'
@@ -85,6 +88,10 @@ const relations = {
   // por muito tempo: a fileira de ícones do perfil trocava de posição sozinha
   // entre uma visita e outra, sem ninguém ter mexido em nada.
   socials: { orderBy: { order: 'asc' as const } },
+  // O benefício do Programa Parceiros entra no plano EFETIVO (planoVigente). Só
+  // status e prazo: código, histórico e aceite nunca saem daqui, e toApi não os
+  // devolve ao público (ver partnerBenefit, só no bloco do dono).
+  partner: SELECT_PARCEIRO,
 }
 
 // Planos aceitos na troca de assinatura (POST /profiles/me/plan).
@@ -156,6 +163,8 @@ const perfilBase = {
   planStatus: true,
   currentPeriodEnd: true,
   graceUntil: true,
+  // O benefício de parceiro também abre recurso no save (plano efetivo).
+  partner: SELECT_PARCEIRO,
   // Tamanho dos textos já gravados — o teto de caracteres só vale para o que
   // cresce (ver enforceCharLimits).
   headline: true,
@@ -766,7 +775,16 @@ export class ProfilesService {
       // Estado da assinatura — SÓ para o dono. O visitante não tem nada a ver com
       // a situação de cobrança de quem ele está lendo, e um "pagamento atrasado"
       // vazando para a página pública seria constrangimento gratuito.
-      out.subscription = this.buildSubscription(p, plano)
+      out.subscription = this.buildSubscription(p)
+      // Programa Parceiros — só o dono, e só status e prazo. O código de
+      // indicação e o histórico têm rota própria (/api/partners/me).
+      if (p.partner) {
+        out.partnerBenefit = {
+          status: p.partner.status,
+          benefitUntil: p.partner.benefitUntil ? new Date(p.partner.benefitUntil).toISOString() : null,
+          active: beneficioParceiroAtivo(p),
+        }
+      }
     }
     if (p.moderationNote) out.moderationNote = p.moderationNote
     if (p.contentModerated) out.contentModerated = true
@@ -780,17 +798,22 @@ export class ProfilesService {
    * ainda vale — ou por que parou de valer. Sem isto o painel só saberia dizer
    * "você está no Free", que é exatamente a mentira a evitar com quem pagou o Max
    * e teve o cartão recusado ontem.
+   *
+   * SÓ A ASSINATURA FINANCEIRA. O benefício do Programa Parceiros não entra aqui
+   * (vai à parte, em `partnerBenefit`): um Pro com acesso adicional ao Max não está
+   * "rebaixado" nem "em cortesia", e a tela de cobrança não pode dizer que está.
    */
-  private buildSubscription(p: any, vigente: Plan) {
+  private buildSubscription(p: any) {
     const contratado = (p.plan as Plan) ?? 'free'
+    const financeiro = planoDaAssinatura(p)
     const ate = valeAte(p)
     return {
       plan: contratado,
       status: (p.planStatus as string) ?? 'active',
       /** true quando o acesso pago só está de pé por carência/mês já pago */
       cortesia: emCortesia(p),
-      /** o vigente já é rebaixado em relação ao contratado? */
-      rebaixado: contratado !== 'free' && vigente !== contratado,
+      /** a assinatura já entrega menos que o contratado? */
+      rebaixado: contratado !== 'free' && financeiro !== contratado,
       validoAte: ate ? ate.toISOString() : null,
       currentPeriodEnd: p.currentPeriodEnd ? new Date(p.currentPeriodEnd).toISOString() : null,
       graceUntil: p.graceUntil ? new Date(p.graceUntil).toISOString() : null,
@@ -1573,8 +1596,11 @@ export class ProfilesService {
     //    que fala com o Asaas antes.
     //
     // Sem o Asaas configurado, nada muda: a rota segue como sempre foi.
+    // Decisão de COBRANÇA: o plano que a assinatura entrega, sem o benefício de
+    // parceiro (um Max de cortesia não é uma assinatura Max).
+    const financeiro = planoDaAssinatura(current as any)
     if (asaasConfigurado()) {
-      if (ehRebaixamento(next, planoVigente(current as any))) {
+      if (ehRebaixamento(next, financeiro)) {
         throw new ForbiddenException('O plano é ativado pelo pagamento. Assine pela página do plano.')
       }
       if (current.billingSubscriptionId && current.planStatus !== 'canceled') {
@@ -1596,7 +1622,7 @@ export class ProfilesService {
     // Só para SUBIR. Descer e cancelar nunca travam — prender alguém a um plano
     // pago até confirmar um e-mail seria o contrário da regra. E só com o correio
     // ligado: exigir um link que não sai trancaria a compra de todo mundo.
-    const subindo = ehRebaixamento(next, planoVigente(current as any))
+    const subindo = ehRebaixamento(next, financeiro)
     if (subindo && this.correio?.ativo && !current.user?.emailVerifiedAt) {
       throw new ForbiddenException(
         'Confirme seu e-mail antes de assinar: é por ele que chegam a cobrança e os avisos do plano. ' +
@@ -1650,7 +1676,10 @@ export class ProfilesService {
       where: { userId },
       select: { id: true, name: true, slug: true, plan: true, schedulingMode: true, theme: true,
                 planStatus: true, currentPeriodEnd: true, graceUntil: true, planScheduled: true,
-                slugGraceUntil: true },
+                slugGraceUntil: true,
+                // O que se reconcilia é o plano EFETIVO: um parceiro com o Max de
+                // cortesia que cancela o Pro continua com o tema e a agenda do Max.
+                partner: SELECT_PARCEIRO },
     })
     if (!antes) throw new NotFoundException('Perfil não encontrado')
 
@@ -1725,6 +1754,69 @@ export class ProfilesService {
   }
 
   /**
+   * Reconcilia o banco com o plano EFETIVO quando quem mudou não foi a assinatura,
+   * e sim o benefício do Programa Parceiros (ativado, prorrogado, suspenso,
+   * reativado, encerrado ou vencido).
+   *
+   * NÃO grava plano nenhum — `Profile.plan` e as datas de cobrança são da
+   * assinatura, e a única porta delas continua sendo aplicarAssinatura. Aqui se
+   * acerta só o que o público veria errado, pela mesma régua daquela porta: tema,
+   * botão de agendar e o prazo do endereço. Conteúdo não é tocado: vídeo, marca,
+   * cartão, perguntas e áreas além da cota somem da leitura e voltam inteiros.
+   *
+   * `antes` é o plano efetivo de ANTES da mudança, calculado por quem chama — é a
+   * diferença entre os dois que diz se o endereço ganha o nome limpo (subiu) ou
+   * abre o prazo de sete dias (caiu para o Free). Idempotente: rodar de novo sobre
+   * a mesma linha não reabre o prazo do endereço nem reescreve nada.
+   */
+  async reconciliarPlanoEfetivo(
+    profileId: string,
+    antes: Plan,
+    motivo: string,
+    agora: Date = new Date(),
+  ): Promise<{ antes: Plan; depois: Plan; mudou: boolean } | null> {
+    const p = await this.prisma.profile.findUnique({
+      where: { id: profileId },
+      select: { id: true, userId: true, name: true, slug: true, theme: true, schedulingMode: true,
+                plan: true, planStatus: true, currentPeriodEnd: true, graceUntil: true,
+                planScheduled: true, slugGraceUntil: true, partner: SELECT_PARCEIRO },
+    })
+    if (!p) return null
+    const depois = planoVigente(p as any, agora)
+    const dados: Record<string, unknown> = {}
+
+    const tema = resolveTheme(p.theme, depois)
+    if (tema !== p.theme) dados.theme = tema
+    const modo = this.sanitizeMode(p.schedulingMode, depois)
+    if (modo !== p.schedulingMode) dados.schedulingMode = modo
+
+    if (ehRebaixamento(depois, antes)) {
+      // Subiu: entrega o perk do nome limpo, como a subida de assinatura entrega.
+      const slug = await this.resolveSlug(p.name, depois, p.slug, p.userId, true, p.slug)
+      if (slug !== p.slug) dados.slug = slug
+    }
+    if (depois !== 'free') {
+      if (p.slugGraceUntil) dados.slugGraceUntil = null
+    } else if (antes !== 'free' && !p.slugGraceUntil && !this.pareceAutoNumerado(p.slug, p.name)) {
+      // Caiu para o Free com endereço limpo: a MESMA semana de prazo da cobrança.
+      dados.slugGraceUntil = aoPerderOPlano(agora)
+    }
+
+    if (Object.keys(dados).length === 0) return { antes, depois, mudou: false }
+    await this.prisma.profile.update({ where: { id: p.id }, data: dados })
+    await this.prisma.auditLog.create({
+      data: {
+        profileId: p.id,
+        action: 'plan',
+        complianceStatus: 'ok',
+        policyVersion: POLICY_VERSION,
+        bioSnapshot: motivo.slice(0, 300),
+      },
+    })
+    return { antes, depois, mudou: true }
+  }
+
+  /**
    * Carimba o número no endereço de quem perdeu o plano e deixou o prazo vencer.
    * Chamada só pela varredura diária (billing/assinaturas.service.ts).
    *
@@ -1741,7 +1833,10 @@ export class ProfilesService {
     const p = await this.prisma.profile.findUnique({
       where: { id: profileId },
       select: { id: true, name: true, slug: true, userId: true, plan: true, planStatus: true,
-                currentPeriodEnd: true, graceUntil: true, planScheduled: true, slugGraceUntil: true },
+                currentPeriodEnd: true, graceUntil: true, planScheduled: true, slugGraceUntil: true,
+                // Sem isto, quem tem o Max do Programa Parceiros seria lido como
+                // Free e perderia o endereço limpo no meio do benefício.
+                partner: SELECT_PARCEIRO },
     })
     if (!p) return null
 

@@ -50,6 +50,28 @@ export class AccountService {
             meetingRequests: { orderBy: { createdAt: 'desc' } },
             auditLogs: { orderBy: { createdAt: 'desc' } },
             firmMembership: { include: { firm: { select: { name: true, slug: true } } } },
+            // Programa Advocme Parceiros: a participação, o aceite e o livro de
+            // dias. Das indicações, só datas — quem foi indicado é outra pessoa.
+            partner: {
+              select: {
+                status: true,
+                referralCode: true,
+                benefitUntil: true,
+                termsVersion: true,
+                termsAcceptedAt: true,
+                termsIp: true,
+                invitedAt: true,
+                activatedAt: true,
+                suspendedAt: true,
+                endedAt: true,
+                referrals: { select: { attributedAt: true, convertedAt: true }, orderBy: { attributedAt: 'desc' }, take: 500 },
+                rewards: {
+                  select: { type: true, status: true, days: true, createdAt: true, confirmedAt: true, revokedAt: true },
+                  orderBy: { createdAt: 'desc' },
+                  take: 500,
+                },
+              },
+            },
             // Denúncias: só o que diz respeito a ELE. Quem denunciou não entra.
             reports: {
               select: { reason: true, status: true, createdAt: true },
@@ -77,6 +99,8 @@ export class AccountService {
           orderBy: { createdAt: 'desc' },
         },
         sessions: { select: { createdAt: true, expiresAt: true } },
+        // A conta chegou pelo link de um parceiro? Só a data: o parceiro é outra pessoa.
+        receivedPartnerReferral: { select: { attributedAt: true } },
       },
     })
     if (!user) throw new UnauthorizedException('Sessão inválida.')
@@ -174,6 +198,14 @@ export class AccountService {
         registros: acessos,
       },
       perfil: p ?? null,
+      contaCriadaPorIndicacao: user.receivedPartnerReferral
+        ? {
+            porQue:
+              'Sua conta foi criada a partir do link de um participante do Programa Advocme Parceiros. ' +
+              'Guardamos só a data; o participante nunca vê seu nome, e-mail ou dados de pagamento.',
+            em: user.receivedPartnerReferral.attributedAt,
+          }
+        : null,
       escritoriosQueSaoSeus: user.firmsOwned,
       chamadosDeSuporte: user.tickets,
       sessoesAbertas: user.sessions,

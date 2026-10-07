@@ -37,13 +37,15 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { ProfilesService } from '../profiles/profiles.service'
 import { CorreioService } from '../mail/correio.service'
 import { PLAN_NAME, PLAN_PRICE } from '../plans'
-import { aoConfirmarPagamento, planoVigente } from '../assinatura'
+import { aoConfirmarPagamento, planoDaAssinatura } from '../assinatura'
+import { PartnersService } from '../partners/partners.service'
 import { AsaasApi, AsaasErro, type Cartao, type MeioDePagamento, type Titular } from './asaas.api'
 import { fimDoPeriodoPorVencimento, marcaExterna } from './asaas'
 import { digitos, documentoValido } from './documento'
@@ -202,12 +204,29 @@ export class CheckoutService {
     // Opcional só para os testes. No app vem do CorreioModule — ver o e-mail
     // confirmado em `assinar`, mesma regra de ProfilesService.setPlan.
     private readonly correio?: CorreioService,
+    // Opcional só para os testes. No app vem do PartnersModule.
+    @Optional() private readonly partners?: PartnersService,
   ) {}
 
   private indisponivel(): never {
     throw new ServiceUnavailableException(
       'O pagamento on-line não está disponível agora. Tente de novo em instantes.',
     )
+  }
+
+  /** Uma falha do Programa Parceiros nunca derruba um checkout aprovado. */
+  private async avisarPagamentoAoPrograma(profileId: string, plano: PlanoPago, cobranca: { id: string; value?: number }) {
+    if (!this.partners) return
+    try {
+      await this.partners.registrarConversao({
+        profileId,
+        plan: plano,
+        amount: typeof cobranca.value === 'number' ? cobranca.value : PLAN_PRICE[plano],
+        paymentId: cobranca.id,
+      })
+    } catch (e) {
+      this.log.error(`programa parceiros (conversão no checkout) falhou: ${e instanceof Error ? e.message : e}`)
+    }
   }
 
   async assinar(userId: string, bruto: unknown, remoteIp: string): Promise<ResultadoDoCheckout> {
@@ -242,7 +261,10 @@ export class CheckoutService {
     }
 
     const agora = new Date()
-    const vigente = planoVigente(perfil as any, agora)
+    // Decisão de COBRANÇA: o que a assinatura entrega. O Max de cortesia do
+    // Programa Parceiros não é assinatura — não impede assinar, nem muda a data
+    // da primeira cobrança.
+    const vigente = planoDaAssinatura(perfil as any, agora)
     // Assinatura em dia (ou em carência): trocar de plano ou de forma de pagamento
     // ainda não passa por aqui. Criar uma segunda seria cobrar duas vezes.
     if (perfil.billingSubscriptionId && vigente !== 'free' && perfil.planStatus !== 'canceled') {
@@ -375,6 +397,9 @@ export class CheckoutService {
             { ...aoConfirmarPagamento(pedido.plano, fim ? new Date(fim) : null), planScheduled: null },
             'checkout: cartão confirmado no Asaas',
           )
+          // Mesmo método do webhook, com o id da COBRANÇA: quando o
+          // PAYMENT_CONFIRMED chegar, segundos depois, não haverá segunda recompensa.
+          await this.avisarPagamentoAoPrograma(perfil.id, pedido.plano, primeira)
           return { meio: 'CREDIT_CARD', situacao: 'ativo', ...base, cartao }
         }
         return { meio: 'CREDIT_CARD', situacao: futura ? 'agendado' : 'em_analise', ...base, cartao }

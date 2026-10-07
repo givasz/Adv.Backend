@@ -18,7 +18,7 @@ import type { RequisicaoComAuth } from '../auth/session-context'
 import { clientIp } from '../security/net'
 import { checkRateLimit } from '../security/rate-limit'
 import type { Plan } from '../plans'
-import { planoVigente } from '../assinatura'
+import { planoVigente, SELECT_PARCEIRO } from '../assinatura'
 
 @Controller()
 export class AnalyticsController {
@@ -125,7 +125,7 @@ export class AnalyticsController {
       where: { userId },
       // Vigente, não contratado: o detalhamento das visitas é recurso pago, e
       // assinatura vencida não o entrega (ver src/assinatura.ts).
-      select: { plan: true, planStatus: true, currentPeriodEnd: true, graceUntil: true },
+      select: { plan: true, planStatus: true, currentPeriodEnd: true, graceUntil: true, partner: SELECT_PARCEIRO },
     })
     return this.analytics.resumoDoDono(userId, perfil ? planoVigente(perfil) : 'free')
   }

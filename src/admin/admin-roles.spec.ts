@@ -103,3 +103,23 @@ describe('segundo fator', () => {
     }
   })
 })
+
+describe('Programa Advocme Parceiros', () => {
+  it('readonly e moderação leem; suporte não abre dado comercial do programa', () => {
+    expect(pode('owner', 'parceiros:ler')).toBe(true)
+    expect(pode('moderator', 'parceiros:ler')).toBe(true)
+    expect(pode('readonly', 'parceiros:ler')).toBe(true)
+    expect(pode('support', 'parceiros:ler')).toBe(false)
+  })
+
+  it('só owner e moderação decidem, e decidir exige o segundo fator', () => {
+    expect(pode('owner', 'parceiros:gerir')).toBe(true)
+    expect(pode('moderator', 'parceiros:gerir')).toBe(true)
+    expect(pode('readonly', 'parceiros:gerir')).toBe(false)
+    expect(pode('support', 'parceiros:gerir')).toBe(false)
+    expect(decide('parceiros:gerir')).toBe(true)
+    expect(PERMISSOES_DE_DECISAO).toContain('parceiros:gerir')
+    // Consultar não é decidir: o segundo fator pendente não tranca a leitura.
+    expect(decide('parceiros:ler')).toBe(false)
+  })
+})

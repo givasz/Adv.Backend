@@ -43,6 +43,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
@@ -51,7 +52,7 @@ import { PLAN_NAME, PLAN_PRICE } from '../plans'
 import {
   aoCancelar,
   aoTrocarPlano,
-  planoVigente,
+  planoDaAssinatura,
   somarDias,
   valeAte,
   type Plan,
@@ -60,6 +61,7 @@ import {
 import { AsaasApi, AsaasErro, type CobrancaAsaas, type MeioDePagamento } from './asaas.api'
 import { lerMarca, marcaExterna } from './asaas'
 import { limparCartao } from './checkout.service'
+import { PartnersService } from '../partners/partners.service'
 
 /** Prazo do direito de arrependimento (CDC, art. 49), em dias corridos. */
 export const PRAZO_ARREPENDIMENTO_DIAS = 7
@@ -141,6 +143,8 @@ export class MinhaAssinaturaService {
     private readonly prisma: PrismaService,
     private readonly profiles: ProfilesService,
     private readonly asaas: AsaasApi,
+    // Opcional só para os testes. No app vem do PartnersModule.
+    @Optional() private readonly partners?: PartnersService,
   ) {}
 
   private async perfilDe(userId: string) {
@@ -177,7 +181,9 @@ export class MinhaAssinaturaService {
     const base: ResumoDaAssinatura = {
       online: this.asaas.configurado,
       plano: perfil.plan as Plan,
-      vigente: planoVigente(perfil as any, agora),
+      // A tela da ASSINATURA fala de cobrança: o Max de cortesia do Programa
+      // Parceiros não entra aqui (o perfil o mostra à parte).
+      vigente: planoDaAssinatura(perfil as any, agora),
       status: perfil.planStatus as PlanStatus,
       validoAte: fim ? fim.toISOString() : null,
       planScheduled: (perfil.planScheduled as Plan | null) ?? null,
@@ -224,6 +230,15 @@ export class MinhaAssinaturaService {
       // o nosso banco sabe (plano, status, datas) e esconde só o detalhe.
       this.log.warn(`resumo sem o Asaas: ${e instanceof AsaasErro ? e.codigo : 'erro'}`)
       return base
+    }
+  }
+
+  private async revogarNoPrograma(pagas: CobrancaAsaas[]) {
+    if (!this.partners) return
+    for (const c of pagas) {
+      await this.partners
+        .revogarPorPagamento(c.id, 'valor devolvido (direito de arrependimento)')
+        .catch((e) => this.log.error(`programa parceiros (arrependimento) falhou: ${e instanceof Error ? e.message : e}`))
     }
   }
 
@@ -283,6 +298,9 @@ export class MinhaAssinaturaService {
           await this.asaas.estornar(c.id, 'Direito de arrependimento (CDC, art. 49): cancelamento em até 7 dias.')
         }
         devolucao = 'feita'
+        // O dinheiro voltou: se este pagamento rendeu dias a um parceiro, eles caem
+        // agora — sem esperar o aviso de estorno do Asaas, que também os revogaria.
+        await this.revogarNoPrograma(pagas)
       } catch (e) {
         devolucao = 'pendente'
         this.log.error(`devolução automática falhou (${e instanceof AsaasErro ? e.codigo : 'erro'}) — chamado aberto`)

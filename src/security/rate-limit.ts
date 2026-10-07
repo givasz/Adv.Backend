@@ -229,3 +229,16 @@ export const CORREIO_RATE_RULES = {
   corrigirPorConta: { windowMs: 60 * 60 * 1000, max: 5 } as Rule,
   corrigirPorIp: { windowMs: 60 * 60 * 1000, max: 10 } as Rule,
 }
+
+// Programa Advocme Parceiros.
+//
+// A captura do link é pública (quem a chama ainda não tem conta): o teto por IP
+// impede que alguém use a rota para testar códigos em massa — a resposta já não
+// diz de quem é um código, e isto tira também o volume. As rotas do parceiro
+// exigem sessão; o teto por conta só segura a tela recarregada em laço e o aceite
+// clicado repetidas vezes.
+export const PARTNER_RATE_RULES = {
+  capturaPorIp: { windowMs: 10 * 60 * 1000, max: 30 } as Rule,
+  painelPorConta: { windowMs: 60 * 1000, max: 60 } as Rule,
+  aceitePorConta: { windowMs: 10 * 60 * 1000, max: 10 } as Rule,
+}
