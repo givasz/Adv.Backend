@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common'
 import type { Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
-import { planoVigente } from '../assinatura'
+import { planoVigente, SELECT_PARCEIRO } from '../assinatura'
 import { perfilVisivelAoPublico } from '../profiles/visibilidade'
 import { bloqueiosDaAgenda } from './blocks'
 import { safeEmail, safePhone } from '../security/sanitize'
@@ -46,7 +46,8 @@ export class AgendaService {
   constructor(private readonly prisma: PrismaService) {}
 
   private async dono(userId: string) {
-    const p = await this.prisma.profile.findUnique({ where: { userId } })
+    // A relação do Programa Parceiros vem junto: o Max de cortesia também abre a agenda.
+    const p = await this.prisma.profile.findUnique({ where: { userId }, include: { partner: SELECT_PARCEIRO } })
     if (!p) throw new NotFoundException('Perfil não encontrado.')
     return p
   }
@@ -157,12 +158,12 @@ export class AgendaService {
   }
 
   /** O perfil recebe pedido pelo site? Mesma condição em toda porta que a anuncia. */
-  private recebePedido(p: { plan: string; planStatus: string; currentPeriodEnd: Date | null; graceUntil: Date | null; meetingInboxEnabled: boolean; schedulingMode: string } | null) {
+  private recebePedido(p: { plan: string; planStatus: string; currentPeriodEnd: Date | null; graceUntil: Date | null; meetingInboxEnabled: boolean; schedulingMode: string; partner?: { status: string; benefitUntil: Date | null } | null } | null) {
     return !!p && planoVigente(p) === 'premium' && p.meetingInboxEnabled && ['assistant', 'whatsapp'].includes(p.schedulingMode)
   }
 
   async solicitar(slug: string, body: any) {
-    const p = await this.prisma.profile.findFirst({ where: { slug, ...perfilVisivelAoPublico() } })
+    const p = await this.prisma.profile.findFirst({ where: { slug, ...perfilVisivelAoPublico() }, include: { partner: SELECT_PARCEIRO } })
     if (!this.recebePedido(p as any)) {
       throw new NotFoundException('Este perfil não recebe solicitações pelo site.')
     }

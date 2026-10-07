@@ -44,6 +44,14 @@ export const MODELOS = [
   'convite-escritorio',
   'suporte-respondido',
   'termos-atualizados',
+  // Programa Advocme Parceiros — nenhum leva dado de quem foi indicado.
+  'parceiro-convidado',
+  'parceiro-ativado',
+  'parceiro-conversao-pendente',
+  'parceiro-beneficio-prorrogado',
+  'parceiro-beneficio-expirando',
+  'parceiro-suspenso',
+  'parceiro-encerrado',
 ] as const
 
 export type Modelo = (typeof MODELOS)[number]
@@ -73,6 +81,13 @@ export const PRIORIDADE: Record<Modelo, 0 | 1 | 2> = {
   'convite-escritorio': 1,
   'suporte-respondido': 1,
   'termos-atualizados': 2,
+  'parceiro-convidado': 1,
+  'parceiro-ativado': 1,
+  'parceiro-conversao-pendente': 1,
+  'parceiro-beneficio-prorrogado': 1,
+  'parceiro-beneficio-expirando': 1,
+  'parceiro-suspenso': 1,
+  'parceiro-encerrado': 1,
 }
 
 export interface Mensagem {
@@ -153,6 +168,14 @@ function horas(n: number): string {
 }
 
 // ---- Os modelos ---------------------------------------------------------------
+
+// Programa Advocme Parceiros. O que todos os avisos do programa repetem — e o que
+// nenhum deles diz: quem foi indicado. O parceiro sabe que "uma indicação" mudou
+// de situação, e vê no painel só o rótulo •••A1B2C3.
+const SOBRE_O_PROGRAMA =
+  'O programa é exclusivo para a indicação da plataforma a outros profissionais da advocacia. ' +
+  'Não há recompensa por indicação de clientes, causas, consultas ou contatos.'
+const PAINEL_DO_PROGRAMA: Link = { rotulo: 'Abrir o programa', caminho: '/parceiros' }
 
 const PRAZO_DE_RESPOSTA =
   'Se contestar, respondemos em até 10 dias — e, sem resposta nesse prazo, a medida cai sozinha.'
@@ -409,6 +432,105 @@ const CORPOS: Record<Modelo, (d: Dados) => Corpo> = {
       ].filter(Boolean),
       destaque: resposta ? { rotulo: 'Resposta', texto: resposta } : undefined,
       botao: { rotulo: 'Ver no advoc.me', caminho: '/suporte?aba=respostas' },
+    }
+  },
+
+  'parceiro-convidado': () => ({
+    assunto: 'Convite para o Programa Advocme Parceiros',
+    titulo: 'Você foi convidado para o Programa Advocme Parceiros',
+    paragrafos: [
+      'O advoc.me convidou a sua conta para o Programa Advocme Parceiros: você indica a plataforma a outros profissionais da advocacia e amplia o seu acesso ao MAX.',
+      'Para participar, leia as regras e confirme o aceite no painel do programa. Nada muda na sua conta antes disso.',
+    ],
+    botao: { rotulo: 'Ler as regras', caminho: '/parceiros' },
+    depois: [SOBRE_O_PROGRAMA],
+  }),
+
+  'parceiro-ativado': (d) => {
+    const ate = dia(d.ate)
+    return {
+      assunto: 'Sua participação no Programa Advocme Parceiros começou',
+      titulo: 'Participação ativada',
+      paragrafos: [
+        'Recebemos o seu aceite das regras do Programa Advocme Parceiros.',
+        ate ? `O seu acesso adicional ao MAX vale até ${ate}.` : 'O seu acesso adicional ao MAX já está valendo.',
+        'A cortesia não gera cobrança automática. Ao término, a sua conta volta ao plano que você paga hoje.',
+      ],
+      botao: PAINEL_DO_PROGRAMA,
+      depois: [SOBRE_O_PROGRAMA],
+    }
+  },
+
+  'parceiro-conversao-pendente': (d) => {
+    const validaEm = dia(d.validaEm)
+    return {
+      assunto: 'Uma indicação sua está em validação',
+      titulo: 'Pagamento em validação',
+      paragrafos: [
+        'Uma conta criada a partir do seu link teve o primeiro pagamento confirmado.',
+        validaEm
+          ? `Depois do período de validação, em ${validaEm}, os dias são somados ao seu acesso ao MAX — se o pagamento não for estornado.`
+          : 'Depois do período de validação, os dias são somados ao seu acesso ao MAX — se o pagamento não for estornado.',
+      ],
+      botao: PAINEL_DO_PROGRAMA,
+      depois: [SOBRE_O_PROGRAMA],
+    }
+  },
+
+  'parceiro-beneficio-prorrogado': (d) => {
+    const dias = typeof d.dias === 'number' && d.dias > 0 ? Math.floor(d.dias) : 0
+    const ate = dia(d.ate)
+    return {
+      assunto: 'Seu acesso ao MAX foi prorrogado',
+      titulo: 'Acesso ao MAX prorrogado',
+      paragrafos: [
+        dias ? `Uma indicação sua foi confirmada, e ${dias} dias foram somados ao seu acesso ao MAX.` : 'Uma indicação sua foi confirmada, e os dias foram somados ao seu acesso ao MAX.',
+        ate ? `O acesso vale agora até ${ate}.` : '',
+      ].filter(Boolean),
+      botao: PAINEL_DO_PROGRAMA,
+      depois: [SOBRE_O_PROGRAMA],
+    }
+  },
+
+  'parceiro-beneficio-expirando': (d) => {
+    const ate = dia(d.ate)
+    return {
+      assunto: 'Seu acesso adicional ao MAX está terminando',
+      titulo: 'O acesso adicional ao MAX termina em breve',
+      paragrafos: [
+        ate ? `O acesso adicional ao MAX do Programa Advocme Parceiros termina em ${ate}.` : 'O acesso adicional ao MAX do Programa Advocme Parceiros termina nos próximos dias.',
+        'Não há cobrança automática: ao término, a sua conta volta ao plano que você paga hoje. Nada do que você montou é apagado — o que for exclusivo do MAX só deixa de aparecer.',
+      ],
+      botao: PAINEL_DO_PROGRAMA,
+    }
+  },
+
+  'parceiro-suspenso': (d) => {
+    const motivo = texto(d.motivo, 1000)
+    return {
+      assunto: 'Sua participação no Programa Advocme Parceiros foi suspensa',
+      titulo: 'Participação suspensa',
+      paragrafos: [
+        'Enquanto a suspensão durar, o seu link não registra novas indicações e o acesso adicional ao MAX fica inativo. O prazo do benefício continua correndo.',
+        'A sua conta e a sua assinatura não mudam por causa disso.',
+      ],
+      destaque: motivo ? { rotulo: 'Motivo', texto: motivo } : undefined,
+      depois: ['Se você discorda, fale com a gente pelo Suporte dentro da sua conta.'],
+      botao: PAINEL_DO_PROGRAMA,
+    }
+  },
+
+  'parceiro-encerrado': (d) => {
+    const motivo = texto(d.motivo, 1000)
+    return {
+      assunto: 'Sua participação no Programa Advocme Parceiros foi encerrada',
+      titulo: 'Participação encerrada',
+      paragrafos: [
+        'O seu link deixou de valer e o acesso adicional ao MAX terminou. Indicações ainda em validação não geram mais dias.',
+        'A sua conta e a sua assinatura não mudam por causa disso, e o histórico do programa continua no seu painel.',
+      ],
+      destaque: motivo ? { rotulo: 'Motivo', texto: motivo } : undefined,
+      depois: ['Se você discorda, fale com a gente pelo Suporte dentro da sua conta.'],
     }
   },
 

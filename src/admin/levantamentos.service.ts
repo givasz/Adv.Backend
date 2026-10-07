@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
-import { planoVigente } from '../assinatura'
+import { planoDaAssinatura, planoVigente, SELECT_PARCEIRO } from '../assinatura'
 import { aceiteVigente } from '../legal/termos'
 
 // OS NÚMEROS DA PLATAFORMA — o que existe hoje e como chegou aqui.
@@ -91,6 +91,7 @@ export class LevantamentosService {
           published: true,
           moderationStatus: true,
           state: true,
+          partner: SELECT_PARCEIRO,
         },
       }),
       this.prisma.user.count(),
@@ -114,7 +115,10 @@ export class LevantamentosService {
     // usando o que pagou. Some da soma por plano e some do faturamento — e é a
     // única forma de ver as duas coisas ao mesmo tempo.
     const contratadoPago = perfis.filter((p) => p.plan !== 'free').length
-    const vigentePago = porPlano.pro + porPlano.premium
+    // "Em cortesia" é coisa de COBRANÇA (carência, mês já pago): conta pela
+    // assinatura, sem o Max do Programa Parceiros — senão a diferença ficaria
+    // negativa no dia em que houvesse mais parceiros que assinaturas vencidas.
+    const vigentePago = perfis.filter((p) => planoDaAssinatura(p as any) !== 'free').length
 
     const aceitePendente = usuarios.filter((u) => !aceiteVigente(u.termsVersion)).length
 

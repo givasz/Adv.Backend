@@ -15,6 +15,8 @@ import {
   aoTrocarPlano,
   aoVirarOPrazo,
   aoPerderOPlano,
+  beneficioParceiroAtivo,
+  planoDaAssinatura,
   CARENCIA_DIAS,
   CARENCIA_ENDERECO_DIAS,
   emCortesia,
@@ -265,5 +267,69 @@ describe('o prazo do endereço', () => {
         HOJE,
       ),
     ).toBe(false)
+  })
+})
+
+describe('Programa Advocme Parceiros: financeiro x efetivo', () => {
+  const ativo = (ate: Date | null) => ({ status: 'active', benefitUntil: ate })
+  const free = { plan: 'free', planStatus: 'active' }
+  const pro = { plan: 'pro', planStatus: 'active', currentPeriodEnd: dias(20) }
+  const max = { plan: 'premium', planStatus: 'active', currentPeriodEnd: dias(20) }
+
+  it('FREE com benefício ativo → Max; vencido → Free', () => {
+    expect(planoVigente({ ...free, partner: ativo(dias(10)) }, HOJE)).toBe('premium')
+    expect(planoVigente({ ...free, partner: ativo(dias(-1)) }, HOJE)).toBe('free')
+  })
+
+  it('PRO com benefício ativo → Max; vencido → volta ao PRO, não ao Free', () => {
+    expect(planoVigente({ ...pro, partner: ativo(dias(10)) }, HOJE)).toBe('premium')
+    expect(planoVigente({ ...pro, partner: ativo(dias(-1)) }, HOJE)).toBe('pro')
+  })
+
+  it('MAX pago é Max com ou sem benefício', () => {
+    expect(planoVigente(max, HOJE)).toBe('premium')
+    expect(planoVigente({ ...max, partner: ativo(dias(10)) }, HOJE)).toBe('premium')
+    expect(planoVigente({ ...max, partner: ativo(dias(-10)) }, HOJE)).toBe('premium')
+  })
+
+  it('suspenso, encerrado ou só convidado: o prazo gravado não eleva nada', () => {
+    for (const status of ['suspended', 'ended', 'invited']) {
+      expect(planoVigente({ ...free, partner: { status, benefitUntil: dias(10) } }, HOJE), status).toBe('free')
+      expect(planoVigente({ ...pro, partner: { status, benefitUntil: dias(10) } }, HOJE), status).toBe('pro')
+    }
+    expect(beneficioParceiroAtivo({ partner: { status: 'active', benefitUntil: null } }, HOJE)).toBe(false)
+    expect(beneficioParceiroAtivo({ partner: null }, HOJE)).toBe(false)
+  })
+
+  it('planoDaAssinatura ignora o programa por completo', () => {
+    expect(planoDaAssinatura({ ...free, partner: ativo(dias(10)) }, HOJE)).toBe('free')
+    expect(planoDaAssinatura({ ...pro, partner: ativo(dias(10)) }, HOJE)).toBe('pro')
+  })
+
+  it('a cobrança continua financeira: cortesia, vencimento e varredura não enxergam o benefício', () => {
+    // Pro cancelado e vencido, com Max de parceiro correndo: a ASSINATURA venceu.
+    const canceladoVencido = { plan: 'pro', planStatus: 'canceled', currentPeriodEnd: dias(-2), partner: ativo(dias(30)) }
+    expect(venceu(canceladoVencido, HOJE)).toBe(true)
+    expect(aoVirarOPrazo(canceladoVencido, HOJE)).toMatchObject({ plan: 'free' })
+    expect(emCortesia({ ...free, partner: ativo(dias(30)) }, HOJE)).toBe(false)
+    // …e o efetivo segue Max pelo benefício.
+    expect(planoVigente(canceladoVencido, HOJE)).toBe('premium')
+  })
+
+  it('a expiração vale pela leitura, no segundo exato — sem esperar varredura', () => {
+    const ate = new Date(HOJE.getTime() + 1000)
+    expect(planoVigente({ ...free, partner: ativo(ate) }, HOJE)).toBe('premium')
+    expect(planoVigente({ ...free, partner: ativo(ate) }, ate)).toBe('free')
+  })
+
+  it('perfil sem participação continua exatamente igual ao de antes', () => {
+    for (const p of [free, pro, max, { plan: 'pro', planStatus: 'past_due', graceUntil: dias(-1), currentPeriodEnd: dias(-5) }]) {
+      expect(planoVigente(p, HOJE)).toBe(planoDaAssinatura(p, HOJE))
+    }
+  })
+
+  it('o endereço limpo não vence enquanto o Max de parceiro vale', () => {
+    expect(enderecoVenceu({ ...free, slugGraceUntil: dias(-1), partner: ativo(dias(5)) }, HOJE)).toBe(false)
+    expect(enderecoVenceu({ ...free, slugGraceUntil: dias(-1), partner: ativo(dias(-1)) }, HOJE)).toBe(true)
   })
 })

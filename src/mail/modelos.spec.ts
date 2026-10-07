@@ -38,6 +38,13 @@ const DADOS: Record<Modelo, Record<string, unknown>> = {
     situacao: 'resolved',
   },
   'termos-atualizados': { versao: '2026-09-12' },
+  'parceiro-convidado': {},
+  'parceiro-ativado': { ate: '2026-11-21T12:00:00Z' },
+  'parceiro-conversao-pendente': { validaEm: '2026-10-14T12:00:00Z', dias: 30 },
+  'parceiro-beneficio-prorrogado': { dias: 30, ate: '2026-12-21T12:00:00Z' },
+  'parceiro-beneficio-expirando': { ate: '2026-10-12T12:00:00Z' },
+  'parceiro-suspenso': { motivo: 'Divulgação do link em massa.' },
+  'parceiro-encerrado': { motivo: 'Autoindicação confirmada.' },
 }
 
 const todos = () => MODELOS.map((m) => ({ modelo: m, ...renderizar(m, DADOS[m], { site: SITE }) }))
@@ -162,5 +169,22 @@ describe('os modelos de e-mail', () => {
     expect(r.texto).toContain('15/09/2026')
     expect(r.html).not.toContain('<b>outro')
     expect(r.texto).toContain(`${SITE}/suporte?aba=respostas`)
+  })
+
+  it('programa parceiros: nenhum aviso leva dado de quem foi indicado, nem fala de cliente como recompensa', () => {
+    // Mesmo que os dados tragam nome, e-mail ou pagamento do indicado, nada disso
+    // sai: o parceiro sabe que "uma indicação" mudou de situação, e só.
+    const isca = { nome: 'Fulana de Tal', email: 'fulana@exemplo.test', paymentId: 'pay_123456', oab: 'SP 123456' }
+    for (const m of MODELOS.filter((x) => x.startsWith('parceiro-'))) {
+      const r = renderizar(m, { ...DADOS[m], ...isca }, { site: SITE })
+      for (const v of Object.values(isca)) {
+        expect(r.texto, m).not.toContain(v)
+        expect(r.html, m).not.toContain(v)
+      }
+      expect(r.texto, m).not.toMatch(/comissão|ganhe dinheiro|venda de causas|lead/i)
+    }
+    expect(renderizar('parceiro-ativado', DADOS['parceiro-ativado'], { site: SITE }).texto).toMatch(/não gera cobrança automática/)
+    expect(renderizar('parceiro-beneficio-prorrogado', DADOS['parceiro-beneficio-prorrogado'], { site: SITE }).texto).toContain('30 dias')
+    expect(renderizar('parceiro-convidado', {}, { site: SITE }).texto).toContain(`${SITE}/parceiros`)
   })
 })

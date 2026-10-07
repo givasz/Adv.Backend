@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service'
 import { ProfilesModule } from '../profiles/profiles.module'
 import { SessionModule } from '../auth/session.module'
 import { CorreioModule } from '../mail/correio.module'
+import { PartnersModule } from '../partners/partners.module'
 import { BillingController } from './billing.controller'
 import { AsaasController } from './asaas.controller'
 import { CheckoutController } from './checkout.controller'
@@ -22,8 +23,10 @@ import { BillingLockService } from './billing-lock'
 //
 // As três gravam plano pelo mesmo caminho: ProfilesService.aplicarAssinaturaPorPerfil.
 // CorreioModule: assinar pede o e-mail confirmado quando o correio está ligado.
+// PartnersModule: o pagamento confirmado (webhook ou checkout) e o estorno avisam o
+// Programa Parceiros, pelo mesmo método idempotente nos dois caminhos.
 @Module({
-  imports: [ProfilesModule, SessionModule, CorreioModule],
+  imports: [ProfilesModule, SessionModule, CorreioModule, PartnersModule],
   controllers: [BillingController, AsaasController, CheckoutController],
   providers: [BillingService, BillingLockService, AssinaturasService, CheckoutService, MinhaAssinaturaService, AsaasApi, PrismaService],
   exports: [BillingService, AssinaturasService],

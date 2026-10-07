@@ -62,6 +62,12 @@ export const PERMISSOES = {
    * e essa resposta é do responsável pela plataforma.
    */
   'acesso:ler': ['owner'],
+  /**
+   * Ver o Programa Advocme Parceiros: participações, indicações e recompensas.
+   * Fora de `support`: é dado comercial do programa, e quem atende chamado não
+   * precisa saber quem indicou quem.
+   */
+  'parceiros:ler': ['owner', 'moderator', 'readonly'],
 
   // ---- Decisão ----
   /** Avisar, censurar seções, restringir ou liberar um perfil. */
@@ -74,6 +80,8 @@ export const PERMISSOES = {
   'contas:sancionar': ['owner', 'moderator'],
   /** Criar, mudar o papel, desativar administradores e derrubar sessões deles. */
   'admins:gerir': ['owner'],
+  /** Convidar, suspender, reativar, encerrar, ajustar dias, corrigir indicação e revogar recompensa. */
+  'parceiros:gerir': ['owner', 'moderator'],
 } as const satisfies Record<string, readonly AdminRole[]>
 
 export type Permissao = keyof typeof PERMISSOES
@@ -105,6 +113,7 @@ export const PERMISSOES_DE_DECISAO: readonly Permissao[] = [
   'suporte:responder',
   'contas:sancionar',
   'admins:gerir',
+  'parceiros:gerir',
 ]
 
 export function decide(permissao: Permissao): boolean {

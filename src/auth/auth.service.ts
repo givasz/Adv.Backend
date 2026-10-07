@@ -4,6 +4,7 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common'
@@ -17,7 +18,8 @@ import type { RequisicaoComAuth } from './session-context'
 import { passwordProblem } from '../password'
 import { clampText, EMAIL_MAX } from '../security/sanitize'
 import { NAME_MAX } from '../plans'
-import { planoVigente } from '../assinatura'
+import { planoVigente, SELECT_PARCEIRO } from '../assinatura'
+import { limparAtribuicao, lerAtribuicao, parceiroQueAtribui } from '../partners/partner-attribution'
 import { CorreioService } from '../mail/correio.service'
 import { conferirToken, emitirToken, gastarToken } from './tokens-de-email'
 
@@ -93,6 +95,8 @@ export type ResultadoGoogle =
 
 @Injectable()
 export class AuthService {
+  private readonly log = new Logger('Auth')
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly sessions: SessionService,
@@ -190,10 +194,15 @@ export class AuthService {
     if (exists) throw new ConflictException('Já existe uma conta com este e-mail.')
 
     const cleanName = clampText(name, NAME_MAX) || undefined
-    const user = await this.prisma.user.create({
+    // Programa Parceiros: a conta NOVA nasce ligada ao parceiro do link, se o
+    // cookie assinado ainda valer e a participação estiver ativa. Inválido,
+    // vencido ou suspenso: cadastro normal, sem erro e sem aviso.
+    let indicacao = await this.indicacaoDoCadastro(req)
+    const hash = await hashPassword(senha)
+    const criarConta = (partnerId: string | null) => this.prisma.user.create({
       data: {
         email: mail,
-        password: await hashPassword(senha),
+        password: hash,
         // O aceite entra na MESMA transação que cria a conta. Gravar depois
         // abriria a janela em que uma conta existe sem registro de aceite — e a
         // única conta que interessa numa disputa seria justamente a que caiu na
@@ -202,9 +211,23 @@ export class AuthService {
         termsVersion: TERMS_VERSION,
         termsIp: aceite.ip.slice(0, 60),
         profile: { create: this.starterProfile(cleanName) },
+        // Na MESMA escrita que cria a conta: não existe conta nova indicada sem
+        // o vínculo, nem vínculo de uma conta que já existia.
+        ...(partnerId ? { receivedPartnerReferral: { create: { partnerId } } } : {}),
       },
       select: { id: true, email: true, profile: { select: { id: true, name: true, plan: true } } },
     })
+    let user: Awaited<ReturnType<typeof criarConta>>
+    try {
+      user = await criarConta(indicacao)
+    } catch (e) {
+      // A participação sumiu entre a conferência e a escrita: a conta nasce sem
+      // indicação. O cadastro nunca cai por causa do programa.
+      if (!indicacao || erroDeUnicidade(e)) throw e
+      indicacao = null
+      user = await criarConta(null)
+    }
+    this.consumirIndicacao(req, indicacao)
     if (user.profile) await this.resolvePendingInvites(mail, user.profile.id)
 
     // Confirmação do e-mail. NÃO trava o cadastro: a pessoa entra na hora, monta
@@ -242,6 +265,18 @@ export class AuthService {
       data: { termsAcceptedAt: new Date(), termsVersion: TERMS_VERSION, termsIp: ip.slice(0, 60) },
     })
     return { termsVersion: TERMS_VERSION }
+  }
+
+  /** O parceiro que esta conta nova recebe, se a atribuição do navegador ainda valer. */
+  private async indicacaoDoCadastro(req: RequisicaoComAuth): Promise<string | null> {
+    return parceiroQueAtribui(this.prisma as any, lerAtribuicao(req))
+  }
+
+  /** A conta nasceu: o cookie da indicação foi consumido (com ou sem vínculo) e sai. */
+  private consumirIndicacao(req: RequisicaoComAuth, partnerId: string | null): void {
+    if (lerAtribuicao(req)) limparAtribuicao(req)
+    // Só o fato e o id interno da participação — nunca quem foi indicado.
+    if (partnerId) this.log.log(`REFERRAL_ATTRIBUTED partner=${partnerId}`)
   }
 
   // Convites feitos para um e-mail SEM conta ficam guardados em FirmInvite (o
@@ -296,6 +331,8 @@ export class AuthService {
             planStatus: true,
             currentPeriodEnd: true,
             graceUntil: true,
+            // O Max do Programa Parceiros também é plano vigente.
+            partner: SELECT_PARCEIRO,
           },
         },
       },
@@ -398,7 +435,7 @@ export class AuthService {
       emailVerifiedAt: true,
       // Plano VIGENTE — mesma razão do login.
       profile: {
-        select: { name: true, plan: true, planStatus: true, currentPeriodEnd: true, graceUntil: true },
+        select: { name: true, plan: true, planStatus: true, currentPeriodEnd: true, graceUntil: true, partner: SELECT_PARCEIRO },
       },
     } as const
 
@@ -473,7 +510,10 @@ export class AuthService {
     if (!opcoes.aceitouTermos) return { etapa: 'aceite', email, nome }
 
     const agora = new Date()
-    const criado = await this.prisma.user
+    // Só aqui — a conta está NASCENDO. Entrar numa conta que já existia (os dois
+    // ramos acima) nunca cria indicação.
+    let indicacao = await this.indicacaoDoCadastro(req)
+    const criarConta = (partnerId: string | null) => this.prisma.user
       .create({
         data: {
           email,
@@ -488,6 +528,7 @@ export class AuthService {
           termsVersion: TERMS_VERSION,
           termsIp: opcoes.ip.slice(0, 60),
           profile: { create: this.starterProfile(nome || undefined) },
+          ...(partnerId ? { receivedPartnerReferral: { create: { partnerId } } } : {}),
         },
         select: { id: true, email: true, profile: { select: { id: true, name: true } } },
       })
@@ -498,6 +539,15 @@ export class AuthService {
         }
         throw e
       })
+    let criado: Awaited<ReturnType<typeof criarConta>>
+    try {
+      criado = await criarConta(indicacao)
+    } catch (e) {
+      if (!indicacao || e instanceof ConflictException) throw e
+      indicacao = null
+      criado = await criarConta(null)
+    }
+    this.consumirIndicacao(req, indicacao)
     if (criado.profile) await this.resolvePendingInvites(email, criado.profile.id)
 
     const sessao = await this.sessionFor(
@@ -889,6 +939,7 @@ export class AuthService {
             planStatus: true,
             currentPeriodEnd: true,
             graceUntil: true,
+            partner: SELECT_PARCEIRO,
           },
         },
       },

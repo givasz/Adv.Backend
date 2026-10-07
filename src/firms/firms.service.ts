@@ -11,7 +11,7 @@ import { FIRM_PRICING, firmMonthlyPrice, slugify, type Plan } from '../plans'
 import { avatarPublico, ProfilesService } from '../profiles/profiles.service'
 import { perfilVisivelAoPublico, secoesCensuradas } from '../profiles/visibilidade'
 import { agendaPublica, triagemPublica } from '../profiles/agenda-publica'
-import { planoVigente } from '../assinatura'
+import { planoVigente, SELECT_PARCEIRO } from '../assinatura'
 import {
   clampOrNull,
   clampText,
@@ -138,6 +138,9 @@ export class FirmsService {
               include: {
                 areas: { orderBy: { order: 'asc' } },
                 socials: true,
+                // Só para o plano vigente (agenda, triagem, caixa de pedidos);
+                // toApi não devolve nada do programa.
+                partner: SELECT_PARCEIRO,
               },
             },
           },
@@ -215,6 +218,7 @@ export class FirmsService {
                 areas: { orderBy: { order: 'asc' } },
                 socials: true,
                 user: { select: { email: true } },
+                partner: SELECT_PARCEIRO,
               },
             },
           },

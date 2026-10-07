@@ -12,7 +12,7 @@ import {
   type QuemGera,
 } from '../security/rate-limit'
 import { clientIp } from '../security/net'
-import { planoVigente } from '../assinatura'
+import { planoVigente, SELECT_PARCEIRO } from '../assinatura'
 
 // Recursos de IA por plano — FONTE DA VERDADE do servidor. Espelha
 // frontend/src/lib/aiFeatures.ts, que decide qual botão aparece; aqui é onde a
@@ -108,7 +108,7 @@ export class AiController {
         where: { userId },
         // O plano CONTRATADO não basta: quem não pagou não usa a IA do plano. Quem
         // responde "o que vale agora" é planoVigente (ver src/assinatura.ts).
-        select: { plan: true, planStatus: true, currentPeriodEnd: true, graceUntil: true },
+        select: { plan: true, planStatus: true, currentPeriodEnd: true, graceUntil: true, partner: SELECT_PARCEIRO },
       })
       return p ? planoVigente(p) : 'free'
     } catch {

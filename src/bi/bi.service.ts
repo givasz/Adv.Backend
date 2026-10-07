@@ -1,6 +1,6 @@
 import { Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
-import { planoVigente } from '../assinatura'
+import { planoVigente, SELECT_PARCEIRO } from '../assinatura'
 import { diaLocal, janelaDoMes, mesAnterior, mesLocal, mesSeguinte } from './tempo'
 
 // A ROTINA QUE GUARDA A HISTÓRIA — ver docs/plano-bi.md e prisma/bi/bi.sql.
@@ -152,6 +152,8 @@ export class BiService implements OnModuleInit, OnModuleDestroy {
           moderationStatus: true,
           state: true,
           firmMembership: { select: { id: true } },
+          // O Max do Programa Parceiros é plano vigente; sem isto o retrato diria Free.
+          partner: SELECT_PARCEIRO,
         },
         orderBy: { id: 'asc' },
         take: LOTE,

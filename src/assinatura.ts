@@ -94,7 +94,26 @@ export interface EstadoAssinatura {
   planScheduled?: string | null
   /** até quando o endereço limpo ainda é desta pessoa depois de cair para o Free */
   slugGraceUntil?: Date | string | null
+  /**
+   * Programa Advocme Parceiros — o acesso ADICIONAL ao Max, que não é assinatura.
+   *
+   * Só `planoVigente` olha para isto. Quem decide cobrança (`planoDaAssinatura`,
+   * `valeAte`, `emCortesia`, `venceu`, `aoVirarOPrazo`) ignora o campo de
+   * propósito: o benefício não cria, não prorroga e não cancela cobrança nenhuma.
+   *
+   * ⚠️ Toda consulta cujo resultado passa por `planoVigente` precisa trazer esta
+   * relação (`partner: { select: { status: true, benefitUntil: true } }`). Sem
+   * ela, o parceiro é lido como se não tivesse benefício — o perfil cairia para o
+   * plano financeiro em silêncio.
+   */
+  partner?: {
+    status?: string | null
+    benefitUntil?: Date | string | null
+  } | null
 }
+
+/** O `select` que toda leitura de plano efetivo precisa incluir. */
+export const SELECT_PARCEIRO = { select: { status: true, benefitUntil: true } } as const
 
 /** Data tolerante a string (o mock do front e o JSON do webhook mandam string). */
 function data(v: Date | string | null | undefined): Date | null {
@@ -158,16 +177,20 @@ export function valeAte(p: EstadoAssinatura): Date | null {
 }
 
 /**
- * O PLANO QUE VALE AGORA. É esta função — e não `Profile.plan` — que decide o que
- * o perfil entrega: tema, agendamento, vídeo, FAQ, IA, métricas.
+ * O PLANO QUE A ASSINATURA ENTREGA AGORA — só dinheiro e datas de cobrança.
  *
  * `Profile.plan` continua sendo "o que a pessoa CONTRATOU", e é por isso que ele
  * não é rebaixado no banco assim que o prazo vence: preservá-lo é o que permite
  * religar tudo no instante em que o pagamento entra, sem a pessoa refazer nada — e
  * é o que deixa o painel dizer "seu Max está suspenso" em vez de fingir que nunca
  * houve um Max.
+ *
+ * É esta a função de toda decisão de COBRANÇA: checkout, troca de plano,
+ * cancelamento, Minha assinatura, varredura. Ela ignora o Programa Parceiros — um
+ * Max de cortesia não pode fazer o checkout achar que já existe assinatura Max,
+ * nem a varredura achar que há algo pago a vencer.
  */
-export function planoVigente(p: EstadoAssinatura, agora: Date = new Date()): Plan {
+export function planoDaAssinatura(p: EstadoAssinatura, agora: Date = new Date()): Plan {
   const contratado = planoDe(p.plan)
   if (contratado === 'free') return 'free'
   const ate = valeAte(p)
@@ -175,16 +198,49 @@ export function planoVigente(p: EstadoAssinatura, agora: Date = new Date()): Pla
   return ate.getTime() > agora.getTime() ? contratado : 'free'
 }
 
-/** O acesso pago está de pé só por causa de uma carência/período residual? */
+/**
+ * O benefício do Programa Parceiros vale AGORA?
+ *
+ * Três condições, todas lidas na hora — nada depende de a varredura ter passado:
+ * participação ativa (suspensa, encerrada ou só convidada não eleva nada), prazo
+ * gravado, e prazo no futuro. Vencido o prazo, o recurso fecha no mesmo segundo.
+ */
+export function beneficioParceiroAtivo(p: EstadoAssinatura, agora: Date = new Date()): boolean {
+  const parceiro = p.partner
+  if (!parceiro || parceiro.status !== 'active') return false
+  const ate = data(parceiro.benefitUntil)
+  return !!ate && ate.getTime() > agora.getTime()
+}
+
+/**
+ * O PLANO QUE VALE AGORA. É esta função — e não `Profile.plan` — que decide o que
+ * o perfil entrega: tema, agendamento, vídeo, FAQ, IA, métricas.
+ *
+ * É o plano da assinatura, elevado ao Max enquanto o benefício do Programa
+ * Parceiros estiver ativo. Nada é gravado: quando o benefício acaba, a leitura
+ * volta sozinha ao plano financeiro (Free continua Free, Pro continua Pro).
+ */
+export function planoVigente(p: EstadoAssinatura, agora: Date = new Date()): Plan {
+  const financeiro = planoDaAssinatura(p, agora)
+  return beneficioParceiroAtivo(p, agora) ? 'premium' : financeiro
+}
+
+/** O acesso pago está de pé só por causa de uma carência/período residual? (financeiro) */
 export function emCortesia(p: EstadoAssinatura, agora: Date = new Date()): boolean {
   const status = statusDe(p.planStatus)
   if (status !== 'past_due' && status !== 'canceled') return false
-  return planoVigente(p, agora) !== 'free'
+  return planoDaAssinatura(p, agora) !== 'free'
 }
 
-/** Já venceu e ainda não foi reconciliado no banco? (usado pela varredura diária) */
+/**
+ * Já venceu e ainda não foi reconciliado no banco? (usado pela varredura diária)
+ *
+ * Financeiro: o benefício de parceiro não segura uma assinatura vencida de pé —
+ * a assinatura cai para o Free do mesmo jeito, e é o benefício (lido à parte)
+ * que continua entregando o Max enquanto durar.
+ */
 export function venceu(p: EstadoAssinatura, agora: Date = new Date()): boolean {
-  return planoDe(p.plan) !== 'free' && planoVigente(p, agora) === 'free'
+  return planoDe(p.plan) !== 'free' && planoDaAssinatura(p, agora) === 'free'
 }
 
 /**

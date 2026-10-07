@@ -151,6 +151,9 @@ model User {
   emailTokens          EmailToken[]
   // Avisos por e-mail endereçados a esta conta — ver MailOutbox.
   avisosPorEmail       MailOutbox[]
+  // Programa Advocme Parceiros: a indicação que trouxe ESTA conta, quando houve.
+  // Uma só (referredUserId é único) e imutável pelo usuário — ver src/partners.
+  receivedPartnerReferral PartnerReferral? @relation("ReferredUser")
 }
 
 // Sessão de login. O cookie HttpOnly leva um segredo aleatório; aqui fica o hash
@@ -753,6 +756,9 @@ model Profile {
   meetingRequests MeetingRequest[]
   // Vínculo com um escritório (opcional). Presente quando o advogado integra uma sociedade.
   firmMembership FirmMembership?
+  // Programa Advocme Parceiros (opcional). NUNCA vai à resposta pública do perfil:
+  // o vínculo só aparece no painel autenticado do próprio parceiro e no console.
+  partner        PartnerMembership?
   // Histórico para análise (ver src/bi e prisma/bi/bi.sql). Cascade de propósito:
   // excluir a conta tem de alcançar o derivado, senão não é exclusão.
   biDias         BiPerfilDia[]
@@ -1130,6 +1136,130 @@ model ModeloProprio {
   updatedAt DateTime @updatedAt
 
   @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// PROGRAMA ADVOCME PARCEIROS — ver src/partners/
+//
+// Recompensa UMA sequência e nenhuma outra: o parceiro indica o SOFTWARE a outro
+// profissional, essa pessoa cria uma conta nova, paga Pro ou Max, o pagamento é
+// confirmado e, passada a janela de validação, o parceiro ganha dias de Max.
+//
+// Nada aqui se liga a cliente jurídico, visitante, contato, triagem, pedido de
+// reunião ou visita de perfil — e não pode passar a se ligar. Não há FK nem
+// leitura cruzada com MeetingRequest, LinkEvent, CalendarEntry ou Report. O
+// benefício é dia de acesso, nunca dinheiro, e não altera Profile.plan: quem
+// decide o plano efetivo é planoVigente() em src/assinatura.ts.
+// ---------------------------------------------------------------------------
+
+//   invited   → convidado pelo console; ainda não aceitou as regras
+//   active    → aceitou; o código atribui e o benefício vale
+//   suspended → código não atribui e o benefício fica inativo (o prazo corre)
+//   ended     → definitivo; histórico preservado
+enum PartnerStatus {
+  invited
+  active
+  suspended
+  ended
+}
+
+//   initial  → os 45 dias do aceite (uma vez por participação)
+//   referral → os 30 dias de uma conta indicada que pagou (uma por indicação)
+//   manual   → ajuste do console, com motivo e AdminAction
+enum PartnerRewardType {
+  initial
+  referral
+  manual
+}
+
+//   pending   → pagamento em validação (7 dias); não mexe no benefício
+//   confirmed → dias somados ao benefício
+//   revoked   → estorno, chargeback, encerramento ou decisão do console
+enum PartnerRewardStatus {
+  pending
+  confirmed
+  revoked
+}
+
+model PartnerMembership {
+  id                  String            @id @default(cuid())
+  profileId           String            @unique
+  profile             Profile           @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  // Sorteado (16 bytes, base64url). Nunca derivado de nome, slug, e-mail ou OAB.
+  referralCode        String            @unique
+  status              PartnerStatus     @default(invited)
+  // Até quando o acesso adicional ao Max vale. A suspensão não pausa o relógio.
+  benefitUntil        DateTime?
+  // ---- Aceite das regras do programa (mesmo padrão de User.terms*) ----
+  termsVersion        String            @default("")
+  termsAcceptedAt     DateTime?
+  termsIp             String            @default("")
+  invitedAt           DateTime          @default(now())
+  activatedAt         DateTime?
+  suspendedAt         DateTime?
+  endedAt             DateTime?
+  // Quando a varredura já reconciliou o perfil depois do fim do benefício. Nulo
+  // enquanto há benefício correndo; zerado sempre que o prazo é prorrogado.
+  benefitReconciledAt DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  referrals           PartnerReferral[]
+  rewards             PartnerReward[]
+
+  @@index([status, benefitUntil])
+  @@index([benefitUntil])
+  @@index([createdAt])
+}
+
+// Uma conta NOVA criada a partir do link de um parceiro (first-touch, 30 dias
+// entre o clique e o cadastro). O vínculo não expira e o usuário não o troca.
+model PartnerReferral {
+  id                     String            @id @default(cuid())
+  partnerId              String
+  partner                PartnerMembership @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  // SetNull: a pessoa indicada pode excluir a própria conta; o histórico do
+  // parceiro fica, sem apontar para ninguém.
+  referredUserId         String?           @unique
+  referredUser           User?             @relation("ReferredUser", fields: [referredUserId], references: [id], onDelete: SetNull)
+  attributedAt           DateTime          @default(now())
+  // Primeira confirmação de pagamento real de Pro ou Max. Renovação não conta.
+  convertedAt            DateTime?
+  disqualifiedAt         DateTime?
+  disqualificationReason String            @default("")
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+  reward                 PartnerReward?
+
+  @@index([partnerId, attributedAt])
+}
+
+// O livro-razão do benefício. Linhas não são apagadas: estorno vira `revoked`.
+model PartnerReward {
+  id                   String              @id @default(cuid())
+  partnerId            String
+  partner              PartnerMembership   @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  // Uma recompensa por indicação, no máximo — o banco garante.
+  referralId           String?             @unique
+  referral             PartnerReferral?    @relation(fields: [referralId], references: [id], onDelete: SetNull)
+  // Idempotência: "initial:<partnerId>", "referral:<referralId>", "manual:<uuid>".
+  key                  String              @unique
+  type                 PartnerRewardType
+  status               PartnerRewardStatus
+  // Dias de Max. Negativo só em ajuste manual do console.
+  days                 Int
+  // `payment.id` do Asaas — NÃO o id do webhook. PAYMENT_CONFIRMED e
+  // PAYMENT_RECEIVED do mesmo pagamento chegam com ids de evento diferentes.
+  sourcePaymentId      String?             @unique
+  sourceBillingEventId String?
+  eligibleAt           DateTime?
+  confirmedAt          DateTime?
+  revokedAt            DateTime?
+  reason               String              @default("")
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  @@index([partnerId, status, createdAt])
+  @@index([status, eligibleAt])
 }
 
 // ---------------------------------------------------------------------------
