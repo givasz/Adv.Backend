@@ -4,7 +4,7 @@ import { PartnersService } from './partners.service'
 // A VARREDURA DO PROGRAMA PARCEIROS — mesmo desenho de billing/assinaturas.service:
 // o próprio processo acorda, sem cron do sistema para alguém esquecer de instalar.
 //
-// Quatro passos, nesta ordem, cada um no seu `try`:
+// Cinco passos, nesta ordem, cada um no seu `try`:
 //
 //  1. Recompensas cuja validação de 7 dias terminou → confirmadas, dias somados.
 //  2. Pendentes de participação encerrada → revogadas (não amadurecem).
@@ -12,6 +12,8 @@ import { PartnersService } from './partners.service'
 //     prazo do endereço). Os recursos já tinham fechado na leitura, no segundo do
 //     vencimento: nada aqui é condição para alguém perder o Max na hora certa.
 //  4. Benefício que acaba em até 7 dias → um aviso por prazo.
+//  5. Convite por e-mail não usado em 90 dias → apagado (é e-mail de quem nunca
+//     se cadastrou).
 //
 // Idempotente: rodar dez vezes tem o efeito de rodar uma. Lotes limitados; o que
 // sobrar fica para a passagem seguinte. Uma linha problemática não para as outras.
@@ -61,6 +63,7 @@ export class PartnerMaintenanceService implements OnModuleInit, OnModuleDestroy 
       const revogadas = await passo('revogação de encerradas', () => this.partners.revogarDeEncerrados(agora, LOTE))
       const reconciliados = await passo('fim do benefício', () => this.partners.reconciliarVencidos(agora, LOTE))
       const avisados = await passo('aviso de fim', () => this.partners.avisarExpirando(agora, LOTE))
+      await passo('convites por e-mail vencidos', () => this.partners.expurgarConvitesVencidos(agora))
       if (confirmadas + revogadas + reconciliados > 0) {
         this.log.log(`varredura: ${confirmadas} confirmada(s), ${revogadas} revogada(s), ${reconciliados} benefício(s) encerrado(s)`)
       }

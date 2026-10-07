@@ -46,6 +46,7 @@ export const MODELOS = [
   'termos-atualizados',
   // Programa Advocme Parceiros — nenhum leva dado de quem foi indicado.
   'parceiro-convidado',
+  'parceiro-convite-sem-conta',
   'parceiro-ativado',
   'parceiro-conversao-pendente',
   'parceiro-beneficio-prorrogado',
@@ -82,6 +83,7 @@ export const PRIORIDADE: Record<Modelo, 0 | 1 | 2> = {
   'suporte-respondido': 1,
   'termos-atualizados': 2,
   'parceiro-convidado': 1,
+  'parceiro-convite-sem-conta': 1,
   'parceiro-ativado': 1,
   'parceiro-conversao-pendente': 1,
   'parceiro-beneficio-prorrogado': 1,
@@ -105,7 +107,7 @@ interface Link {
 }
 
 /** Por que a pessoa está recebendo — é a primeira frase do rodapé. */
-type Motivo = 'conta' | 'denuncia' | 'convite'
+type Motivo = 'conta' | 'denuncia' | 'convite' | 'programa'
 
 interface Corpo {
   assunto: string
@@ -446,6 +448,25 @@ const CORPOS: Record<Modelo, (d: Dados) => Corpo> = {
     depois: [SOBRE_O_PROGRAMA],
   }),
 
+  // Para quem AINDA NÃO tem conta. O nome do programa é "Parceiros", nunca
+  // "sócios": não há sociedade (as próprias regras dizem isso), e "sócio" na
+  // advocacia é sociedade de advogados — outra coisa, com registro na OAB.
+  'parceiro-convite-sem-conta': () => ({
+    motivo: 'programa',
+    assunto: 'Convite para o Programa Advocme Parceiros',
+    titulo: 'Você foi convidado para o Programa Advocme Parceiros',
+    paragrafos: [
+      'A equipe do advoc.me convidou este e-mail para o Programa Advocme Parceiros: profissionais da advocacia que indicam a plataforma a colegas e, com isso, ampliam o próprio acesso ao MAX.',
+      'Para participar, crie sua conta com este mesmo e-mail. O convite aparece no seu painel, com as regras do programa; nada é ativado antes do seu aceite.',
+    ],
+    botao: { rotulo: 'Criar minha conta', caminho: '/criar-conta?next=%2Fparceiros' },
+    depois: [
+      SOBRE_O_PROGRAMA,
+      'Se você não esperava este convite, ignore esta mensagem. Sem cadastro, este endereço é apagado da nossa lista de convites em 90 dias.',
+    ],
+    links: [{ rotulo: 'Já tenho conta com este e-mail', caminho: '/entrar?next=%2Fparceiros' }],
+  }),
+
   'parceiro-ativado': (d) => {
     const ate = dia(d.ate)
     return {
@@ -578,6 +599,10 @@ const POR_QUE: Record<Motivo, { porque: string; canal: string }> = {
   },
   convite: {
     porque: 'Você recebeu esta mensagem porque um escritório informou este endereço ao convidar um advogado no advoc.me.',
+    canal: 'Esta caixa não recebe respostas.',
+  },
+  programa: {
+    porque: 'Você recebeu esta mensagem porque a equipe do advoc.me convidou este endereço para o Programa Advocme Parceiros.',
     canal: 'Esta caixa não recebe respostas.',
   },
 }

@@ -1262,6 +1262,19 @@ model PartnerReward {
   @@index([status, eligibleAt])
 }
 
+// Convite do console para um e-mail que AINDA NÃO tem conta. PartnerMembership
+// exige um perfil; este convite espera a pessoa se cadastrar com o mesmo e-mail
+// e então vira PartnerMembership(invited) — e a linha é apagada. Mesmo desenho
+// de FirmInvite. Não convertido em 90 dias, some (é e-mail de quem nunca se
+// cadastrou: guardar além disso não tem finalidade).
+model PartnerInvite {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
 // ---------------------------------------------------------------------------
 // Painel de administração
 // ---------------------------------------------------------------------------

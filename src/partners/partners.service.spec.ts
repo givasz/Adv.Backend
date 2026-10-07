@@ -21,10 +21,19 @@ import { AVISO_OBRIGATORIO, AVISO_PRO, PARTNER_TERMS_VERSION } from './partner-t
 const AGORA = new Date('2026-10-07T12:00:00.000Z')
 const dias = (n: number, base = AGORA) => somarDias(base, n)
 
-function montar() {
+function montar(o: { asaasFalha?: boolean } = {}) {
   const banco = bancoFalso()
   const reconciliar = vi.fn(async () => ({ mudou: false }))
-  const profiles: any = { reconciliarPlanoEfetivo: reconciliar }
+  // A porta financeira de verdade grava no perfil; aqui, o mesmo efeito na linha do banco falso.
+  const aplicarAssinaturaPorPerfil = vi.fn(async (id: string, patch: Record<string, unknown>) => {
+    Object.assign(banco.t.profile.find((p) => p.id === id)!, patch)
+  })
+  const profiles: any = { reconciliarPlanoEfetivo: reconciliar, aplicarAssinaturaPorPerfil }
+  const asaas: any = {
+    configurado: true,
+    cancelarAssinatura: vi.fn(async () => (o.asaasFalha ? Promise.reject(new Error('fora')) : undefined)),
+  }
+  const lock: any = { comPerfil: vi.fn(async (_id: string, f: () => Promise<unknown>) => f()) }
   const chaves = new Set<string>()
   const correio: any = {
     ativo: true,
@@ -34,8 +43,8 @@ function montar() {
       return true
     }),
   }
-  const svc = new PartnersService(banco.prisma, profiles, correio)
-  return { ...banco, svc, reconciliar, correio }
+  const svc = new PartnersService(banco.prisma, profiles, correio, asaas, lock)
+  return { ...banco, svc, reconciliar, correio, asaas, lock, aplicarAssinaturaPorPerfil }
 }
 
 type Montado = ReturnType<typeof montar>
@@ -124,16 +133,46 @@ describe('convite e aceite', () => {
     expect(planoVigente({ ...c.perfil, currentPeriodEnd: dias(80), partner: membro(m, c.partnerId) }, dias(46))).toBe('pro')
   })
 
-  it('MAX com renovação ativa não aceita (409), e nada é gravado', async () => {
-    const c = await convidado(m, { plan: 'premium', planStatus: 'active', currentPeriodEnd: dias(10) })
-    await expect(m.svc.aceitar(c.user.id, '1.1.1.1', { accepted: true }, AGORA)).rejects.toMatchObject({
-      status: 409,
-      message: expect.stringMatching(/Minha assinatura/),
-    })
-    expect(membro(m, c.partnerId).status).toBe('invited')
-    expect(recompensas(m, c.partnerId)).toHaveLength(0)
+  it('MAX com renovação: o aceite encerra a renovação, e os 45 dias começam no fim do período pago', async () => {
+    const c = await convidado(m, { plan: 'premium', planStatus: 'active', currentPeriodEnd: dias(10), billingSubscriptionId: 'sub_max' })
     const painel: any = await m.svc.painel(c.user.id, {}, AGORA)
-    expect(painel.bloqueio).toMatch(/cancele primeiro a renovação/)
+    expect(painel.bloqueio).toBeNull()
+    expect(painel.renovacao).toMatch(/renovação é encerrada/)
+    await m.svc.aceitar(c.user.id, '1.1.1.1', { accepted: true }, AGORA)
+    expect(m.asaas.cancelarAssinatura).toHaveBeenCalledWith('sub_max')
+    expect(m.lock.comPerfil).toHaveBeenCalledWith(c.perfil.id, expect.any(Function))
+    // Cancelada SEM devolução: o mês pago continua, e nada mais é cobrado.
+    expect(c.perfil).toMatchObject({ plan: 'premium', planStatus: 'canceled' })
+    expect((c.perfil as any).currentPeriodEnd.getTime()).toBe(dias(10).getTime())
+    expect(membro(m, c.partnerId).benefitUntil.getTime()).toBe(dias(10 + 45).getTime())
+  })
+
+  it('PRO com renovação: o aceite encerra a renovação e o MAX do programa começa agora', async () => {
+    const c = await convidado(m, { plan: 'pro', planStatus: 'active', currentPeriodEnd: dias(20), billingSubscriptionId: 'sub_pro' })
+    expect(((await m.svc.painel(c.user.id, {}, AGORA)) as any).renovacao).toMatch(/PRO.*renovação é encerrada/)
+    await m.svc.aceitar(c.user.id, '1.1.1.1', { accepted: true }, AGORA)
+    expect(m.asaas.cancelarAssinatura).toHaveBeenCalledWith('sub_pro')
+    expect(c.perfil.planStatus).toBe('canceled')
+    expect(membro(m, c.partnerId).benefitUntil.getTime()).toBe(dias(45).getTime())
+    const painel: any = await m.svc.painel(c.user.id, {}, AGORA)
+    // A assinatura não renova mais: o painel não diz que o PRO "continua sendo cobrado".
+    expect(painel.avisos.pro).toBeNull()
+  })
+
+  it('Asaas fora do ar no aceite: nada é ativado, nada é cancelado aqui, e a pessoa tenta de novo', async () => {
+    const f = montar({ asaasFalha: true })
+    const c = await convidado(f, { plan: 'pro', planStatus: 'active', currentPeriodEnd: dias(20), billingSubscriptionId: 'sub_pro' })
+    await expect(f.svc.aceitar(c.user.id, '1.1.1.1', { accepted: true }, AGORA)).rejects.toMatchObject({ status: 503 })
+    expect(membro(f, c.partnerId).status).toBe('invited')
+    expect(c.perfil.planStatus).toBe('active')
+    expect(f.aplicarAssinaturaPorPerfil).not.toHaveBeenCalled()
+  })
+
+  it('e-mail não confirmado (com o correio ligado): o aceite espera a confirmação', async () => {
+    const c = await convidado(m)
+    c.user.emailVerifiedAt = null
+    await expect(m.svc.aceitar(c.user.id, '1.1.1.1', { accepted: true }, AGORA)).rejects.toMatchObject({ status: 403 })
+    expect(membro(m, c.partnerId).status).toBe('invited')
   })
 
   it('MAX dado pelo escritório (sem término) também não aceita, com a explicação certa', async () => {
@@ -209,7 +248,8 @@ describe('conversão: só o primeiro pagamento real, uma vez', () => {
     const [r] = recompensas(m, parceiro.partnerId).filter((x) => x.type === 'referral')
     expect(r).toMatchObject({ status: 'pending', days: 30, sourcePaymentId: 'pay_001', sourceBillingEventId: 'be1' })
     expect(r!.key).toMatch(/^referral:/)
-    expect(r!.eligibleAt.getTime()).toBe(dias(7).getTime())
+    // Fim do 7º dia em Brasília (o mesmo relógio do arrependimento): 14/10 às 23:59:59.999.
+    expect(r!.eligibleAt.toISOString()).toBe('2026-10-15T02:59:59.999Z')
     expect(membro(m, parceiro.partnerId).benefitUntil.getTime()).toBe(antes)
     expect(m.correio.enfileirar).toHaveBeenCalledWith(expect.objectContaining({ modelo: 'parceiro-conversao-pendente' }))
   })
@@ -287,8 +327,8 @@ describe('validação, confirmação e corrida', () => {
   it('antes dos 7 dias não confirma; depois, soma 30 a partir do prazo que existe', async () => {
     const r = await pendente('pay_a')
     expect(await m.svc.confirmarRecompensa(r.id, dias(6))).toBe('cedo')
-    expect(await m.svc.confirmarPendentes(dias(6))).toBe(0)
-    expect(await m.svc.confirmarPendentes(dias(7))).toBe(1)
+    expect(await m.svc.confirmarPendentes(dias(7))).toBe(0) // ainda dentro do 7º dia
+    expect(await m.svc.confirmarPendentes(dias(8))).toBe(1)
     expect(r.status).toBe('confirmed')
     // 45 iniciais ainda correndo no dia 7: soma a partir do dia 45.
     expect(membro(m, parceiro.partnerId).benefitUntil.getTime()).toBe(dias(75).getTime())
@@ -305,14 +345,14 @@ describe('validação, confirmação e corrida', () => {
   it('duas indicações amadurecendo ao mesmo tempo não perdem dias (compare-and-swap)', async () => {
     const a = await pendente('pay_a')
     const b = await pendente('pay_b')
-    const r = await Promise.all([m.svc.confirmarRecompensa(a.id, dias(7)), m.svc.confirmarRecompensa(b.id, dias(7))])
+    const r = await Promise.all([m.svc.confirmarRecompensa(a.id, dias(8)), m.svc.confirmarRecompensa(b.id, dias(8))])
     expect(r).toEqual(['confirmada', 'confirmada'])
     expect(membro(m, parceiro.partnerId).benefitUntil.getTime()).toBe(dias(45 + 60).getTime())
   })
 
   it('a mesma recompensa confirmada duas vezes em paralelo soma uma vez', async () => {
     const a = await pendente('pay_a')
-    await Promise.all([m.svc.confirmarRecompensa(a.id, dias(7)), m.svc.confirmarRecompensa(a.id, dias(7))])
+    await Promise.all([m.svc.confirmarRecompensa(a.id, dias(8)), m.svc.confirmarRecompensa(a.id, dias(8))])
     expect(membro(m, parceiro.partnerId).benefitUntil.getTime()).toBe(dias(75).getTime())
   })
 
@@ -357,7 +397,7 @@ describe('estorno e chargeback', () => {
 
   it('estorno depois de confirmada: tira os 30 dias uma vez só, mesmo repetido', async () => {
     const r = await pendente()
-    await m.svc.confirmarRecompensa(r.id, dias(7))
+    await m.svc.confirmarRecompensa(r.id, dias(8))
     expect(membro(m, parceiro.partnerId).benefitUntil.getTime()).toBe(dias(75).getTime())
     expect(await m.svc.revogarPorPagamento('pay_a', 'estorno', dias(10))).toBe('revogada')
     expect(await m.svc.revogarPorPagamento('pay_a', 'estorno', dias(10))).toBe('repetida')
@@ -368,7 +408,7 @@ describe('estorno e chargeback', () => {
 
   it('o desconto nunca deixa o prazo antes de agora', async () => {
     const r = await pendente()
-    await m.svc.confirmarRecompensa(r.id, dias(7))
+    await m.svc.confirmarRecompensa(r.id, dias(8))
     membro(m, parceiro.partnerId).benefitUntil = dias(20)
     await m.svc.revogarPorPagamento('pay_a', 'estorno', dias(10))
     expect(membro(m, parceiro.partnerId).benefitUntil.getTime()).toBe(dias(10).getTime())

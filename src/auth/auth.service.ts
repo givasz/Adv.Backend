@@ -20,6 +20,7 @@ import { clampText, EMAIL_MAX } from '../security/sanitize'
 import { NAME_MAX } from '../plans'
 import { planoVigente, SELECT_PARCEIRO } from '../assinatura'
 import { limparAtribuicao, lerAtribuicao, parceiroQueAtribui } from '../partners/partner-attribution'
+import { converterConvitePendente } from '../partners/partner-invites'
 import { CorreioService } from '../mail/correio.service'
 import { conferirToken, emitirToken, gastarToken } from './tokens-de-email'
 
@@ -229,6 +230,7 @@ export class AuthService {
     }
     this.consumirIndicacao(req, indicacao)
     if (user.profile) await this.resolvePendingInvites(mail, user.profile.id)
+    if (user.profile) await this.converterConviteDoPrograma(mail, user.profile.id)
 
     // Confirmação do e-mail. NÃO trava o cadastro: a pessoa entra na hora, monta
     // o perfil, e o painel lembra de confirmar. Travar aqui seria mandar embora,
@@ -277,6 +279,15 @@ export class AuthService {
     if (lerAtribuicao(req)) limparAtribuicao(req)
     // Só o fato e o id interno da participação — nunca quem foi indicado.
     if (partnerId) this.log.log(`REFERRAL_ATTRIBUTED partner=${partnerId}`)
+  }
+
+  /**
+   * Convite do Programa Parceiros feito para este e-mail antes de a conta existir:
+   * vira participação CONVIDADA (o aceite continua sendo da pessoa, em /parceiros).
+   */
+  private async converterConviteDoPrograma(email: string, profileId: string): Promise<void> {
+    const id = await converterConvitePendente(this.prisma as any, email, profileId)
+    if (id) this.log.log(`PARTNER_INVITED partner=${id} via=cadastro`)
   }
 
   // Convites feitos para um e-mail SEM conta ficam guardados em FirmInvite (o
@@ -549,6 +560,7 @@ export class AuthService {
     }
     this.consumirIndicacao(req, indicacao)
     if (criado.profile) await this.resolvePendingInvites(email, criado.profile.id)
+    if (criado.profile) await this.converterConviteDoPrograma(email, criado.profile.id)
 
     const sessao = await this.sessionFor(
       req,
