@@ -303,7 +303,7 @@ describe('Programa Advocme Parceiros — fronteiras', () => {
     const doConsole = TODAS.filter((r) =>
       /^admin\/(partners|partner-rewards|referrals)|^admin\/users\/:userId\/partner/.test(r.caminho),
     )
-    expect(doConsole.length).toBe(9)
+    expect(doConsole.length).toBe(12)
     for (const r of doConsole) {
       const pedida = /exigir\(\s*req,\s*'([^']+)'/.exec(r.corpo)?.[1]
       expect(pedida, r.caminho).toBe(r.metodo === 'Get' ? 'parceiros:ler' : 'parceiros:gerir')

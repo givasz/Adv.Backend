@@ -39,6 +39,7 @@ const DADOS: Record<Modelo, Record<string, unknown>> = {
   },
   'termos-atualizados': { versao: '2026-09-12' },
   'parceiro-convidado': {},
+  'parceiro-convite-sem-conta': {},
   'parceiro-ativado': { ate: '2026-11-21T12:00:00Z' },
   'parceiro-conversao-pendente': { validaEm: '2026-10-14T12:00:00Z', dias: 30 },
   'parceiro-beneficio-prorrogado': { dias: 30, ate: '2026-12-21T12:00:00Z' },

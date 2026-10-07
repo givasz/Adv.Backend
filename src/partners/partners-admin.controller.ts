@@ -43,6 +43,75 @@ export class PartnersAdminController {
     })
   }
 
+  /**
+   * GET /api/admin/partners/invites?cursor= — convites por e-mail ainda sem conta.
+   * Declarada ANTES de `partners/:id`: senão "invites" seria lido como um id.
+   */
+  @Get('partners/invites')
+  async convitesPorEmail(
+    @Req() req: RequisicaoComAuth,
+    @Query('cursor') cursor?: string,
+    @Headers('x-admin-token') token?: string,
+  ) {
+    await this.admin.exigir(req, 'parceiros:ler', token)
+    return this.partners.listarConvitesPorEmail(cursor)
+  }
+
+  /**
+   * POST /api/admin/partners/invite  { email, reason }
+   *
+   * Com conta: vira participação convidada. Sem conta: o convite espera o
+   * cadastro com o mesmo e-mail, e a pessoa recebe o e-mail para criar a conta.
+   */
+  @Post('partners/invite')
+  async convidarPorEmail(
+    @Req() req: RequisicaoComAuth,
+    @Body() body: { email?: unknown; reason?: string },
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') xff?: string,
+    @Headers('x-admin-token') token?: string,
+  ) {
+    const quem = await this.admin.exigir(req, 'parceiros:gerir', token)
+    const motivo = this.admin.exigirMotivo(body?.reason, 'este convite')
+    const r = await this.partners.convidarPorEmail(body?.email)
+    await this.admin.registrar(quem, {
+      action: 'parceiro.convidar',
+      targetType: r.resultado === 'conta' ? 'partner' : 'partner-invite',
+      targetId: r.id,
+      reason: motivo,
+      before: null,
+      // O e-mail vai mascarado: o histórico não guarda endereço inteiro de terceiro.
+      after: { via: r.resultado, email: r.email },
+      ip: clientIp(ip, xff),
+    })
+    return r
+  }
+
+  // POST /api/admin/partners/invites/:id/cancel  { reason }
+  @Post('partners/invites/:id/cancel')
+  async cancelarConvite(
+    @Param('id') id: string,
+    @Req() req: RequisicaoComAuth,
+    @Body() body: { reason?: string },
+    @Ip() ip?: string,
+    @Headers('x-forwarded-for') xff?: string,
+    @Headers('x-admin-token') token?: string,
+  ) {
+    const quem = await this.admin.exigir(req, 'parceiros:gerir', token)
+    const motivo = this.admin.exigirMotivo(body?.reason, 'cancelar este convite')
+    const r = await this.partners.cancelarConvitePorEmail(idValido(id))
+    await this.admin.registrar(quem, {
+      action: 'parceiro.cancelar-convite',
+      targetType: 'partner-invite',
+      targetId: id,
+      reason: motivo,
+      before: r.antes,
+      after: r.depois,
+      ip: clientIp(ip, xff),
+    })
+    return { ok: true }
+  }
+
   /** GET /api/admin/partners/:id?cursor= — a ficha: assinatura, indicações, recompensas e histórico. */
   @Get('partners/:id')
   async ficha(

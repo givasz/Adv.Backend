@@ -32,8 +32,10 @@ import {
   ConflictException,
   Injectable,
   Logger,
+  ForbiddenException,
   NotFoundException,
   Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common'
 import { randomUUID } from 'node:crypto'
 import type { Prisma } from '@prisma/client'
@@ -43,7 +45,11 @@ import { CorreioService } from '../mail/correio.service'
 import { urlDoSite } from '../mail/config'
 import { PLAN_PRICE } from '../plans'
 import { faixaTrilha, trilha } from '../admin/paginacao'
+import { AsaasApi, AsaasErro } from '../billing/asaas.api'
+import { BillingLockService } from '../billing/billing-lock'
+import { conviteVencido, emailDoConvite, emailMascarado } from './partner-invites'
 import {
+  aoCancelar,
   beneficioParceiroAtivo,
   planoDaAssinatura,
   planoVigente,
@@ -62,11 +68,13 @@ import {
 import {
   AVISO_DE_FIM_DIAS,
   AVISO_FIM_SEM_COBRANCA,
-  AVISO_MAX_ATIVO,
   AVISO_MAX_ESCRITORIO,
   AVISO_OBRIGATORIO,
   AVISO_PRO,
+  AVISO_RENOVACAO_MAX,
+  AVISO_RENOVACAO_PRO,
   BENEFICIO_INICIAL_DIAS,
+  CONVITE_POR_EMAIL_DIAS,
   CHAMADA_DO_PROGRAMA,
   NOME_DO_PROGRAMA,
   PARTNER_TERMS_VERSION,
@@ -157,16 +165,40 @@ interface EstadoFinanceiro {
 }
 
 /**
- * Quem já paga o MAX com renovação ativa não ativa a cortesia. Somar 45 dias a
- * uma assinatura que segue renovando seria dar dias que nunca seriam usados — ou,
- * pior, sugerir que a cobrança parou. A pessoa cancela a renovação antes, pelo
- * fluxo de sempre, e aí os dias começam depois do período já pago.
+ * O único caso em que o aceite é recusado: o MAX vem do ESCRITÓRIO, sem término
+ * conhecido e sem cobrança desta pessoa a encerrar. Somar dias a isso seria dar
+ * dias que nunca seriam usados.
  */
 export function bloqueioDoMax(p: EstadoFinanceiro, agora = new Date()): string | null {
   if (p.plan !== 'premium' || p.planStatus === 'canceled') return null
   if (planoDaAssinatura(p, agora) !== 'premium') return null
   if (p.firmMembership?.status === 'active') return AVISO_MAX_ESCRITORIO
-  return AVISO_MAX_ATIVO
+  return null
+}
+
+/**
+ * Quem já paga PRO ou MAX com renovação: o aceite ENCERRA a renovação (decisão do
+ * negócio em 07/10/2026 — a partir do próximo ciclo, parceiro não paga). O
+ * período já pago continua valendo; nada é devolvido nem cobrado. A tela mostra
+ * esta frase ANTES do clique, porque é o aceite que autoriza o cancelamento.
+ */
+export function renovacaoQueOAceiteEncerra(
+  p: EstadoFinanceiro & { billingSubscriptionId?: string | null },
+): string | null {
+  if (!p.billingSubscriptionId || p.planStatus === 'canceled') return null
+  if (p.firmMembership?.status === 'active') return null
+  if (p.plan === 'premium') return AVISO_RENOVACAO_MAX
+  if (p.plan === 'pro') return AVISO_RENOVACAO_PRO
+  return null
+}
+
+/**
+ * Fim da validação: o FIM do 7º dia em Brasília (UTC−3 fixo desde 2019). É o
+ * mesmo relógio do direito de arrependimento, que conta até as 23:59 do 7º dia.
+ */
+export function fimDaValidacao(pagoEm: Date): Date {
+  const dia = new Date(somarDias(pagoEm, VALIDACAO_DIAS).getTime() - 3 * 3600_000).toISOString().slice(0, 10)
+  return new Date(`${dia}T23:59:59.999-03:00`)
 }
 
 /** De onde contam os 45 dias: do fim do MAX já pago e cancelado, ou de agora. */
@@ -189,6 +221,10 @@ export class PartnersService {
     private readonly profiles: ProfilesService,
     // Opcional só para os testes; no app vem do CorreioModule.
     @Optional() private readonly correio?: CorreioService,
+    // O aceite encerra a renovação de quem já paga — pelo Asaas, sob a mesma
+    // trava das outras operações de cobrança. Opcionais só para os testes.
+    @Optional() private readonly asaas?: AsaasApi,
+    @Optional() private readonly lock?: BillingLockService,
   ) {}
 
   // ---- Observabilidade, sem dado pessoal -------------------------------------
@@ -306,6 +342,111 @@ export class PartnersService {
     }
   }
 
+  /**
+   * Encerra a renovação da assinatura paga no aceite: apaga a assinatura no Asaas
+   * (cobranças futuras somem com ela) e grava o cancelamento pela porta de sempre
+   * — o período já pago continua valendo, exatamente como quando a própria pessoa
+   * cancela sem devolução. O aviso SUBSCRIPTION_DELETED que vem depois não muda a
+   * data (BillingService: cancelamento que partiu daqui manda).
+   */
+  private async encerrarRenovacao(profileId: string, agora: Date): Promise<EstadoFinanceiro> {
+    if (!this.asaas?.configurado) {
+      throw new ServiceUnavailableException(
+        'O pagamento on-line está indisponível agora, e a renovação da sua assinatura não pôde ser encerrada. Tente de novo em instantes.',
+      )
+    }
+    const asaas = this.asaas
+    const executar = async () => {
+      const atual = await this.prisma.profile.findUnique({
+        where: { id: profileId },
+        select: { plan: true, planStatus: true, currentPeriodEnd: true, graceUntil: true, planScheduled: true, billingSubscriptionId: true },
+      })
+      if (!atual) throw new NotFoundException('Perfil não encontrado.')
+      if (!atual.billingSubscriptionId || atual.planStatus === 'canceled') return atual
+      try {
+        await asaas.cancelarAssinatura(atual.billingSubscriptionId)
+      } catch (e) {
+        this.log.warn(`renovação não encerrada no Asaas: ${e instanceof AsaasErro ? e.codigo : 'erro'}`)
+        throw new ServiceUnavailableException(
+          'Não foi possível encerrar a renovação da sua assinatura agora. Nada mudou; tente de novo em instantes.',
+        )
+      }
+      const patch = aoCancelar(atual as any, agora)
+      await this.profiles.aplicarAssinaturaPorPerfil(profileId, patch, 'parceiros: renovação encerrada no aceite do programa')
+      this.evento('PARTNER_RENEWAL_CANCELED', { profile: profileId })
+      return { ...atual, ...patch }
+    }
+    const r = this.lock ? await this.lock.comPerfil(profileId, executar) : await executar()
+    return r as EstadoFinanceiro
+  }
+
+  // ---- Convite por e-mail (console) ------------------------------------------
+
+  /**
+   * Convida pelo e-mail. Com conta: vira participação convidada na hora (o aviso
+   * leva ao painel). Sem conta: guarda o convite e manda o e-mail para criar a
+   * conta; o cadastro com este e-mail converte o convite (partner-invites.ts).
+   */
+  async convidarPorEmail(bruto: unknown, agora = new Date()) {
+    const email = emailDoConvite(bruto)
+    if (!email) throw new BadRequestException('Informe um e-mail válido.')
+    const conta = await this.prisma.user.findUnique({ where: { email }, select: { id: true } })
+    if (conta) {
+      const r = await this.convidar(conta.id, agora)
+      return { resultado: 'conta' as const, id: r.id, email: emailMascarado(email) }
+    }
+    let convite: { id: string }
+    try {
+      convite = await this.prisma.partnerInvite.create({ data: { email }, select: { id: true } })
+    } catch (e) {
+      if (chaveRepetida(e)) throw new ConflictException('Este e-mail já tem um convite pendente.')
+      throw e
+    }
+    this.evento('PARTNER_INVITED', { convite: convite.id, via: 'email' })
+    if (this.correio) {
+      await this.correio
+        .enfileirar({ modelo: 'parceiro-convite-sem-conta', para: email, dados: {}, chave: `partner-invite-email:${convite.id}` })
+        .catch(() => undefined)
+    }
+    return { resultado: 'email' as const, id: convite.id, email: emailMascarado(email) }
+  }
+
+  /** Convites por e-mail ainda não convertidos (o console precisa ver e poder cancelar). */
+  async listarConvitesPorEmail(cursor?: string, agora = new Date()) {
+    const take = 50
+    const linhas = await this.prisma.partnerInvite.findMany({
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: take + 1,
+      ...(cursor && /^[a-z0-9]{8,40}$/i.test(cursor) ? { cursor: { id: cursor }, skip: 1 } : {}),
+      select: { id: true, email: true, createdAt: true },
+    })
+    const pagina = trilha(linhas, take)
+    return {
+      ...pagina,
+      itens: pagina.itens.map((c) => ({
+        id: c.id,
+        email: c.email,
+        createdAt: iso(c.createdAt),
+        expiraEm: iso(somarDias(c.createdAt, CONVITE_POR_EMAIL_DIAS)),
+        vencido: conviteVencido(c.createdAt, agora),
+      })),
+    }
+  }
+
+  async cancelarConvitePorEmail(id: string) {
+    const c = await this.prisma.partnerInvite.findUnique({ where: { id }, select: { id: true, email: true } })
+    if (!c) throw new NotFoundException('Convite não encontrado.')
+    await this.prisma.partnerInvite.delete({ where: { id } })
+    return { antes: { email: emailMascarado(c.email) }, depois: null }
+  }
+
+  /** E-mail de quem nunca se cadastrou não fica guardado além do prazo do convite. */
+  async expurgarConvitesVencidos(agora = new Date()): Promise<number> {
+    const limite = new Date(agora.getTime() - CONVITE_POR_EMAIL_DIAS * DIA_MS)
+    const r = await this.prisma.partnerInvite.deleteMany({ where: { createdAt: { lt: limite } } })
+    return r.count
+  }
+
   // ---- Captura do link (rota pública) ----------------------------------------
 
   /**
@@ -374,6 +515,8 @@ export class PartnersService {
         currentPeriodEnd: true,
         graceUntil: true,
         planScheduled: true,
+        billingSubscriptionId: true,
+        user: { select: { emailVerifiedAt: true } },
         firmMembership: { select: { status: true } },
         partner: {
           select: {
@@ -430,7 +573,8 @@ export class PartnersService {
       benefitUntil: iso(m.benefitUntil),
       activeBenefit: ativo,
       avisos: {
-        pro: financeiro === 'pro' ? AVISO_PRO : null,
+        // Só para quem ainda RENOVA o PRO (assinou de novo depois do aceite).
+        pro: financeiro === 'pro' && p.planStatus !== 'canceled' ? AVISO_PRO : null,
         fimSemCobranca: AVISO_FIM_SEM_COBRANCA,
       },
     }
@@ -442,6 +586,7 @@ export class PartnersService {
         regras: { versao: PARTNER_TERMS_VERSION, itens: REGRAS_DO_PROGRAMA },
         beneficioInicialDias: BENEFICIO_INICIAL_DIAS,
         bloqueio,
+        renovacao: bloqueio ? null : renovacaoQueOAceiteEncerra(p),
         proximaAcao: bloqueio ?? `Leia as regras e aceite para ativar ${BENEFICIO_INICIAL_DIAS} dias de acesso ao MAX.`,
       }
     }
@@ -530,9 +675,19 @@ export class PartnersService {
 
     const bloqueio = bloqueioDoMax(p, agora)
     if (bloqueio) throw new ConflictException(bloqueio)
+    // Aceite é contrato: precisa de um e-mail que comprovadamente é da pessoa —
+    // é por ele que chegaram o convite e chegam os avisos do programa. Só com o
+    // correio ligado (exigir um link que não sai trancaria todo mundo).
+    if (this.correio?.ativo && !p.user?.emailVerifiedAt) {
+      throw new ForbiddenException('Confirme seu e-mail antes de aceitar: abra o link que enviamos, ou peça outro no painel.')
+    }
 
     const antes = { profileId: p.id, plano: planoDaAssinatura(p, agora) }
-    const ate = somarDias(inicioDoBeneficio(p, agora), BENEFICIO_INICIAL_DIAS)
+    // Quem já paga: a renovação acaba aqui, ANTES de qualquer dia ser dado. Se o
+    // Asaas recusar, nada é ativado e a pessoa tenta de novo.
+    let financeiro: EstadoFinanceiro = p
+    if (renovacaoQueOAceiteEncerra(p)) financeiro = await this.encerrarRenovacao(p.id, agora)
+    const ate = somarDias(inicioDoBeneficio(financeiro, agora), BENEFICIO_INICIAL_DIAS)
     try {
       await this.prisma.$transaction(async (tx) => {
         // A recompensa inicial primeiro: a chave determinística é o que impede
@@ -659,7 +814,7 @@ export class PartnersService {
             days: RECOMPENSA_DIAS,
             sourcePaymentId: paymentId,
             sourceBillingEventId: d.billingEventId?.slice(0, 120) ?? null,
-            eligibleAt: somarDias(quando, VALIDACAO_DIAS),
+            eligibleAt: fimDaValidacao(quando),
             reason: `primeiro pagamento ${d.plan === 'premium' ? 'MAX' : 'PRO'} confirmado`,
           },
           select: { id: true, eligibleAt: true },
@@ -674,7 +829,7 @@ export class PartnersService {
     this.evento('REFERRAL_CONVERTED', { referral: ref.id, elegivel: 'sim' })
     this.evento('PARTNER_REWARD_PENDING', { partner: ref.partnerId, reward: rewardId })
     await this.avisar(ref.partnerId, 'parceiro-conversao-pendente', `partner-pending:${rewardId}`, {
-      validaEm: somarDias(quando, VALIDACAO_DIAS).toISOString(),
+      validaEm: fimDaValidacao(quando).toISOString(),
       dias: RECOMPENSA_DIAS,
     })
     return 'criada'

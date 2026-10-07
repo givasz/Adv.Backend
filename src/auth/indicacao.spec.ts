@@ -185,3 +185,23 @@ describe('Continuar com o Google', () => {
     expect(r.etapa === 'sessao' && r.sessao.user.plan).toBe('premium')
   })
 })
+
+describe('convite do programa feito antes de a conta existir', () => {
+  it('o cadastro com o mesmo e-mail cria a participação CONVIDADA; sem convite, nada muda', async () => {
+    const { svc, prisma } = montar()
+    const membros: any[] = []
+    prisma.partnerInvite = {
+      findUnique: vi.fn(async ({ where }: any) =>
+        where.email === 'convidada@exemplo.com' ? { id: 'conv1', createdAt: new Date() } : null,
+      ),
+      delete: vi.fn(async () => ({})),
+    }
+    prisma.partnerMembership.create = vi.fn(async ({ data }: any) => (membros.push(data), { id: 'memb-nova' }))
+    await svc.signup(requisicao() as any, 'convidada@exemplo.com', SENHA, 'Convidada', true, ACEITE)
+    expect(membros).toEqual([expect.objectContaining({ profileId: 'p-nova', status: 'invited' })])
+    expect(prisma.partnerInvite.delete).toHaveBeenCalledWith({ where: { id: 'conv1' } })
+
+    await svc.signup(requisicao() as any, 'outra@exemplo.com', SENHA, 'Outra', true, ACEITE)
+    expect(membros).toHaveLength(1)
+  })
+})

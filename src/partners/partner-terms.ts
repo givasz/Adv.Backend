@@ -16,7 +16,8 @@
 // plataforma (src/legal/termos.ts) NÃO mudam por causa deste arquivo.
 
 /** Data da revisão vigente das regras do programa. */
-export const PARTNER_TERMS_VERSION = '2026-10-07'
+// 2026-10-07-2: o aceite passa a encerrar a renovação de assinatura paga.
+export const PARTNER_TERMS_VERSION = '2026-10-07-2'
 
 /** Enquanto for `true`, a tela e o console avisam que o texto aguarda revisão jurídica. */
 export const REVISAO_JURIDICA_PENDENTE = true
@@ -25,8 +26,16 @@ export const REVISAO_JURIDICA_PENDENTE = true
 export const BENEFICIO_INICIAL_DIAS = 45
 /** Dias de Max por conta indicada que pagou Pro ou Max (os dois valem o mesmo). */
 export const RECOMPENSA_DIAS = 30
-/** Dias completos entre a confirmação do pagamento e a confirmação da recompensa. */
+/**
+ * Dias completos entre a confirmação do pagamento e a confirmação da recompensa.
+ * Conta até o FIM do 7º dia em Brasília — o mesmo relógio do direito de
+ * arrependimento (minha-assinatura.service.ts): quem se arrepende no último dia
+ * ainda pega a recompensa pendente, e o parceiro nunca recebe "prorrogado" num
+ * dia e "revogado" no seguinte.
+ */
 export const VALIDACAO_DIAS = 7
+/** Convite por e-mail de quem ainda não tem conta: some depois disso. */
+export const CONVITE_POR_EMAIL_DIAS = 90
 /** Janela entre o clique no link e o cadastro. Depois de criada a conta, o vínculo não expira. */
 export const ATRIBUICAO_DIAS = 30
 /** Com quantos dias de antecedência o parceiro é avisado de que o benefício vai acabar. */
@@ -49,6 +58,7 @@ export const REGRAS_DO_PROGRAMA: readonly string[] = [
   'O benefício é acesso adicional ao MAX. Não é dinheiro, não é convertível em dinheiro e não pode ser transferido.',
   `Cada nova conta indicada pode gerar no máximo uma recompensa de ${RECOMPENSA_DIAS} dias, quando contrata PRO ou MAX.`,
   'Cadastro gratuito não gera benefício, e renovações mensais não geram nova recompensa.',
+  'Se você já tem assinatura paga, o aceite encerra a renovação: você continua com o período já pago e não haverá novas cobranças. No MAX, os dias do programa começam quando o período pago termina.',
   `O pagamento da nova conta precisa ser confirmado e passa por uma validação de ${VALIDACAO_DIAS} dias antes de virar benefício.`,
   'Estorno e contestação do pagamento (chargeback) revogam a recompensa correspondente.',
   'Fraude, autoindicação ou uso abusivo podem levar à suspensão ou ao encerramento da participação.',
@@ -68,11 +78,14 @@ export const AVISO_PRO =
 export const AVISO_FIM_SEM_COBRANCA =
   'A cortesia não gera cobrança automática. Ao término, sua conta retorna ao plano financeiro que estiver vigente.'
 
-/** Quem já paga o MAX com renovação ativa não ativa a cortesia — e precisa saber por quê. */
-export const AVISO_MAX_ATIVO =
-  'Sua assinatura MAX está com renovação ativa. Para ativar a cortesia, cancele primeiro a renovação em ' +
-  'Minha assinatura: você continua usando o período já pago, e os dias do programa começam a contar ' +
-  'quando ele terminar.'
+/** Quem tem assinatura paga com renovação: o que o aceite faz com ela, dito ANTES do clique. */
+export const AVISO_RENOVACAO_PRO =
+  'Você tem uma assinatura PRO com renovação. Ao aceitar, a renovação é encerrada: não haverá novas ' +
+  'cobranças, o MAX do programa começa agora e, ao término, sua conta volta ao Free — você pode assinar ' +
+  'de novo quando quiser.'
+export const AVISO_RENOVACAO_MAX =
+  'Você tem uma assinatura MAX com renovação. Ao aceitar, a renovação é encerrada: você usa o período já ' +
+  'pago, não haverá novas cobranças, e os dias do programa começam quando esse período terminar.'
 
 /** MAX fornecido pelo escritório, sem término conhecido: não há o que somar. */
 export const AVISO_MAX_ESCRITORIO =

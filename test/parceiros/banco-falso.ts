@@ -13,7 +13,7 @@
 // Fica fora de `src/` de propósito: nunca entra no build.
 
 type Linha = Record<string, any>
-type Tabela = 'profile' | 'user' | 'partnerMembership' | 'partnerReferral' | 'partnerReward' | 'adminAction'
+type Tabela = 'profile' | 'user' | 'partnerMembership' | 'partnerReferral' | 'partnerReward' | 'partnerInvite' | 'adminAction'
 
 const UNICOS: Partial<Record<Tabela, string[]>> = {
   profile: ['id', 'userId', 'slug'],
@@ -21,6 +21,7 @@ const UNICOS: Partial<Record<Tabela, string[]>> = {
   partnerMembership: ['id', 'profileId', 'referralCode'],
   partnerReferral: ['id', 'referredUserId'],
   partnerReward: ['id', 'key', 'referralId', 'sourcePaymentId'],
+  partnerInvite: ['id', 'email'],
 }
 
 const PADROES: Partial<Record<Tabela, () => Linha>> = {
@@ -60,6 +61,7 @@ const PREFIXO: Record<Tabela, string> = {
   partnerMembership: 'memb',
   partnerReferral: 'refe',
   partnerReward: 'rewa',
+  partnerInvite: 'conv',
   adminAction: 'acao',
 }
 
@@ -76,6 +78,7 @@ export function bancoFalso() {
     partnerMembership: [],
     partnerReferral: [],
     partnerReward: [],
+    partnerInvite: [],
     adminAction: [],
   }
   let seq = 0
@@ -268,6 +271,21 @@ export function bancoFalso() {
         })
         return projetar(l, tabela, args)
       },
+      delete: async (args: any) => {
+        await espera()
+        const l = t[tabela].find((x) => casa(x, tabela, args.where))
+        if (!l) throw Object.assign(new Error('não encontrado'), { code: 'P2025' })
+        t[tabela] = t[tabela].filter((x) => x !== l)
+        desfazer?.push(() => t[tabela].push(l))
+        return l
+      },
+      deleteMany: async (args: any = {}) => {
+        await espera()
+        const alvos = t[tabela].filter((x) => casa(x, tabela, args.where))
+        t[tabela] = t[tabela].filter((x) => !alvos.includes(x))
+        desfazer?.push(() => t[tabela].push(...alvos))
+        return { count: alvos.length }
+      },
       updateMany: async (args: any) => {
         await espera()
         const alvos = t[tabela].filter((x) => casa(x, tabela, args.where))
@@ -300,7 +318,8 @@ export function bancoFalso() {
 
   /** Atalho dos testes: conta + perfil, já ligados. */
   function conta(perfil: Linha = {}, email?: string) {
-    const user = { id: novoId('user'), email: email ?? `pessoa${seq}@exemplo.test`, createdAt: new Date() }
+    // E-mail confirmado por padrão: o aceite do programa exige (com o correio ligado).
+    const user: Linha = { id: novoId('user'), email: email ?? `pessoa${seq}@exemplo.test`, emailVerifiedAt: new Date(), createdAt: new Date() }
     t.user.push(user)
     const p = {
       id: novoId('profile'),
