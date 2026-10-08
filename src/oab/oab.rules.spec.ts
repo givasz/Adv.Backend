@@ -48,6 +48,22 @@ describe('publicStatus — cobertura no lado que bloqueia', () => {
     ])
   })
 
+  // Caso real: perfil publicado em 08/10/2026 com "com os melhores conhecimentos"
+  // na apresentação. O singular era visto, o plural não — e o perfil subiu sem
+  // apontamento nenhum. A rev. 5 fechou isso.
+  it('superlativo no PLURAL barra a publicação pela apresentação', () => {
+    const bio =
+      'Sobre mentira suas dúvidas jurídica com os melhores conhecimentos básicos alimentados na constituição federal'
+    expect(publicStatus({ bio })).toBe('block')
+    expect(blockingFields({ bio })).toEqual(['Apresentação'])
+    expect(checkCompliance(bio).map((i) => i.ruleId)).toContain('superlative-comparison')
+  })
+
+  it('o plural consagrado continua passando', () => {
+    expect(publicStatus({ bio: 'Defendo os melhores interesses de quem represento.' })).toBe('ok')
+    expect(publicStatus({ bio: 'Sigo as melhores práticas da advocacia.' })).toBe('ok')
+  })
+
   it('abertura do assistente e nome no rodapé também barram', () => {
     expect(publicStatus({ assistant: { greeting: 'Consulta grátis, fale agora' } })).toBe('block')
     expect(publicStatus({ branding: { brandName: 'Advocacia Êxito Garantido' } })).toBe('block')

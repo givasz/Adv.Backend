@@ -38,7 +38,7 @@ export const POLICY_VERSION = 'Prov. 205/2021'
  * Revisão interna do conjunto de regras. INCREMENTAR a cada mudança em RULES.
  * Monitor normativo: perfis conferidos sob revisão anterior são reavaliados.
  */
-export const RULESET_REV = 4
+export const RULESET_REV = 5
 
 export type Severity = 'block' | 'warn'
 
@@ -151,7 +151,19 @@ export const RULES: Rule[] = [
     // Fronteiras unicode (\p{L}) — necessárias para "único" (ú acentuado no início).
     // "o/a melhor" NÃO dispara em termos jurídicos consagrados ("o melhor interesse
     // da criança/família") nem em frases genéricas ("a melhor forma de…").
-    test: /(?:^|[^\p{L}])((o|a) melhor(?!\s+(interesse|forma|maneira|caminho|opç\w+|opc\w+|alternativa|solu\w+|momento|proveito|sentido))|n[ºo°]\.? ?1|número um|numero um|imbatív\w+|imbativ\w+|líder de mercado|lider de mercado|referência (nacional|no mercado)|o mais (premiado|renomado|reconhecido)|único (advogad\w*|escritóri\w*))(?![\p{L}])/iu,
+    //
+    // O PLURAL entra aqui desde a rev. 5. Até então só o singular era visto, e
+    // "com os melhores conhecimentos" foi publicado sem um apontamento sequer —
+    // o autoengrandecimento do Art. 3º, IV não muda de natureza por estar no
+    // plural. A lista de exceções acompanha, com o "s" opcional em cada palavra,
+    // e ganhou "práticas": "as melhores práticas" é expressão corrente de ofício,
+    // não comparação com outro advogado.
+    //
+    // As exceções usam \p{L}, NUNCA \w: `\w` é ASCII e não enxerga "ç"/"ã", então
+    // `solu\w+` nunca casou com "solução" e `opç\w+` nunca casou com "opção" — a
+    // exceção estava morta e "a melhor solução para cada caso" vinha BLOQUEANDO a
+    // publicação desde a rev. 4, enquanto "a melhor solucao" passava.
+    test: /(?:^|[^\p{L}])((o|a|os|as) melhor(?:es)?(?!\s+(interesses?|práticas?|praticas?|formas?|maneiras?|caminhos?|op[çc]\p{L}*|alternativas?|solu\p{L}*|momentos?|proveitos?|sentidos?))|n[ºo°]\.? ?1|número um|numero um|imbatív\w+|imbativ\w+|líder de mercado|lider de mercado|referência (nacional|no mercado)|o mais (premiado|renomado|reconhecido)|único (advogad\w*|escritóri\w*))(?![\p{L}])/iu,
     reason: 'Autoengrandecimento / comparação é vedado (Prov. 205/2021 Art. 3º, IV).',
     explanation:
       'O Art. 3º, IV veda expressões de autoengrandecimento e comparação ("o melhor", "nº 1", "líder de mercado"). A comunicação deve ser sóbria e informativa, sem se colocar acima de outros profissionais.',
@@ -161,12 +173,16 @@ export const RULES: Rule[] = [
       'O melhor advogado criminalista da cidade',
       'Escritório nº 1 em direito tributário',
       'Referência nacional em recuperação judicial',
+      'Atendimento com os melhores conhecimentos do mercado',
+      'Oferecemos as melhores condições para o seu caso',
     ],
     examplesAllowed: [
       'Advogado dedicado ao direito criminal',
       'Atuação consolidada em direito tributário',
       'Atuo sempre priorizando o melhor interesse da criança',
       'Busco a melhor forma de resolver cada caso',
+      'Defendo os melhores interesses de quem represento',
+      'Sigo as melhores práticas da advocacia',
     ],
   },
   {
