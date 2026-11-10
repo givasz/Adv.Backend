@@ -6,6 +6,7 @@
 //     segundo fator), sempre com motivo e AdminAction; readonly não decide.
 
 import { describe, expect, it, vi } from 'vitest'
+import { PLAN_PRICE } from '../plans'
 import { ForbiddenException } from '@nestjs/common'
 import { bancoFalso } from '../../test/parceiros/banco-falso'
 import { PartnersService } from './partners.service'
@@ -87,7 +88,7 @@ describe('varredura', () => {
     for (const [parceiro, pay] of [[a, 'pay_a'], [e, 'pay_e']] as const) {
       const c = b.conta()
       b.t.partnerReferral.push({ id: b.novoId('partnerReferral'), partnerId: parceiro.id, referredUserId: c.user.id, attributedAt: AGORA, convertedAt: null, disqualifiedAt: null, disqualificationReason: '' })
-      await b.svc.registrarConversao({ profileId: c.perfil.id, plan: 'pro', amount: 29, paymentId: pay, occurredAt: AGORA }, AGORA)
+      await b.svc.registrarConversao({ profileId: c.perfil.id, plan: 'pro', amount: PLAN_PRICE.pro, paymentId: pay, occurredAt: AGORA }, AGORA)
     }
     // Encerrado "por fora" (como se a revogação do encerramento tivesse falhado).
     e.m.status = 'ended'
@@ -178,7 +179,7 @@ describe('console', () => {
     p.perfil.oabNumber = 'SP 123456'
     const c = b.conta({ oabNumber: 'sp-123.456', name: 'Indicada' })
     b.t.partnerReferral.push({ id: b.novoId('partnerReferral'), partnerId: p.id, referredUserId: c.user.id, attributedAt: AGORA, convertedAt: null, disqualifiedAt: null, disqualificationReason: '' })
-    await b.svc.registrarConversao({ profileId: c.perfil.id, plan: 'pro', amount: 29, paymentId: 'pay_123456789' }, AGORA)
+    await b.svc.registrarConversao({ profileId: c.perfil.id, plan: 'pro', amount: PLAN_PRICE.pro, paymentId: 'pay_123456789' }, AGORA)
     const ficha: any = await b.svc.fichaParaConsole(p.id, {}, AGORA)
     expect(ficha.indicacoes.itens[0].revisarOab).toBe(true)
     expect(ficha.recompensas.find((r: any) => r.type === 'referral').sourcePaymentId).toBe('•••456789')

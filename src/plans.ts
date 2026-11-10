@@ -151,12 +151,13 @@ export function canUseNativeAgenda(plan: string | undefined): boolean {
 // provedor quanto cobrar é o SERVIDOR — e ele não pode usar o número que o
 // navegador mandar, ou "assinar o Max por R$ 1" vira um campo editável no DevTools.
 //
-// Em reais, inteiros, por mês. A paridade com o front é travada em plans.spec.ts:
-// o preço que a vitrine mostra e o que o cartão paga não podem divergir, e o
-// lugar onde descobriríamos a divergência é a fatura do cliente.
+// Em reais, por mês (com centavos desde 10/11/2026: 7.9 = R$ 7,90). A paridade
+// com o front é travada em plans.spec.ts: o preço que a vitrine mostra e o que o
+// cartão paga não podem divergir, e o lugar onde descobriríamos a divergência é
+// a fatura do cliente.
 export const PLAN_PRICE: Record<Exclude<Plan, 'free'>, number> = {
-  pro: 29,
-  premium: 49,
+  pro: 7.9,
+  premium: 14.9,
 }
 
 /** Nome do plano como aparece para quem paga (fatura, descrição da cobrança). */

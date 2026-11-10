@@ -15,7 +15,8 @@ describe('preço cobrado — a vitrine e a fatura dizem o mesmo número', () => 
 
   for (const [plano, preco] of Object.entries(PLAN_PRICE)) {
     it(`${plano}: R$ ${preco} nos dois lados`, () => {
-      expect(new RegExp(`\\b${plano}:\\s*${preco}\\b`).test(bloco)).toBe(true)
+      const noFront = new RegExp(`\\b${plano}:\\s*([\\d.]+)`).exec(bloco)?.[1]
+      expect(Number(noFront)).toBe(preco)
     })
   }
 })

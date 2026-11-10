@@ -7,6 +7,7 @@
 //   • cancelar com devolução revoga; cancelar sem devolução, não.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { PLAN_PRICE } from '../plans'
 import { CheckoutService } from './checkout.service'
 import { MinhaAssinaturaService } from './minha-assinatura.service'
 
@@ -52,7 +53,7 @@ function checkout(o: { status?: string; perfil?: Record<string, any> } = {}) {
       nextDueDate: HOJE,
       externalReference: p.externalReference,
     })),
-    cobrancasDaAssinatura: vi.fn(async () => [{ id: 'pay_77', billingType: 'X', status: o.status ?? 'PENDING', dueDate: HOJE, value: 49 }]),
+    cobrancasDaAssinatura: vi.fn(async () => [{ id: 'pay_77', billingType: 'X', status: o.status ?? 'PENDING', dueDate: HOJE, value: PLAN_PRICE.premium }]),
     pixQrCode: vi.fn(async () => ({ encodedImage: 'x', payload: 'y' })),
     cancelarAssinatura: vi.fn(async () => {}),
     notificacoesSoPorEmail: vi.fn(async () => {}),
@@ -72,7 +73,7 @@ describe('checkout', () => {
   it('cartão confirmado na hora → o programa recebe o id da cobrança e o valor cobrado', async () => {
     const { svc, partners } = checkout({ status: 'CONFIRMED' })
     expect(await svc.assinar('u1', CARTAO, '1.1.1.1')).toMatchObject({ situacao: 'ativo' })
-    expect(partners.registrarConversao).toHaveBeenCalledWith({ profileId: 'p1', plan: 'premium', amount: 49, paymentId: 'pay_77' })
+    expect(partners.registrarConversao).toHaveBeenCalledWith({ profileId: 'p1', plan: 'premium', amount: PLAN_PRICE.premium, paymentId: 'pay_77' })
   })
 
   it('cartão em análise, Pix e boleto aguardando: nada chega ao programa', async () => {
@@ -133,14 +134,14 @@ function minha(o: { pagas?: any[]; estornoFalha?: boolean } = {}) {
 
 describe('Minha assinatura', () => {
   it('cancelar dentro do arrependimento devolve o valor e revoga a recompensa daquele pagamento', async () => {
-    const paga = { id: 'pay_1', status: 'CONFIRMED', value: 29, dueDate: '2026-10-05', confirmedDate: '2026-10-05' }
+    const paga = { id: 'pay_1', status: 'CONFIRMED', value: PLAN_PRICE.pro, dueDate: '2026-10-05', confirmedDate: '2026-10-05' }
     const { svc, partners } = minha({ pagas: [paga] })
     expect(await svc.cancelar('u1', AGORA)).toMatchObject({ devolucao: 'feita' })
     expect(partners.revogarPorPagamento).toHaveBeenCalledWith('pay_1', expect.stringMatching(/devolvido/))
   })
 
   it('cancelar sem devolução (fora do prazo): o pagamento continua válido, nada é revogado', async () => {
-    const paga = { id: 'pay_1', status: 'CONFIRMED', value: 29, dueDate: '2026-09-01', confirmedDate: '2026-09-01' }
+    const paga = { id: 'pay_1', status: 'CONFIRMED', value: PLAN_PRICE.pro, dueDate: '2026-09-01', confirmedDate: '2026-09-01' }
     const outra = { ...paga, id: 'pay_2', dueDate: '2026-10-01', confirmedDate: '2026-10-01' }
     const { svc, partners } = minha({ pagas: [paga, outra] })
     expect(await svc.cancelar('u1', AGORA)).toMatchObject({ devolucao: null })
@@ -148,7 +149,7 @@ describe('Minha assinatura', () => {
   })
 
   it('devolução que falhou (vira chamado): nada é revogado antes de o dinheiro voltar', async () => {
-    const paga = { id: 'pay_1', status: 'CONFIRMED', value: 29, dueDate: '2026-10-05', confirmedDate: '2026-10-05' }
+    const paga = { id: 'pay_1', status: 'CONFIRMED', value: PLAN_PRICE.pro, dueDate: '2026-10-05', confirmedDate: '2026-10-05' }
     const { svc, partners } = minha({ pagas: [paga], estornoFalha: true })
     expect(await svc.cancelar('u1', AGORA)).toMatchObject({ devolucao: 'pendente' })
     expect(partners.revogarPorPagamento).not.toHaveBeenCalled()
