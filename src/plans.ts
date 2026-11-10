@@ -167,11 +167,11 @@ export const PLAN_NAME: Record<Exclude<Plan, 'free'>, string> = {
 }
 
 // ---- Plano Escritório (sociedade de advogados) — FONTE DA VERDADE ----
-// Preço: R$ 99/mês incluindo 5 advogados; cada assento adicional custa R$ 20/mês.
-// Valores em reais (inteiros). O billing real (Stripe) entra depois; hoje derivamos
-// o preço do nº de assentos ativos.
+// Preço: R$ 29,99/mês incluindo 5 advogados (desde 10/11/2026; era R$ 99); cada
+// assento adicional custa R$ 20/mês. Valores em reais, com centavos. O billing
+// real entra depois; hoje derivamos o preço do nº de assentos ativos.
 export const FIRM_PRICING = {
-  basePrice: 99, // R$/mês (inclui os assentos-base)
+  basePrice: 29.99, // R$/mês (inclui os assentos-base)
   includedSeats: 5,
   extraSeatPrice: 20, // R$/mês por advogado além dos incluídos
 } as const
@@ -179,7 +179,8 @@ export const FIRM_PRICING = {
 // Preço mensal do escritório para um dado nº de assentos (advogados ativos).
 export function firmMonthlyPrice(seats: number): number {
   const extra = Math.max(0, seats - FIRM_PRICING.includedSeats)
-  return FIRM_PRICING.basePrice + extra * FIRM_PRICING.extraSeatPrice
+  // arredonda no centavo: 29.99 + 20 em ponto flutuante não dá 49.99 exato
+  return Math.round((FIRM_PRICING.basePrice + extra * FIRM_PRICING.extraSeatPrice) * 100) / 100
 }
 
 // Limites de conteúdo institucional do escritório (análogos aos de perfil).
