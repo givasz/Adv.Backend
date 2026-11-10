@@ -12,6 +12,7 @@
 //   • o parceiro nunca vê dado de quem indicou.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { PLAN_PRICE } from '../plans'
 import { bancoFalso } from '../../test/parceiros/banco-falso'
 import { descontar, normalizarOab, PartnersService, prorrogar, rotuloDaIndicacao } from './partners.service'
 import { abrirAtribuicao, REF_COOKIE, REF_MARCA_COOKIE, selarAtribuicao } from './partner-attribution'
@@ -231,7 +232,7 @@ describe('conversão: só o primeiro pagamento real, uma vez', () => {
   })
 
   const pagar = (profileId: string, extra: Record<string, unknown> = {}) =>
-    m.svc.registrarConversao({ profileId, plan: 'pro', amount: 29, paymentId: 'pay_001', occurredAt: AGORA, ...extra }, AGORA)
+    m.svc.registrarConversao({ profileId, plan: 'pro', amount: PLAN_PRICE.pro, paymentId: 'pay_001', occurredAt: AGORA, ...extra }, AGORA)
 
   it('cadastro gratuito não gera nada: a indicação fica em "cadastro realizado"', async () => {
     indicada(m, parceiro.partnerId)
@@ -256,7 +257,7 @@ describe('conversão: só o primeiro pagamento real, uma vez', () => {
 
   it('primeiro MAX pago também → os mesmos 30 dias', async () => {
     const c = indicada(m, parceiro.partnerId)
-    expect(await pagar(c.perfil.id, { plan: 'premium', amount: 49 })).toBe('criada')
+    expect(await pagar(c.perfil.id, { plan: 'premium', amount: PLAN_PRICE.premium })).toBe('criada')
     expect(recompensas(m, parceiro.partnerId).find((x) => x.type === 'referral')!.days).toBe(30)
   })
 
@@ -320,7 +321,7 @@ describe('validação, confirmação e corrida', () => {
 
   async function pendente(paymentId: string) {
     const c = indicada(m, parceiro.partnerId)
-    await m.svc.registrarConversao({ profileId: c.perfil.id, plan: 'pro', amount: 29, paymentId, occurredAt: AGORA }, AGORA)
+    await m.svc.registrarConversao({ profileId: c.perfil.id, plan: 'pro', amount: PLAN_PRICE.pro, paymentId, occurredAt: AGORA }, AGORA)
     return m.t.partnerReward.find((r) => r.sourcePaymentId === paymentId)!
   }
 
@@ -376,7 +377,7 @@ describe('estorno e chargeback', () => {
 
   async function pendente(paymentId = 'pay_a') {
     const c = indicada(m, parceiro.partnerId)
-    await m.svc.registrarConversao({ profileId: c.perfil.id, plan: 'pro', amount: 29, paymentId, occurredAt: AGORA }, AGORA)
+    await m.svc.registrarConversao({ profileId: c.perfil.id, plan: 'pro', amount: PLAN_PRICE.pro, paymentId, occurredAt: AGORA }, AGORA)
     return m.t.partnerReward.find((r) => r.sourcePaymentId === paymentId)!
   }
 
@@ -454,7 +455,7 @@ describe('suspensão, reativação e encerramento', () => {
 
   it('encerrado: definitivo, pendentes revogadas, histórico preservado, sem link no painel', async () => {
     const c = indicada(m, parceiro.partnerId)
-    await m.svc.registrarConversao({ profileId: c.perfil.id, plan: 'pro', amount: 29, paymentId: 'pay_a' }, AGORA)
+    await m.svc.registrarConversao({ profileId: c.perfil.id, plan: 'pro', amount: PLAN_PRICE.pro, paymentId: 'pay_a' }, AGORA)
     await m.svc.encerrar(parceiro.partnerId, 'fraude', AGORA)
     expect(membro(m, parceiro.partnerId).status).toBe('ended')
     expect(m.t.partnerReferral.filter((r) => r.partnerId === parceiro.partnerId)).toHaveLength(1)
@@ -482,7 +483,7 @@ describe('suspensão, reativação e encerramento', () => {
     const c = indicada(m, parceiro.partnerId)
     const ref = m.t.partnerReferral.find((r) => r.referredUserId === c.user.id)!
     await expect(m.svc.reatribuir(ref.id, outro.partnerId)).resolves.toMatchObject({ depois: { partnerId: outro.partnerId } })
-    await m.svc.registrarConversao({ profileId: c.perfil.id, plan: 'pro', amount: 29, paymentId: 'pay_a' }, AGORA)
+    await m.svc.registrarConversao({ profileId: c.perfil.id, plan: 'pro', amount: PLAN_PRICE.pro, paymentId: 'pay_a' }, AGORA)
     await expect(m.svc.reatribuir(ref.id, parceiro.partnerId)).rejects.toMatchObject({ status: 400 })
     // Nunca para a própria conta indicada.
     const conta2 = indicada(m, parceiro.partnerId)
@@ -499,7 +500,7 @@ describe('o que o parceiro vê', () => {
     const parceiro = await ativo(m)
     const c = indicada(m, parceiro.partnerId, { name: 'Fulana Indicada', oabNumber: 'RJ 987654', city: 'Niterói' })
     c.user.email = 'fulana@indicada.test'
-    await m.svc.registrarConversao({ profileId: c.perfil.id, plan: 'premium', amount: 49, paymentId: 'pay_segredo_123' }, AGORA)
+    await m.svc.registrarConversao({ profileId: c.perfil.id, plan: 'premium', amount: PLAN_PRICE.premium, paymentId: 'pay_segredo_123' }, AGORA)
     const painel: any = await m.svc.painel(parceiro.user.id, {}, dias(1))
     const json = JSON.stringify(painel)
     for (const proibido of ['Fulana', 'fulana@indicada.test', '987654', 'Niterói', 'pay_segredo_123', c.user.id, c.perfil.id, '203.0.113.9']) {

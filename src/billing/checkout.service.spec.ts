@@ -4,6 +4,7 @@
 // depois de um tempo esgotado, um boleto entregue a quem pediu Pix.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { PLAN_PRICE } from '../plans'
 import {
   BadRequestException,
   ConflictException,
@@ -77,7 +78,7 @@ function montar(o: { perfil?: Qualquer; asaas?: Qualquer; correioAtivo?: boolean
         billingType: 'PIX',
         status: 'PENDING',
         dueDate: HOJE,
-        value: 29,
+        value: PLAN_PRICE.pro,
         invoiceUrl: 'https://sandbox.asaas.com/i/pay_1',
         bankSlipUrl: 'https://sandbox.asaas.com/b/pdf/pay_1',
       },
@@ -151,7 +152,7 @@ describe('o preço é do servidor', () => {
   it('o valor mandado pelo navegador é ignorado', async () => {
     const { svc, asaas } = montar()
     await svc.assinar('u1', { ...CARTAO, valor: 1, value: 1, price: 1 }, '1.1.1.1')
-    expect(asaas.criarAssinatura.mock.calls[0][0].valor).toBe(49)
+    expect(asaas.criarAssinatura.mock.calls[0][0].valor).toBe(PLAN_PRICE.premium)
   })
 })
 
@@ -175,7 +176,7 @@ describe('Pix e boleto', () => {
   it('Pix devolve o QR Code, grava só os identificadores e NÃO ativa o plano', async () => {
     const { svc, asaas, profiles, escritas } = montar()
     const r = await svc.assinar('u1', PIX, '1.1.1.1')
-    expect(r).toMatchObject({ meio: 'PIX', situacao: 'aguardando', valor: 29, vencimento: HOJE })
+    expect(r).toMatchObject({ meio: 'PIX', situacao: 'aguardando', valor: PLAN_PRICE.pro, vencimento: HOJE })
     expect(r.meio === 'PIX' && r.pix?.copiaECola).toBe('00020126...')
     expect(asaas.criarAssinatura.mock.calls[0][0].externalReference).toBe('advocme:p1:pro')
     expect(escritas).toEqual([{ billingCustomerId: 'cus_1' }, { billingSubscriptionId: 'sub_1' }])
@@ -203,7 +204,7 @@ describe('Pix e boleto', () => {
 
 describe('cartão', () => {
   const confirmada = vi.fn(async () => [
-    { id: 'pay_1', billingType: 'CREDIT_CARD', status: 'CONFIRMED', dueDate: HOJE, value: 49 },
+    { id: 'pay_1', billingType: 'CREDIT_CARD', status: 'CONFIRMED', dueDate: HOJE, value: PLAN_PRICE.premium },
   ])
 
   it('aprovado ativa na hora, com a mesma data que o webhook gravaria', async () => {
@@ -294,7 +295,7 @@ describe('tentativas anteriores', () => {
           { id: 'sub_alheia', billingType: 'PIX', status: 'ACTIVE', nextDueDate: '2026-10-29', externalReference: 'pedido-123' },
         ]),
         cobrancasDaAssinatura: vi.fn(async () => [
-          { id: 'pay_1', billingType: 'CREDIT_CARD', status: 'CONFIRMED', dueDate: HOJE, value: 49 },
+          { id: 'pay_1', billingType: 'CREDIT_CARD', status: 'CONFIRMED', dueDate: HOJE, value: PLAN_PRICE.premium },
         ]),
       },
     })

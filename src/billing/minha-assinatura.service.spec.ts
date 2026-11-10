@@ -3,6 +3,7 @@
 // cobrar duas vezes o mesmo mês numa troca de plano.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { PLAN_PRICE } from '../plans'
 import { BadRequestException, ConflictException, ServiceUnavailableException } from '@nestjs/common'
 import { MinhaAssinaturaService, prazoDeArrependimento } from './minha-assinatura.service'
 import { AsaasErro, type CobrancaAsaas } from './asaas.api'
@@ -15,7 +16,7 @@ const paga = (o: Partial<CobrancaAsaas> = {}): CobrancaAsaas => ({
   billingType: 'CREDIT_CARD',
   status: 'CONFIRMED',
   dueDate: '2026-09-28',
-  value: 49,
+  value: PLAN_PRICE.premium,
   confirmedDate: '2026-09-28',
   ...o,
 })
@@ -53,7 +54,7 @@ function montar(o: { perfil?: Qualquer; asaas?: Qualquer } = {}) {
       billingType: 'CREDIT_CARD',
       status: 'ACTIVE',
       nextDueDate: '2026-10-28',
-      value: 49,
+      value: PLAN_PRICE.premium,
       creditCard: { creditCardNumber: '4444', creditCardBrand: 'VISA', creditCardToken: 'segredo' },
     })),
     cobrancasDaAssinatura: vi.fn(async () => [paga()]),
@@ -95,7 +96,7 @@ describe('resumo', () => {
   it('mostra meio, valor, cartão e o prazo — e nunca o token do cartão', async () => {
     const { svc } = montar()
     const r = await svc.resumo('u1')
-    expect(r.assinatura).toMatchObject({ meio: 'CREDIT_CARD', valor: 49, proximaCobranca: '2026-10-28' })
+    expect(r.assinatura).toMatchObject({ meio: 'CREDIT_CARD', valor: PLAN_PRICE.premium, proximaCobranca: '2026-10-28' })
     expect(r.assinatura?.cartao).toEqual({ final: '4444', bandeira: 'VISA' })
     expect(r.assinatura?.arrependimentoAte).not.toBeNull()
     expect(JSON.stringify(r)).not.toContain('segredo')
@@ -104,7 +105,7 @@ describe('resumo', () => {
   it('Pix em aberto vem com o QR Code', async () => {
     const { svc } = montar({
       asaas: {
-        obterAssinatura: vi.fn(async () => ({ id: 'sub_1', billingType: 'PIX', status: 'ACTIVE', nextDueDate: '2026-10-28', value: 29 })),
+        obterAssinatura: vi.fn(async () => ({ id: 'sub_1', billingType: 'PIX', status: 'ACTIVE', nextDueDate: '2026-10-28', value: PLAN_PRICE.pro })),
         cobrancasDaAssinatura: vi.fn(async () => [paga({ billingType: 'PIX', status: 'PENDING', dueDate: '2026-10-28' })]),
       },
     })
@@ -137,7 +138,7 @@ describe('cancelar', () => {
     // Se a devolução viesse antes e o cancelamento falhasse, o advogado teria o
     // dinheiro de volta e a próxima cobrança marcada.
     expect(ordem).toEqual(['cancelar', 'estornar'])
-    expect(r).toMatchObject({ devolucao: 'feita', valeAte: null, valorDevolvido: 49 })
+    expect(r).toMatchObject({ devolucao: 'feita', valeAte: null, valorDevolvido: PLAN_PRICE.premium })
     const patch = (profiles.aplicarAssinaturaPorPerfil.mock.calls[0] as any[])[1]
     expect(patch).toMatchObject({ planStatus: 'canceled' })
     expect(patch.currentPeriodEnd).toEqual(AGORA)
@@ -163,7 +164,7 @@ describe('cancelar', () => {
     expect(r.devolucao).toBe('pendente')
     expect(chamados).toHaveLength(1)
     expect(chamados[0]).toMatchObject({ userId: 'u1', kind: 'conta', pageUrl: '/assinatura' })
-    expect(chamados[0].message).toContain('R$ 49,00')
+    expect(chamados[0].message).toContain('R$ 14,90')
     // sem devolução feita, o mês pago continua valendo
     const patch = (profiles.aplicarAssinaturaPorPerfil.mock.calls[0] as any[])[1]
     expect(patch.currentPeriodEnd).toEqual(new Date('2026-10-28T12:00:00.000Z'))
@@ -195,7 +196,7 @@ describe('trocar de plano', () => {
     const { svc, asaas, profiles } = montar({ perfil: { plan: 'pro' } })
     await svc.trocarPlano('u1', { plano: 'premium' }, '1.1.1.1')
     expect(asaas.atualizarAssinatura).toHaveBeenCalledWith('sub_1', {
-      valor: 49,
+      valor: PLAN_PRICE.premium,
       externalReference: 'advocme:p1:premium',
       descricao: 'advoc.me Max (mensal)',
     })
@@ -245,7 +246,7 @@ describe('trocar de plano', () => {
       '200.1.2.3',
     )
     const pedido = asaas.criarAssinatura.mock.calls[0][0]
-    expect(pedido).toMatchObject({ vencimento: '2026-10-28', valor: 49, externalReference: 'advocme:p1:premium' })
+    expect(pedido).toMatchObject({ vencimento: '2026-10-28', valor: PLAN_PRICE.premium, externalReference: 'advocme:p1:premium' })
     expect(asaas.cancelarAssinatura).toHaveBeenCalledWith('sub_1')
     expect(escritas).toContainEqual({ billingSubscriptionId: 'sub_nova' })
     // e nada do cartão foi para o banco

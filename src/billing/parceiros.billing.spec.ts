@@ -8,6 +8,7 @@
 //   • um erro do programa nunca desfaz nem trava a cobrança.
 
 import { describe, expect, it, vi } from 'vitest'
+import { PLAN_PRICE } from '../plans'
 import { BillingService } from './billing.service'
 import { lerEnvelope, marcaExterna, traduzir } from './asaas'
 
@@ -56,7 +57,7 @@ function doAsaas(event: string, extra: Record<string, unknown> = {}, id = `evt_$
       id: 'pay_42',
       customer: 'cus_1',
       subscription: 'sub_1',
-      value: 29,
+      value: PLAN_PRICE.pro,
       dueDate: '2026-10-07',
       externalReference: marcaExterna('p1', 'pro'),
       ...extra,
@@ -97,7 +98,7 @@ describe('o webhook chama o programa só quando deve', () => {
     await svc.processar(ev, JSON.stringify(ev))
     expect(profiles.aplicarAssinaturaPorPerfil).toHaveBeenCalledTimes(1)
     expect(partners.registrarConversao).toHaveBeenCalledWith(
-      expect.objectContaining({ profileId: 'p1', plan: 'pro', amount: 29, paymentId: 'pay_42', billingEventId: 'be-evt_PAYMENT_CONFIRMED' }),
+      expect.objectContaining({ profileId: 'p1', plan: 'pro', amount: PLAN_PRICE.pro, paymentId: 'pay_42', billingEventId: 'be-evt_PAYMENT_CONFIRMED' }),
     )
   })
 
